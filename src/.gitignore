@@ -345,6 +345,10 @@
 /pair_spin_neel.cpp
 /pair_spin_neel.h
 
+/fix_rigid_lsdem.cpp
+/fix_rigid_lsdem.h
+/lsdem_const.h
+
 /atom_vec_mesont.cpp
 /atom_vec_mesont.h
 /compute_mesont.cpp
