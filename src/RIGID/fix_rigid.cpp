@@ -55,6 +55,9 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
     dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), random(nullptr),
     avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
 {
+  id_fix = nullptr; // TEMP LSDEM HACK
+  comm_forward = 7; // TEMP LSDEM HACK
+
   int i, ibody;
 
   scalar_flag = 1;
@@ -627,6 +630,9 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigid::~FixRigid()
 {
+  if (id_fix && modify->nfix) modify->delete_fix(id_fix); // TEMP LSDEM HACK
+  delete[] id_fix;                                        // TEMP LSDEM HACK
+
   // unregister callbacks to this fix from Atom class
 
   if (modify->get_fix_by_id(id)) atom->delete_callback(id,Atom::GROW);
@@ -685,6 +691,19 @@ int FixRigid::setmask()
   mask |= INITIAL_INTEGRATE_RESPA;
   mask |= FINAL_INTEGRATE_RESPA;
   return mask;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigid::post_constructor()  // TEMP LSDEM HACK
+{
+  // Store positional information of grain on all atoms
+
+  id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_quat 4 d2_ls_dem_x 3 writedata no", id_fix));
+  int tmp1, tmp2;
+  index_ls_dem_x = atom->find_custom("ls_dem_x", tmp1, tmp2);
+  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1520,6 +1539,69 @@ void FixRigid::set_xv()
         MathExtra::snormalize3(mu[i][3],mu[i],mu[i]);
       }
     }
+  }
+
+  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+
+  for (int i = 0; i < nlocal; i++) {
+    ibody = body[i];
+    x_lsdem[i][0] = xcm[ibody][0];
+    x_lsdem[i][1] = xcm[ibody][1];
+    x_lsdem[i][2] = xcm[ibody][2];
+
+    quat_lsdem[i][0] = quat[ibody][0];
+    quat_lsdem[i][1] = quat[ibody][1];
+    quat_lsdem[i][2] = quat[ibody][2];
+    quat_lsdem[i][3] = quat[ibody][3];
+  }
+
+  comm->forward_comm(this);
+}
+
+
+/* ---------------------------------------------------------------------- */
+
+int FixRigid::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
+{
+  int i, j, m;
+  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+
+  m = 0;
+  for (i = 0; i < n; i++) {
+    j = list[i];
+    buf[m++] = x_lsdem[j][0];
+    buf[m++] = x_lsdem[j][1];
+    buf[m++] = x_lsdem[j][2];
+
+    buf[m++] = quat_lsdem[j][0];
+    buf[m++] = quat_lsdem[j][1];
+    buf[m++] = quat_lsdem[j][2];
+    buf[m++] = quat_lsdem[j][3];
+  }
+  return m;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigid::unpack_forward_comm(int n, int first, double *buf)
+{
+  int i, m, last;
+  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+
+  m = 0;
+  last = first + n;
+  for (i = first; i < last; i++) {
+    x_lsdem[i][0] = buf[m++];
+    x_lsdem[i][1] = buf[m++];
+    x_lsdem[i][2] = buf[m++];
+
+    quat_lsdem[i][0] = buf[m++];
+    quat_lsdem[i][1] = buf[m++];
+    quat_lsdem[i][2] = buf[m++];
+    quat_lsdem[i][3] = buf[m++];
   }
 }
 

@@ -29,6 +29,9 @@ class FixRigid : public Fix {
   FixRigid(class LAMMPS *, int, char **);
   ~FixRigid() override;
   int setmask() override;
+  void post_constructor() override;                                 // TEMP LSDEM HACK
+  int pack_forward_comm(int, int *, double *, int, int *) override; // TEMP LSDEM HACK
+  void unpack_forward_comm(int, int, double *) override;            // TEMP LSDEM HACK
   void init() override;
   void setup(int) override;
   void initial_integrate(int) override;
@@ -60,6 +63,10 @@ class FixRigid : public Fix {
   double compute_array(int, int) override;
 
  protected:
+  char *id_fix;          // TEMP LSDEM HACK
+  int index_ls_dem_x;    // TEMP LSDEM HACK
+  int index_ls_dem_quat; // TEMP LSDEM HACK
+
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
