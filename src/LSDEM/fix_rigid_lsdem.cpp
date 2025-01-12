@@ -30,6 +30,7 @@
 #include "molecule.h"
 #include "neighbor.h"
 #include "respa.h"
+#include "rigid_const.h"
 #include "lsdem_const.h"
 #include "tokenizer.h"
 #include "update.h"
@@ -1471,7 +1472,7 @@ void FixRigidLsdem::readfile(int which, double **array)
 {
   int nchunk,eofflag,nlines,xbox,ybox,zbox;
   int nlinesls,nx,ny,nz; // In the future if we can read many lines locally: nchunkls,eofflagls
-  FILE *fp, fpls;
+  FILE *fp, *fpls;
   char *eof,*start,*next,*buf;
   char line[MAXLINE] = {'\0'};
 
@@ -1598,7 +1599,7 @@ void FixRigidLsdem::readfile(int which, double **array)
           // it should be guaranteed that each proc will read its own level-set file for a given body
           // and there is no duplication of I/O, and no need to force rank 0 comm to do all the I/O
           std::string lsfile = values.next_string();
-          fpls = fopen(lsfile,"r"); // Every MPI rank that made it here provides a valid file pointer
+          fpls = fopen(lsfile.c_str(),"r"); // Every MPI rank that made it here provides a valid file pointer
           if (fpls == nullptr)
             error->one(FLERR,"Cannot open fix {} level-set file {}: {}", style, lsfile, utils::getsyserror());
           while (true) {
@@ -1638,7 +1639,7 @@ void FixRigidLsdem::readfile(int which, double **array)
         error->all(FLERR, "Invalid fix {} infile: {}", style, e.what());
       }
       buf = next + 1;
-      
+
     }
     nread += nchunk;
   }
@@ -2409,10 +2410,10 @@ void *FixRigidLsdem::extract(const char *str, int &dim)
     return atom2body;
   }
 
-  if (strcmp(str,"onemol") == 0) {
-    dim = 0;
-    return onemols;
-  }
+  //if (strcmp(str,"onemol") == 0) {
+  //  dim = 0;
+  //  return onemols;
+  //}
 
   // return vector of rigid body masses, for owned+ghost bodies
   // used by granular pair styles, indexed by atom2body

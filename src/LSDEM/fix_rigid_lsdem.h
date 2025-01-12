@@ -159,6 +159,7 @@ class FixRigidLsdem : public Fix {
   void set_xv();
   void set_v();
   void create_bodies(tagint *);
+  void setup_bodies();
   void setup_bodies_static();
   void setup_bodies_dynamic();
   virtual void compute_forces_and_torques();
