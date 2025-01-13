@@ -18,6 +18,7 @@
 #include "error.h"
 #include "force.h"
 #include "memory.h"
+#include "modify.h"
 #include "neigh_list.h"
 #include "neighbor.h"
 
@@ -30,12 +31,16 @@ using namespace LAMMPS_NS;
 PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr)
 {
   writedata = 1;
+  id_fix = nullptr;
 }
 
 /* ---------------------------------------------------------------------- */
 
 PairLSDEM::~PairLSDEM()
 {
+  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
+  delete[] id_fix;
+
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
@@ -65,6 +70,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **x = atom->x;
   double **v = atom->v;
   double **f = atom->f;
+  double **ls_dem_grid = atom->darray[index_ls_dem_grid];
   int *type = atom->type;
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
@@ -171,6 +177,41 @@ void PairLSDEM::settings(int narg, char ** arg)
   int iarg = 0;
   while (iarg < narg) {
     error->all(FLERR, "Illegal pair_style command {}", arg[iarg]);
+  }
+
+  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
+
+  if (!id_fix)
+    id_fix = utils::strdup(std::string("PAIR_LS_DEM") + std::to_string(instance_me));
+
+  nrow = 21;
+  ncol = 21;
+  double l_grid = 1.0;
+  double x_com = 10.5;
+  double y_com = 10.5;
+  double r = 10.0;
+
+  ngrid = nrow * ncol;
+
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} writedata no ghost yes", id_fix, ngrid));
+  int tmp1, tmp2;
+  index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
+
+  double **ls_dem_grid = atom->darray[index_ls_dem_grid];
+
+  double delx, dely;
+  for (int i = 0; i < atom->nlocal; i++) {
+    for (int a = 0; a < ncol; a++) {
+      for (int b = 0; b < nrow; b++) {
+        // stored value is at lower left corner of grid
+        delx = a * l_grid - x_com;
+        dely = b * l_grid - y_com;
+        ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
+
+        //printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
+      }
+      //printf("\n");
+    }
   }
 }
 

@@ -44,6 +44,10 @@ class PairLSDEM : public Pair {
  protected:
   double **k, **cut, **gamma;
 
+  char *id_fix;
+  int index_ls_dem_grid;
+  int ngrid, nrow, ncol;
+
   void allocate();
 };
 
