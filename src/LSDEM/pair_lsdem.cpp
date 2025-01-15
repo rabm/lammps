@@ -16,6 +16,7 @@
 #include "atom.h"
 #include "comm.h"
 #include "error.h"
+#include "fix_rigid.h"
 #include "force.h"
 #include "memory.h"
 #include "modify.h"
@@ -75,6 +76,12 @@ void PairLSDEM::compute(int eflag, int vflag)
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
   double *special_lj = force->special_lj;
+
+  auto fixlist = modify->get_fix_by_style("rigid");
+  if (fixlist.size() != 1)
+    error->all(FLERR, "Must have one instance of fix rigid for pair lsdem");
+  auto fixrigid = dynamic_cast<FixRigid *>(fixlist.front());
+  int *body = fixrigid->get_body_array();
 
   inum = list->inum;
   ilist = list->ilist;

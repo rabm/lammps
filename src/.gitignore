@@ -348,6 +348,8 @@
 /fix_rigid_lsdem.cpp
 /fix_rigid_lsdem.h
 /lsdem_const.h
+/pair_lsdem.cpp
+/pair_lsdem.h
 
 /atom_vec_mesont.cpp
 /atom_vec_mesont.h

@@ -56,7 +56,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
     avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
 {
   id_fix = nullptr; // TEMP LSDEM HACK
-  comm_forward = 7; // TEMP LSDEM HACK
+  comm_forward = 8; // TEMP LSDEM HACK
 
   int i, ibody;
 
@@ -685,6 +685,7 @@ int FixRigid::setmask()
 {
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
+  mask |= PRE_FORCE;
   mask |= FINAL_INTEGRATE;
   if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
@@ -927,6 +928,20 @@ void FixRigid::setup(int vflag)
       for (n = 0; n < 6; n++)
         vatom[i][n] *= 2.0;
   }
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigid::setup_pre_force(int vflag)
+{
+  pre_force(vflag);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigid::pre_force(int vflag)
+{
+  comm->forward_comm(this);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1555,8 +1570,6 @@ void FixRigid::set_xv()
     quat_lsdem[i][2] = quat[ibody][2];
     quat_lsdem[i][3] = quat[ibody][3];
   }
-
-  comm->forward_comm(this);
 }
 
 
@@ -1571,6 +1584,8 @@ int FixRigid::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
+    buf[m++] = ubuf(body[j]).d;
+
     buf[m++] = x_lsdem[j][0];
     buf[m++] = x_lsdem[j][1];
     buf[m++] = x_lsdem[j][2];
@@ -1594,6 +1609,8 @@ void FixRigid::unpack_forward_comm(int n, int first, double *buf)
   m = 0;
   last = first + n;
   for (i = first; i < last; i++) {
+    body[i] = (int) ubuf(buf[m++]).i;
+
     x_lsdem[i][0] = buf[m++];
     x_lsdem[i][1] = buf[m++];
     x_lsdem[i][2] = buf[m++];

@@ -34,7 +34,9 @@ class FixRigid : public Fix {
   void unpack_forward_comm(int, int, double *) override;            // TEMP LSDEM HACK
   void init() override;
   void setup(int) override;
+  void setup_pre_force(int) override; // TEMP LSDEM HACK
   void initial_integrate(int) override;
+  void pre_force(int) override; // TEMP LSDEM HACK
   void post_force(int) override;
   void final_integrate() override;
   void initial_integrate_respa(int, int, int) override;
@@ -61,6 +63,8 @@ class FixRigid : public Fix {
   double extract_ke();
   double extract_erotational();
   double compute_array(int, int) override;
+
+  inline int *get_body_array() { return body; };
 
  protected:
   char *id_fix;          // TEMP LSDEM HACK

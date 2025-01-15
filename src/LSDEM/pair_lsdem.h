@@ -13,7 +13,7 @@
 
 #ifdef PAIR_CLASS
 // clang-format off
-PairStyle(bpm/spring,PairLSDEM);
+PairStyle(lsdem,PairLSDEM);
 // clang-format on
 #else
 
