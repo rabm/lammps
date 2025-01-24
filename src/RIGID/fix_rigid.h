@@ -65,10 +65,11 @@ class FixRigid : public Fix {
   double compute_array(int, int) override;
 
   inline int *get_body_array() { return body; };
+  inline int get_nbody() { return nbody; };
 
  protected:
   char *id_fix;          // TEMP LSDEM HACK
-  int index_ls_dem_x;    // TEMP LSDEM HACK
+  int index_ls_dem_com;    // TEMP LSDEM HACK
   int index_ls_dem_quat; // TEMP LSDEM HACK
 
   double dtv, dtf, dtq;

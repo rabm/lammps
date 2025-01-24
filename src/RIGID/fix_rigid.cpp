@@ -685,7 +685,7 @@ int FixRigid::setmask()
 {
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
-  mask |= PRE_FORCE;
+  mask |= PRE_FORCE; // TEMP LSDEM HACK
   mask |= FINAL_INTEGRATE;
   if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
@@ -703,7 +703,7 @@ void FixRigid::post_constructor()  // TEMP LSDEM HACK
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_quat 4 d2_ls_dem_x 3 writedata no", id_fix));
   int tmp1, tmp2;
-  index_ls_dem_x = atom->find_custom("ls_dem_x", tmp1, tmp2);
+  index_ls_dem_com = atom->find_custom("ls_dem_x", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
 }
 
@@ -933,14 +933,14 @@ void FixRigid::setup(int vflag)
 /* ---------------------------------------------------------------------- */
 
 void FixRigid::setup_pre_force(int vflag)
-{
+{ // TEMP LSDEM HACK
   pre_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */
 
 void FixRigid::pre_force(int vflag)
-{
+{ // TEMP LSDEM HACK
   comm->forward_comm(this);
 }
 
@@ -1556,7 +1556,7 @@ void FixRigid::set_xv()
     }
   }
 
-  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   for (int i = 0; i < nlocal; i++) {
@@ -1578,7 +1578,7 @@ void FixRigid::set_xv()
 int FixRigid::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
 {
   int i, j, m;
-  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   m = 0;
@@ -1603,7 +1603,7 @@ int FixRigid::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int
 void FixRigid::unpack_forward_comm(int n, int first, double *buf)
 {
   int i, m, last;
-  double **x_lsdem = atom->darray[index_ls_dem_x];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   m = 0;

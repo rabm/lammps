@@ -46,9 +46,12 @@ class PairLSDEM : public Pair {
 
   char *id_fix;
   int index_ls_dem_grid;
+  int index_ls_dem_com;
+  int index_ls_dem_quat;
   int ngrid, nrow, ncol;
 
   void allocate();
+  double get_ls_value(double, double, double, int, int);
 };
 
 }    // namespace LAMMPS_NS
