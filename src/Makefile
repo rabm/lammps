@@ -90,6 +90,7 @@ PACKAGE = \
 	kokkos \
 	latboltz \
 	lepton \
+	lsdem \
 	machdyn \
 	manifold \
 	manybody \
@@ -179,6 +180,7 @@ PACKMOST = \
 	fep \
 	granular \
 	interlayer \
+	lsdem \
 	manybody \
 	mc \
 	meam \
