@@ -209,11 +209,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         // penetration distance; d = -ls_value
         // contact normal; n = -ls_normal
         // F = f(ls_value) = - k_n * d * n
-        double k_n = 0.0;
+        double k_n = 0.0
         fpair = - k_n * (-ls_value);
-        f[i][0] += normal[0] * fpair;
-        f[i][1] += normal[1] * fpair;
-        f[i][2] += normal[2] * fpair;
+        f[i][0] += delx * fpair; // fpair * n[0]
+        f[i][1] += dely * fpair;
+        f[i][2] += delz * fpair;
       }
 
       // We typically mirror the forces, not calculating for both,
