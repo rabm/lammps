@@ -15,9 +15,11 @@
 
 #include "atom.h"
 #include "comm.h"
+#include "domain.h"
 #include "error.h"
 #include "fix_rigid.h"
 #include "force.h"
+#include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
 #include "neigh_list.h"
@@ -25,6 +27,8 @@
 
 #include <cmath>
 #include <unordered_map>
+
+static constexpr double EPSILON = 1e-10;
 
 using namespace LAMMPS_NS;
 
@@ -63,6 +67,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double r, rsq, rinv, factor_lj, ls_value;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
+  double normal[3];
 
   evdwl = 0.0;
   if (eflag || vflag)
@@ -199,28 +204,28 @@ void PairLSDEM::compute(int eflag, int vflag)
       // calculate other joint properties...
 
       if (calc_force_of_i_on_j) {
-        ls_value = get_ls_value(delx, dely, delz, i, j);
+        ls_value = get_ls_value(i, j, normal);
         // calculate force...
         // penetration distance; d = -ls_value
         // contact normal; n = -ls_normal
         // F = f(ls_value) = - k_n * d * n
-        double k_n = 0.0
-        fpair = - k_n * (-ls_value); 
-        f[i][0] += delx * fpair; // fpair * n[0]
-        f[i][1] += dely * fpair;
-        f[i][2] += delz * fpair;
+        double k_n = 0.0;
+        fpair = - k_n * (-ls_value);
+        f[i][0] += normal[0] * fpair;
+        f[i][1] += normal[1] * fpair;
+        f[i][2] += normal[2] * fpair;
       }
 
       // We typically mirror the forces, not calculating for both,
       // since this doubles the computational cost. Only the nodes
       // of the smallest grain should be considered
       if (calc_force_of_i_on_j) {
-        ls_value = get_ls_value(-delx, -dely, -delz, j, i);
+        ls_value = get_ls_value(j, i, normal);
         // calculate force...
         fpair = 0.0;
-        f[j][0] -= delx * fpair;
-        f[j][1] -= dely * fpair;
-        f[j][2] -= delz * fpair;
+        f[j][0] += normal[0] * fpair;
+        f[j][1] += normal[1] * fpair;
+        f[j][2] += normal[2] * fpair;
       }
 
       // Need to add torques too!
@@ -283,6 +288,10 @@ void PairLSDEM::settings(int narg, char ** arg)
   double r = 10.0;
 
   ngrid = nrow * ncol;
+  grid_min[0] = 0;  // Later convert to peratom values
+  grid_min[1] = 0;
+  grid_min[2] = 0;
+  spac = l_grid;
 
   modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} writedata no ghost yes", id_fix, ngrid));
   int tmp1, tmp2;
@@ -502,9 +511,8 @@ double PairLSDEM::single(int i, int j, int itype, int jtype, double rsq, double 
    where xi and xj are the centre coordinates of i and j, respectively.
 ------------------------------------------------------------------------- */
 
-double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
+double PairLSDEM::get_ls_value(int i, int j, double *normal)
 {
-  // dx, dy, and dz will not be used. Maybe remove?
   double **x = atom->x;
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
@@ -529,13 +537,16 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
 
   // Relative coordinate of node i w.r.t. centre of mass grain j
   // Danny: I will asumme x is in global coordinates.
-  delx = x[i][0]-grain_com[j][0];
-  dely = x[i][1]-grain_com[j][1];
-  delz = 0; // x[i][2]-grain_com[j][2];
+  double delx = x[i][0]-grain_com[j][0];
+  double dely = x[i][1]-grain_com[j][1];
+  double delz = 0; // x[i][2]-grain_com[j][2];
+
+  // Account for PBCs
+  domain->minimum_image(delx, dely, delz);
 
   // Extract quaternion components
   // Danny: How is grain_quat defined? Is it the rotation local -> global or global -> local?
-  // I will assume it is local -> global 
+  // I will assume it is local -> global
   // Remove minus signs if grain_quat is global -> local
   double q_w = grain_quat[j][0];
   double q_x = -grain_quat[j][1];
@@ -547,6 +558,12 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
   double x_local = (1 - 2 * (q_y * q_y + q_z * q_z)) * delx + 2 * (q_x * q_y - q_w * q_z) * dely + 2 * (q_x * q_z + q_w * q_y) * delz;
   double y_local = 2 * (q_x * q_y + q_w * q_z) * delx + (1 - 2 * (q_x * q_x + q_z * q_z)) * dely + 2 * (q_y * q_z - q_w * q_x) * delz;
   double z_local = 2 * (q_x * q_z - q_w * q_y) * delx + 2 * (q_y * q_z + q_w * q_x) * dely + (1 - 2 * (q_x * q_x + q_y * q_y)) * delz;
+
+  // sample code with math_extra, feel free to add MathExtra to namespace if helpful
+  double x_local2[3];
+  double dx[3] = {delx, dely, delz};
+  MathExtra::quatrotvec(grain_quat[j], dx, x_local2); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
+  // see comments above functions in math_extra.h/cpp for details
 
   //
   //  COMPUTE THE LS GRID INDICES
@@ -562,15 +579,14 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
   // errors later.
+  // Joel: I added a macro EPSILON which might be useful for biasing rounding
 
   if ( (ind_x < 0) || (ind_y < 0) ) { // || (indz < 0)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    // Some error message?
-    return (NaN);
-  }else if ( (ind_x > nrow-1) || (ind_y > ncol-1)  ) {  // || (ind_z > nslice-1)
+    error->one(FLERR, "Contacting node is outside of LS grid");
+  } else if ( (ind_x > nrow-1) || (ind_y > ncol-1)  ) {  // || (ind_z > nslice-1)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    // Some error message?
-    return (NaN);
+    error->one(FLERR, "Contacting node is outside of LS grid");
   }
 
   // Apply offsets, there is probably a more proper way
@@ -634,13 +650,12 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
 			}
 		}
 	}
-	// May be safer to normalise the normal
-  // Not sure how you usually make arrays / vectors in LAMMPS.
-  // double** normal;
-  // normal = new double*[3]
-  // normal[0] = nx; normal[1] = ny; normal[2] = nz;
 
-  return dist //, normal
+  normal[0] = nx;
+  normal[1] = ny;
+  normal[2] = nz;
+
+  return dist;
 }
 
 
