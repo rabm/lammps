@@ -201,12 +201,19 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (calc_force_of_i_on_j) {
         ls_value = get_ls_value(delx, dely, delz, i, j);
         // calculate force...
-        fpair = 0.0;
-        f[i][0] += delx * fpair;
+        // penetration distance; d = -ls_value
+        // contact normal; n = -ls_normal
+        // F = f(ls_value) = - k_n * d * n
+        double k_n = 0.0
+        fpair = - k_n * (-ls_value); 
+        f[i][0] += delx * fpair; // fpair * n[0]
         f[i][1] += dely * fpair;
         f[i][2] += delz * fpair;
       }
 
+      // We typically mirror the forces, not calculating for both,
+      // since this doubles the computational cost. Only the nodes
+      // of the smallest grain should be considered
       if (calc_force_of_i_on_j) {
         ls_value = get_ls_value(-delx, -dely, -delz, j, i);
         // calculate force...
@@ -215,6 +222,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         f[j][1] -= dely * fpair;
         f[j][2] -= delz * fpair;
       }
+
+      // Need to add torques too!
+      // contact_point = x[i] - ls_value * ls_normal
+      // grain_torque[i] += ( contact_point - grain_com[i] )  xCROSS_PRODUCTx force[i]
+      // grain_torque[j] += -( contact_point - grain_com[i] )  xCROSS_PRODUCTx force[i]
 
       // virial contribution TBD
       // if (evflag) ev_tally(i, j, nlocal, newton_pair, evdwl, 0.0, fpair, delx, dely, delz);
@@ -507,6 +519,9 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
   //   x[j][0-2] = location of j
   //   grain_com[j][0-2] = CoM of j's grain
   //   grain_quat[j][0-3] = quat of j's grain
+
+  // Danny: How does LAMMPS take care of the periodic shift?
+  //        YADE uses an offset coordinate shift2 that is added to x[j] or grain_com[j]
 
   //
   //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
