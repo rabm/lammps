@@ -486,11 +486,13 @@ double PairLSDEM::single(int i, int j, int itype, int jtype, double rsq, double 
 }
 
 /* ----------------------------------------------------------------------
-   Find the value of atom i in j's LS grid, (dx, dy, dz) = xi - xj
+   Find the value of node (atom) i in j's LS grid, (dx, dy, dz) = xi - xj,
+   where xi and xj are the centre coordinates of i and j, respectively.
 ------------------------------------------------------------------------- */
 
 double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
 {
+  // dx, dy, and dz will not be used. Maybe remove?
   double **x = atom->x;
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
@@ -498,18 +500,133 @@ double PairLSDEM::get_ls_value(double dx, double dy, double dz, int i, int j)
 
   int nrow_offset = 0; // Offsets for local subgrid, to implement later
   int ncol_offset = 0; //   currently subgrid = grid, so offsets are zero
+  int nslice_offset = 0;
 
   // Calculate position of i in j's grid using:
   //   x[i][0-2] = location of i
   //   x[j][0-2] = location of j
   //   grain_com[j][0-2] = CoM of j's grain
   //   grain_quat[j][0-3] = quat of j's grain
-  double x_rotated = 0.0; // TODO
-  double y_rotated = 0.0;
+
+  //
+  //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
+  //
+
+  // Relative coordinate of node i w.r.t. centre of mass grain j
+  // Danny: I will asumme x is in global coordinates.
+  delx = x[i][0]-grain_com[j][0];
+  dely = x[i][1]-grain_com[j][1];
+  delz = 0; // x[i][2]-grain_com[j][2];
+
+  // Extract quaternion components
+  // Danny: How is grain_quat defined? Is it the rotation local -> global or global -> local?
+  // I will assume it is local -> global 
+  // Remove minus signs if grain_quat is global -> local
+  double q_w = grain_quat[j][0];
+  double q_x = -grain_quat[j][1];
+  double q_y = -grain_quat[j][2];
+  double q_z = -grain_quat[j][3];
+
+  // Apply quaternion rotation to move into local reference frame of grain j grid
+  // x' = (q*x)*q^-1
+  double x_local = (1 - 2 * (q_y * q_y + q_z * q_z)) * delx + 2 * (q_x * q_y - q_w * q_z) * dely + 2 * (q_x * q_z + q_w * q_y) * delz;
+  double y_local = 2 * (q_x * q_y + q_w * q_z) * delx + (1 - 2 * (q_x * q_x + q_z * q_z)) * dely + 2 * (q_y * q_z - q_w * q_x) * delz;
+  double z_local = 2 * (q_x * q_z - q_w * q_y) * delx + 2 * (q_y * q_z + q_w * q_x) * dely + (1 - 2 * (q_x * q_x + q_y * q_y)) * delz;
+
+  //
+  //  COMPUTE THE LS GRID INDICES
+  //
 
   // Calculate index from coordinate, need to be more careful with integer division
-  int a = x_rotated / nrow - nrow_offset;
-  int b = y_rotated / ncol - ncol_offset;
+  // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
+  //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
+  //        will have to normalise )
+  int ind_x = int( (x_local - grid_min[0]) / spac ); // Here, int() do the same as floor() + conversion
+  int ind_y = int( (y_local - grid_min[1]) / spac );
+  // int ind_z = int( (z_local - grid_min[2]) / spac );
 
-  return grain_grid[j][b * ncol + a];
+  // We might need an extra check. If x_local is very close to grid_min, it may pass and give
+  // errors later.
+
+  if ( (ind_x < 0) || (ind_y < 0) ) { // || (indz < 0)
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    // Some error message?
+    return (NaN);
+  }else if ( (ind_x > nrow-1) || (ind_y > ncol-1)  ) {  // || (ind_z > nslice-1)
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    // Some error message?
+    return (NaN);
+  }
+
+  // Apply offsets, there is probably a more proper way
+  ind_x = ind_x - nrow_offset;
+  ind_y = ind_y - ncol_offset;
+  // ind_z = ind_z - nslice_offset;
+
+  //
+  //  DO THE BILINEAR INTERPOLATION
+  //
+
+  // Coordinates of the grid lower grid point of the cell we are in
+  double x0 = grain_grid_coord[j][ind_x + ind_y * ncol][0]; // + ind_z + nslice
+  double y0 = grain_grid_coord[j][ind_x + ind_y * ncol][1];
+  //double z0 = grain_grid_coord[j][ind_x + ind_y * ncol + ind_z * nslice][2];
+
+  // Level-set values on the grid points
+  double ls000 = grain_grid[j][ind_x   + ind_y     * ncol]; // + ind_z * nslice
+  double ls100 = grain_grid[j][ind_x+1 + ind_y     * ncol];
+  double ls010 = grain_grid[j][ind_x   + (ind_y+1) * ncol];
+  double ls110 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol];
+
+  // The reduced coordinates
+  // May be safe to cap them with math::max(math::min(x_red, 1.0), 0.0)
+  double x_red = (x_local - x0) / spac;
+  double y_red = (y_local - y0) / spac;
+  double z_red = (z_local - z0) / spac;
+
+  // The bilinear interpolation
+  double term = y_red * (ls110 - ls100 - ls010 + ls000) + ls100 - ls000;
+  double dist = x_red * term + y_red * (ls010 - ls000) + ls000;
+
+  /*
+    FOR 3D
+
+    double ls001 = grain_grid[j][ind_x   + ind_y     * ncol + (ind_z+1) * nslice];
+    double ls101 = grain_grid[j][ind_x+1 + ind_y     * ncol + (ind_z+1) * nslice];
+    double ls011 = grain_grid[j][ind_x   + (ind_y+1) * ncol + (ind_z+1) * nslice];
+    double ls111 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol + (ind_z+1) * nslice];
+
+    // Exactly the same but for other z plane / face of the grid cell
+    double term = y_red * (ls111 - ls101 - ls011 + ls001) + ls101 - ls001;
+    double dist_xy1 = x_red / spac * term + y_red * (ls011 - ls001) + ls001;
+
+	  dist = z_red * (dist_xy1 - dist_xy0) + dist_xy0;
+  */
+
+  // Normal
+  double nx = 0;
+  double ny = 0;
+  double nz = 0;
+
+	// Computing normal as the gradient of trilinear interpolation
+	for (int a = 0; a < 2; a++) {
+		for (int b = 0; b < 2; b++) {
+			for (int c = 0; c < 2; c++) {
+				double lsVal = grain_grid[j][(ind_x + a) + (ind_x + b)*ncol + (ind_z + c)*nslice];
+				nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
+				ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
+				nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
+			}
+		}
+	}
+	// May be safer to normalise the normal
+  // Not sure how you usually make arrays / vectors in LAMMPS.
+  // double** normal;
+  // normal = new double*[3]
+  // normal[0] = nx; normal[1] = ny; normal[2] = nz;
+
+  return dist //, normal
 }
+
+
+
