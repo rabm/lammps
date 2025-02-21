@@ -69,8 +69,10 @@ void PairLSDEM::compute(int eflag, int vflag)
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
 
-  // Newton must be off.
-  // Internal interactions between atoms in rigid must be off.
+  // Currently require:
+  //   Newton pair off.
+  //   Exclude intramolecule interactions
+  // In future, remove restrictions
 
   evdwl = 0.0;
   if (eflag || vflag)
@@ -85,7 +87,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
-  int newton_pair = force->newton_pair;
   double *special_lj = force->special_lj;
 
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
@@ -147,7 +148,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Do the same for node j
-      if (newton_pair || j < nlocal) {
+      if (j < nlocal) {
         key = nbody * jtag + jbody;
         if (min_distances.find(key) == min_distances.end()) {
           min_distances[key] = std::make_pair(itag, r);
@@ -159,8 +160,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
     }
   }
-
-  // if (newton_pair) need to somehow reverse comm distances...
 
   // loop to calculate forces
 
@@ -198,7 +197,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // if node i is closest on its grain to j & j is owned
       calc_force_of_i_on_j = 0;
-      if (newton_pair || j < nlocal) {
+      if (j < nlocal) {
         key = nbody * itag + ibody;
         if (min_distances.find(key) != min_distances.end())
           calc_force_of_i_on_j = 1;
@@ -274,7 +273,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // virial contribution TBD
-      // if (evflag) ev_tally(i, j, nlocal, newton_pair, evdwl, 0.0, fpair, delx, dely, delz);
+      // if (evflag) ev_tally(i, j, nlocal, 0, evdwl, 0.0, fpair, delx, dely, delz);
     }
   }
 
@@ -317,8 +316,8 @@ void PairLSDEM::settings(int narg, char ** arg)
   if (!id_fix)
     id_fix = utils::strdup(std::string("PAIR_LS_DEM") + std::to_string(instance_me));
 
-  if (force->newton)
-    error->all(FLERR, "Temporarily do not support newton on with LS DEM");
+  if (force->newton_pair)
+    error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
 
   nrow = 21;
   ncol = 21;
@@ -400,9 +399,6 @@ void PairLSDEM::init_style()
 {
   if (comm->ghost_velocity == 0)
     error->all(FLERR, "Pair LS/DEM requires ghost atoms store velocity");
-
-  if (force->newton_pair)
-    error->all(FLERR,"Pair style LS/DEM requires newton pair off");
 
   neighbor->add_request(this);
 }
