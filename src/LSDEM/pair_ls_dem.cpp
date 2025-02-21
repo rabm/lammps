@@ -19,6 +19,7 @@
 #include "error.h"
 #include "fix_rigid.h"
 #include "force.h"
+#include "math_const.h"
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
@@ -90,6 +91,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double *special_lj = force->special_lj;
 
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
+  double *grain_vol = atom->varray[index_ls_dem_vol];
 
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
@@ -136,6 +138,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Need an additional check such that only nodes of the smallest grain i
       // are used in combination with the level set of grain j.
+      // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
 
       key = nbody * itag + ibody;
       // If first interation between node i and j's grain, create entry
@@ -337,8 +340,10 @@ void PairLSDEM::settings(int narg, char ** arg)
   index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
+  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 
   double **ls_dem_grid = atom->darray[index_ls_dem_grid];
+  double *ls_dem_vol = atom->varray[index_ls_dem_vol];
 
   double delx, dely;
   for (int i = 0; i < atom->nlocal; i++) {
@@ -353,6 +358,7 @@ void PairLSDEM::settings(int narg, char ** arg)
       }
       //printf("\n");
     }
+    ls_dem_vol[i] = MY_PI * pow(5.0, 2);
   }
 }
 

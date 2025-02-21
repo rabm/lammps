@@ -69,8 +69,9 @@ class FixRigid : public Fix {
 
  protected:
   char *id_fix;          // TEMP LSDEM HACK
-  int index_ls_dem_com;    // TEMP LSDEM HACK
+  int index_ls_dem_com;  // TEMP LSDEM HACK
   int index_ls_dem_quat; // TEMP LSDEM HACK
+  int index_ls_dem_size; // TEMP LSDEM HACK
 
   double dtv, dtf, dtq;
   double *step_respa;
