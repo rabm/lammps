@@ -203,18 +203,28 @@ void PairLSDEM::compute(int eflag, int vflag)
       delz = ztmp - x[j][2];
       jtype = type[j];
 
-      // calculate other joint properties...
+      // Dummy value for elastic stiffness while we don't have a contact law
+      double k_n = 0.0
 
-      // Force of node i penetrating grain j
+      // Evaluate and assign interaction direction based on node-grain combination.
       if (calc_force_of_i_on_j) {
         // The ls_value is negative and the normal points away from j.
         ls_value = get_ls_value(i, j, normal);
         // With penetration distance d and normal n (i->j),
         // we have: F_{j->i} = f(ls_value) = - k_n * d * n.
         // The minus sign of ls_value and normal cancel each other.
-        double k_n = 0.0
         // Force magnitude and direction i -> j
         fpair_mag = - k_n * ls_value;
+      }
+      if (calc_force_of_j_on_i) {
+        ls_value = get_ls_value(j, i, normal);
+        // Force magnitude and direction i -> j
+        fpair_mag = k_n * ls_value;
+      }
+
+      // Forces and torques
+      if ( calc_force_of_i_on_j || calc_force_of_i_on_j) {
+        // The pair force vector
         fpair[0] = fpair_mag * normal[0];
         fpair[1] = fpair_mag * normal[1];
         fpair[2] = fpair_mag * normal[2];
@@ -233,7 +243,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         double **grain_com = atom->darray[index_ls_dem_com];
         lever[0] = contact_point[0] - grain_com[i][0]
         lever[1] = contact_point[1] - grain_com[i][1]
-        lever[2] = contact_point[0] - grain_com[i][2]
+        lever[2] = contact_point[2] - grain_com[i][2]
         MathExtra::cross3(lever,fpair,torque)
 
         // Apply torques on grain i
@@ -247,30 +257,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         f[j][2] -= fpair[2];
         lever[0] = contact_point[0] - grain_com[j][0]
         lever[1] = contact_point[1] - grain_com[j][1]
-        lever[2] = contact_point[0] - grain_com[j][2]
+        lever[2] = contact_point[2] - grain_com[j][2]
         MathExtra::cross3(lever,-fpair,torque)
         t[j][0] += torque[0]
         t[j][1] += torque[1]
         t[j][2] += torque[2]
-      }
-
-      // We typically mirror the forces, not calculating for both,
-      // since this doubles the computational cost. Only the nodes
-      // of the smallest grain should be considered.
-
-      // Can we somehow make sure that we always make sure we have i->j? Flip definitions?
-
-      if (calc_force_of_j_on_i) {
-        ls_value = get_ls_value(j, i, normal);
-        // calculate force...
-        // penetration distance; d = -ls_value
-        // contact normal; n = -ls_normal
-        // F = f(ls_value) = - k_n * d * n
-        double k_n = 0.0
-        fpair = - k_n * (-ls_value);
-        f[j][0] += normal[0] * fpair;
-        f[j][1] += normal[1] * fpair;
-        f[j][2] += normal[2] * fpair;
       }
 
       // virial contribution TBD
