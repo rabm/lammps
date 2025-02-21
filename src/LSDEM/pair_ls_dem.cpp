@@ -11,7 +11,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "pair_lsdem.h"
+#include "pair_ls_dem.h"
 
 #include "atom.h"
 #include "comm.h"
@@ -87,7 +87,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
   double *special_lj = force->special_lj;
-  
+
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
 
   std::unordered_map<int, std::pair<int, double>> min_distances;
@@ -209,7 +209,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       jtype = type[j];
 
-      // Evaluate the level set, and assign the interaction direction based on 
+      // Evaluate the level set, and assign the interaction direction based on
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
         // The ls_value is negative and the normal points away from j. Correct the signs.
@@ -399,7 +399,10 @@ void PairLSDEM::coeff(int narg, char **arg)
 void PairLSDEM::init_style()
 {
   if (comm->ghost_velocity == 0)
-    error->all(FLERR, "Pair bpm/spring requires ghost atoms store velocity");
+    error->all(FLERR, "Pair LS/DEM requires ghost atoms store velocity");
+
+  if (force->newton_pair)
+    error->all(FLERR,"Pair style LS/DEM requires newton pair off");
 
   neighbor->add_request(this);
 }

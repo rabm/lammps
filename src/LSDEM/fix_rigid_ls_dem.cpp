@@ -12,7 +12,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-#include "fix_rigid_lsdem.h"
+#include "fix_rigid_ls_dem.h"
 
 #include "atom.h"
 #include "comm.h"
@@ -31,7 +31,7 @@
 #include "neighbor.h"
 #include "respa.h"
 #include "rigid_const.h"
-#include "lsdem_const.h"
+#include "ls_dem_const.h"
 #include "tokenizer.h"
 #include "update.h"
 #include "variable.h"
@@ -50,7 +50,7 @@ static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
 
 /* ---------------------------------------------------------------------- */
 
-FixRigidLsdem::FixRigidLsdem(LAMMPS *lmp, int narg, char **arg) :
+FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), step_respa(nullptr),
   inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr),
   xcmimage(nullptr), displace(nullptr), counts(nullptr),
@@ -79,7 +79,7 @@ FixRigidLsdem::FixRigidLsdem(LAMMPS *lmp, int narg, char **arg) :
   atom2body = nullptr;
   xcmimage = nullptr;
   displace = nullptr;
-  FixRigidLsdem::grow_arrays(atom->nmax);
+  FixRigidLSDEM::grow_arrays(atom->nmax);
   atom->add_callback(Atom::GROW);
 
   // parse args for level-set rigid body specification
@@ -213,7 +213,7 @@ FixRigidLsdem::FixRigidLsdem(LAMMPS *lmp, int narg, char **arg) :
 
 /* ---------------------------------------------------------------------- */
 
-FixRigidLsdem::~FixRigidLsdem()
+FixRigidLSDEM::~FixRigidLSDEM()
 {
   // unregister callbacks to this fix from Atom class
 
@@ -237,7 +237,7 @@ FixRigidLsdem::~FixRigidLsdem()
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidLsdem::setmask()
+int FixRigidLSDEM::setmask()
 {
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
@@ -250,7 +250,7 @@ int FixRigidLsdem::setmask()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::init()
+void FixRigidLSDEM::init()
 {
   triclinic = domain->triclinic;
 
@@ -330,7 +330,7 @@ void FixRigidLsdem::init()
      setup_bodies() invokes pre_neighbor itself
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::setup_pre_neighbor()
+void FixRigidLSDEM::setup_pre_neighbor()
 {
   if (!setupflag)
     setup_bodies();
@@ -344,7 +344,7 @@ void FixRigidLsdem::setup_pre_neighbor()
    reset all particle velocities to be consistent with vcm and omega
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::setup(int vflag)
+void FixRigidLSDEM::setup(int vflag)
 {
   int i,n,ibody;
 
@@ -441,7 +441,7 @@ void FixRigidLsdem::setup(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::initial_integrate(int vflag)
+void FixRigidLSDEM::initial_integrate(int vflag)
 {
   double dtfm;
 
@@ -517,7 +517,7 @@ void FixRigidLsdem::initial_integrate(int vflag)
      note: so just want to avoid that numeric problem?
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::pre_neighbor()
+void FixRigidLSDEM::pre_neighbor()
 {
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
     Body *b = &body[ibody];
@@ -535,14 +535,14 @@ void FixRigidLsdem::pre_neighbor()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::post_force(int /*vflag*/)
+void FixRigidLSDEM::post_force(int /*vflag*/)
 {
   if (earlyflag) compute_forces_and_torques();
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::final_integrate()
+void FixRigidLSDEM::final_integrate()
 {
   double dtfm;
 
@@ -589,7 +589,7 @@ void FixRigidLsdem::final_integrate()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::initial_integrate_respa(int vflag, int ilevel, int /*iloop*/)
+void FixRigidLSDEM::initial_integrate_respa(int vflag, int ilevel, int /*iloop*/)
 {
   dtv = step_respa[ilevel];
   dtf = 0.5 * step_respa[ilevel] * force->ftm2v;
@@ -601,7 +601,7 @@ void FixRigidLsdem::initial_integrate_respa(int vflag, int ilevel, int /*iloop*/
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::final_integrate_respa(int ilevel, int /*iloop*/)
+void FixRigidLSDEM::final_integrate_respa(int ilevel, int /*iloop*/)
 {
   dtf = 0.5 * step_respa[ilevel] * force->ftm2v;
   final_integrate();
@@ -613,7 +613,7 @@ void FixRigidLsdem::final_integrate_respa(int ilevel, int /*iloop*/)
    xcmimage = true image flag - imagebody flag
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::image_shift()
+void FixRigidLSDEM::image_shift()
 {
   imageint tdim,bdim,xdim[3];
 
@@ -641,7 +641,7 @@ void FixRigidLsdem::image_shift()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::compute_forces_and_torques()
+void FixRigidLSDEM::compute_forces_and_torques()
 {
   int i,ibody;
 
@@ -709,7 +709,7 @@ void FixRigidLsdem::compute_forces_and_torques()
    zero all body values that should be zero for 2d model
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::enforce2d()
+void FixRigidLSDEM::enforce2d()
 {
   Body *b;
 
@@ -733,7 +733,7 @@ void FixRigidLsdem::enforce2d()
    return total count of DOF
 ------------------------------------------------------------------------- */
 
-bigint FixRigidLsdem::dof(int tgroup)
+bigint FixRigidLSDEM::dof(int tgroup)
 {
   int i,j;
 
@@ -836,7 +836,7 @@ bigint FixRigidLsdem::dof(int tgroup)
    flag = 0/1 means map from box to lamda coords or vice versa
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::deform(int flag)
+void FixRigidLSDEM::deform(int flag)
 {
   if (flag == 0)
     for (int ibody = 0; ibody < nlocal_body; ibody++)
@@ -852,7 +852,7 @@ void FixRigidLsdem::deform(int flag)
    v = Vcm + (W cross (x - Xcm))
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::set_xv()
+void FixRigidLSDEM::set_xv()
 {
   int xbox,ybox,zbox;
   double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
@@ -972,7 +972,7 @@ void FixRigidLsdem::set_xv()
    v = Vcm + (W cross (x - Xcm))
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::set_v()
+void FixRigidLSDEM::set_v()
 {
   int xbox,ybox,zbox;
   double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
@@ -1064,7 +1064,7 @@ void FixRigidLsdem::set_v()
    set bodytag for all owned atoms
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::create_bodies(tagint *bodyID)
+void FixRigidLSDEM::create_bodies(tagint *bodyID)
 {
   int i,m;
 
@@ -1142,7 +1142,7 @@ void FixRigidLsdem::create_bodies(tagint *bodyID)
    buf = list of N BodyMsg datums
 ------------------------------------------------------------------------- */
 
-int FixRigidLsdem::rendezvous_body(int n, char *inbuf,
+int FixRigidLSDEM::rendezvous_body(int n, char *inbuf,
                                    int &rflag, int *&proclist, char *&outbuf,
                                    void *ptr)
 {
@@ -1153,7 +1153,7 @@ int FixRigidLsdem::rendezvous_body(int n, char *inbuf,
   double *x,*xown,*rsqclose;
   double **bbox,**ctr;
 
-  auto frsptr = (FixRigidLsdem *) ptr;
+  auto frsptr = (FixRigidLSDEM *) ptr;
   Memory *memory = frsptr->memory;
   Error *error = frsptr->error;
   MPI_Comm world = frsptr->world;
@@ -1294,7 +1294,7 @@ int FixRigidLsdem::rendezvous_body(int n, char *inbuf,
    must read all properties from inpfile
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::setup_bodies()
+void FixRigidLSDEM::setup_bodies()
 {
   // This will have to read in level set properties in a style similar to data file
   // First read the cooridnates
@@ -1468,7 +1468,7 @@ void FixRigidLsdem::setup_bodies()
    where line number ilinels = iny + inz * Ny. iny =[0, Ny-1], inz = [0, Nz-1]
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::readfile(int which, double **array)
+void FixRigidLSDEM::readfile(int which, double **array)
 {
   int nchunk,eofflag,nlines,xbox,ybox,zbox;
   int nlinesls,nx,ny,nz; // In the future if we can read many lines locally: nchunkls,eofflagls
@@ -1653,7 +1653,7 @@ void FixRigidLsdem::readfile(int which, double **array)
    each proc contributes info for rigid bodies it owns
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::write_restart_file(const char *file)
+void FixRigidLSDEM::write_restart_file(const char *file)
 {
   FILE *fp;
 
@@ -1770,7 +1770,7 @@ void FixRigidLsdem::write_restart_file(const char *file)
    allocate local atom-based arrays
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::grow_arrays(int nmax)
+void FixRigidLSDEM::grow_arrays(int nmax)
 {
   memory->grow(bodyown,nmax,"rigid/small:bodyown");
   memory->grow(bodytag,nmax,"rigid/small:bodytag");
@@ -1793,7 +1793,7 @@ void FixRigidLsdem::grow_arrays(int nmax)
    copy values within local atom-based arrays
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::copy_arrays(int i, int j, int delflag)
+void FixRigidLSDEM::copy_arrays(int i, int j, int delflag)
 {
   bodytag[j] = bodytag[i];
   xcmimage[j] = xcmimage[i];
@@ -1827,7 +1827,7 @@ void FixRigidLsdem::copy_arrays(int i, int j, int delflag)
    initialize one atom's array values, called when atom is created
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::set_arrays(int i)
+void FixRigidLSDEM::set_arrays(int i)
 {
   bodyown[i] = -1;
   bodytag[i] = 0;
@@ -1849,7 +1849,7 @@ void FixRigidLsdem::set_arrays(int i)
    pack values in local atom-based arrays for exchange with another proc
 ------------------------------------------------------------------------- */
 
-int FixRigidLsdem::pack_exchange(int i, double *buf)
+int FixRigidLSDEM::pack_exchange(int i, double *buf)
 {
   buf[0] = ubuf(bodytag[i]).d;
   buf[1] = ubuf(xcmimage[i]).d;
@@ -1890,7 +1890,7 @@ int FixRigidLsdem::pack_exchange(int i, double *buf)
    unpack values in local atom-based arrays from exchange with another proc
 ------------------------------------------------------------------------- */
 
-int FixRigidLsdem::unpack_exchange(int nlocal, double *buf)
+int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
 {
   bodytag[nlocal] = (tagint) ubuf(buf[0]).i;
   xcmimage[nlocal] = (imageint) ubuf(buf[1]).i;
@@ -1938,7 +1938,7 @@ int FixRigidLsdem::unpack_exchange(int nlocal, double *buf)
    for FULL_BODY, send 0/1 flag with every atom
 ------------------------------------------------------------------------- */
 
-int FixRigidLsdem::pack_forward_comm(int n, int *list, double *buf,
+int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf,
                                      int /*pbc_flag*/, int * /*pbc*/)
 {
   int i,j;
@@ -2030,7 +2030,7 @@ int FixRigidLsdem::pack_forward_comm(int n, int *list, double *buf,
    for other commflag values, only unpack body info if atom owns it
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::unpack_forward_comm(int n, int first, double *buf)
+void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   int i,j,last;
   double *xcm,*xgc,*vcm,*quat,*omega,*ex_space,*ey_space,*ez_space,*conjqm;
@@ -2121,7 +2121,7 @@ void FixRigidLsdem::unpack_forward_comm(int n, int first, double *buf)
    only pack body info if atom owns it
 ------------------------------------------------------------------------- */
 
-int FixRigidLsdem::pack_reverse_comm(int n, int first, double *buf)
+int FixRigidLSDEM::pack_reverse_comm(int n, int first, double *buf)
 {
   int i,j,m,last;
   double *fcm,*torque,*vcm,*angmom,*xcm, *xgc;
@@ -2199,7 +2199,7 @@ int FixRigidLsdem::pack_reverse_comm(int n, int first, double *buf)
    only unpack body info if own or ghost atom owns the body
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::unpack_reverse_comm(int n, int *list, double *buf)
+void FixRigidLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
 {
   int i,j,k;
   double *fcm,*torque,*vcm,*angmom,*xcm, *xgc;
@@ -2279,7 +2279,7 @@ void FixRigidLsdem::unpack_reverse_comm(int n, int *list, double *buf)
    grow body data structure
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::grow_body()
+void FixRigidLSDEM::grow_body()
 {
   nmax_body += DELTA_BODY;
   body = (Body *) memory->srealloc(body,nmax_body*sizeof(Body),
@@ -2292,7 +2292,7 @@ void FixRigidLsdem::grow_body()
    atom2body values can point to original body or any image of the body
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::reset_atom2body()
+void FixRigidLSDEM::reset_atom2body()
 {
   int iowner;
 
@@ -2315,7 +2315,7 @@ void FixRigidLsdem::reset_atom2body()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLsdem::reset_dt()
+void FixRigidLSDEM::reset_dt()
 {
   dtv = update->dt;
   dtf = 0.5 * update->dt * force->ftm2v;
@@ -2327,7 +2327,7 @@ void FixRigidLsdem::reset_dt()
    set Vcm to 0.0, then reset velocities of particles via set_v()
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::zero_momentum()
+void FixRigidLSDEM::zero_momentum()
 {
   double *vcm;
   for (int ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
@@ -2351,7 +2351,7 @@ void FixRigidLsdem::zero_momentum()
    set angmom/omega to 0.0, then reset velocities of particles via set_v()
 ------------------------------------------------------------------------- */
 
-void FixRigidLsdem::zero_rotation()
+void FixRigidLSDEM::zero_rotation()
 {
   double *angmom,*omega;
   for (int ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
@@ -2374,7 +2374,7 @@ void FixRigidLsdem::zero_rotation()
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidLsdem::modify_param(int narg, char **arg)
+int FixRigidLSDEM::modify_param(int narg, char **arg)
 {
   if (strcmp(arg[0],"bodyforces") == 0) {
     if (narg < 2) error->all(FLERR,"Illegal fix_modify command");
@@ -2400,7 +2400,7 @@ int FixRigidLsdem::modify_param(int narg, char **arg)
 
 /* ---------------------------------------------------------------------- */
 
-void *FixRigidLsdem::extract(const char *str, int &dim)
+void *FixRigidLSDEM::extract(const char *str, int &dim)
 {
   dim = 0;
 
@@ -2444,7 +2444,7 @@ void *FixRigidLsdem::extract(const char *str, int &dim)
    sum local body results across procs
 ------------------------------------------------------------------------- */
 
-double FixRigidLsdem::extract_ke()
+double FixRigidLSDEM::extract_ke()
 {
   double *vcm;
 
@@ -2465,7 +2465,7 @@ double FixRigidLsdem::extract_ke()
    Erotational = 1/2 I wbody^2
 ------------------------------------------------------------------------- */
 
-double FixRigidLsdem::extract_erotational()
+double FixRigidLSDEM::extract_erotational()
 {
   double wbody[3],rot[3][3];
   double *inertia;
@@ -2501,7 +2501,7 @@ double FixRigidLsdem::extract_erotational()
    non-active DOF are removed by fflag/tflag and in tfactor
 ------------------------------------------------------------------------- */
 
-double FixRigidLsdem::compute_scalar()
+double FixRigidLSDEM::compute_scalar()
 {
   double wbody[3],rot[3][3];
 
@@ -2542,7 +2542,7 @@ double FixRigidLsdem::compute_scalar()
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
-double FixRigidLsdem::memory_usage()
+double FixRigidLSDEM::memory_usage()
 {
   int nmax = atom->nmax;
   double bytes = (double)nmax*2 * sizeof(int);
@@ -2558,7 +2558,7 @@ double FixRigidLsdem::memory_usage()
 ------------------------------------------------------------------------- */
 
 /*
-void FixRigidLsdem::check(int flag)
+void FixRigidLSDEM::check(int flag)
 {
   for (int i = 0; i < atom->nlocal; i++) {
     if (bodyown[i] >= 0) {

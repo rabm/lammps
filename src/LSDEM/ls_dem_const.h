@@ -12,11 +12,11 @@
 ------------------------------------------------------------------------- */
 // clang-format off
 
-#ifndef LMP_LSDEM_CONST_H
-#define LMP_LSDEM_CONST_H
+#ifndef LMP_LS_DEM_CONST_H
+#define LMP_LS_DEM_CONST_H
 
 namespace LAMMPS_NS {
-  namespace LsdemConst {
+  namespace LSDEMConst {
 
     enum{SINGLE, MOLECULE, GROUP};
     enum{NONE, XYZ, XY, YZ, XZ};

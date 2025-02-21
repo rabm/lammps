@@ -13,23 +13,23 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(rigid/lsdem,FixRigidLsdem);
+FixStyle(rigid/ls/dem,FixRigidLSDEM);
 // clang-format on
 #else
 
-#ifndef LMP_FIX_RIGID_LSDEM_H
-#define LMP_FIX_RIGID_LSDEM_H
+#ifndef LMP_FIX_RIGID_LS_DEM_H
+#define LMP_FIX_RIGID_LS_DEM_H
 
 #include "fix.h"
 
 namespace LAMMPS_NS {
 
-class FixRigidLsdem : public Fix {
+class FixRigidLSDEM : public Fix {
   friend class ComputeRigidLocal;
 
  public:
-  FixRigidLsdem(class LAMMPS *, int, char **);
-  ~FixRigidLsdem() override;
+  FixRigidLSDEM(class LAMMPS *, int, char **);
+  ~FixRigidLSDEM() override;
   int setmask() override;
   void init() override;
   void setup(int) override;

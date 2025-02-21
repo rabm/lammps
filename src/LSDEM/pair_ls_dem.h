@@ -13,12 +13,12 @@
 
 #ifdef PAIR_CLASS
 // clang-format off
-PairStyle(lsdem,PairLSDEM);
+PairStyle(ls/dem,PairLSDEM);
 // clang-format on
 #else
 
-#ifndef LMP_PAIR_LSDEM_H
-#define LMP_PAIR_LSDEM_H
+#ifndef LMP_PAIR_LS_DEM_H
+#define LMP_PAIR_LS_DEM_H
 
 #include "pair.h"
 
