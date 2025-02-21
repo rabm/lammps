@@ -39,6 +39,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma
 {
   writedata = 1;
   id_fix = nullptr;
+  single_enable = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -512,43 +513,6 @@ void PairLSDEM::write_data_all(FILE *fp)
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
       fprintf(fp, "%d %d %g %g %g\n", i, j, k[i][j], cut[i][j], gamma[i][j]);
-}
-
-/* ---------------------------------------------------------------------- */
-
-double PairLSDEM::single(int i, int j, int itype, int jtype, double rsq, double /*factor_coul*/,
-                             double factor_lj, double &fforce)
-{
-  double fpair, r, rinv, dr;
-  double delx, dely, delz, delvx, delvy, delvz, dot, smooth;
-
-  if (rsq > cutsq[itype][jtype]) return 0.0;
-
-  double **x = atom->x;
-  double **v = atom->v;
-
-  r = sqrt(rsq);
-  rinv = 1.0 / r;
-
-  dr = r - cut[itype][jtype];
-  fpair = -k[itype][jtype] * dr;
-
-  smooth = rsq / cutsq[itype][jtype];
-  smooth *= smooth;
-  smooth = 1.0 - smooth;
-  delx = x[i][0] - x[j][0];
-  dely = x[i][1] - x[j][1];
-  delz = x[i][2] - x[j][2];
-  delvx = v[i][0] - v[j][0];
-  delvy = v[i][1] - v[j][1];
-  delvz = v[i][2] - v[j][2];
-  dot = delx * delvx + dely * delvy + delz * delvz;
-  fpair -= gamma[itype][jtype] * dot * rinv * smooth;
-
-  fpair *= factor_lj;
-  fforce = fpair;
-
-  return 0.0;
 }
 
 /* ----------------------------------------------------------------------
