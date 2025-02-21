@@ -64,7 +64,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int i, j, ii, jj, key, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
   double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
-  double r, rsq, rinv, factor_lj, ls_value;
+  double r, rsq, rinv, factor_lj, u;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque[3];
@@ -84,6 +84,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
   double *special_lj = force->special_lj;
+  
+  double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
 
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
@@ -203,48 +205,53 @@ void PairLSDEM::compute(int eflag, int vflag)
       delz = ztmp - x[j][2];
       jtype = type[j];
 
+
+
+      // Evaluate the level set, and assign the interaction direction based on 
+      // node-grain combination. Force magnitude and direction go i -> j by definition.
+      if (calc_force_of_i_on_j) {
+        // The ls_value is negative and the normal points away from j. Correct the signs.
+        u = -get_ls_value(i, j, normal);
+        normal[0] = -normal[0];
+        normal[1] = -normal[1];
+        normal[2] = -normal[2];
+      }
+      if (calc_force_of_j_on_i) {
+        // The ls_value is negative and the normal points towards j. Correct only ls_value.
+        u = -get_ls_value(j, i, normal);
+      }
+
       // Dummy value for elastic stiffness while we don't have a contact law
       double k_n = 0.0
 
-      // Evaluate and assign interaction direction based on node-grain combination.
-      if (calc_force_of_i_on_j) {
-        // The ls_value is negative and the normal points away from j.
-        ls_value = get_ls_value(i, j, normal);
-        // With penetration distance d and normal n (i->j),
-        // we have: F_{j->i} = f(ls_value) = - k_n * d * n.
-        // The minus sign of ls_value and normal cancel each other.
-        // Force magnitude and direction i -> j
-        fpair_mag = - k_n * ls_value;
-      }
-      if (calc_force_of_j_on_i) {
-        ls_value = get_ls_value(j, i, normal);
-        // Force magnitude and direction i -> j
-        fpair_mag = k_n * ls_value;
-      }
-
       // Forces and torques
       if ( calc_force_of_i_on_j || calc_force_of_i_on_j) {
+
+        // With penetration distance u and normal n (i->j),
+        // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
+        fpair_mag = - k_n * u;
+
         // The pair force vector
         fpair[0] = fpair_mag * normal[0];
         fpair[1] = fpair_mag * normal[1];
         fpair[2] = fpair_mag * normal[2];
+
+        // Contact point
+        contact_point[0] = xtmp - 0.5 * ls_value * normal[0];
+        contact_point[1] = ytmp - 0.5 * ls_value * normal[1];
+        contact_point[2] = ztmp - 0.5 * ls_value * normal[2];
 
         // Force on grain i
         f[i][0] += fpair[0];
         f[i][1] += fpair[1];
         f[i][2] += fpair[2];
 
-        // Contact point
-        contact_point[0] = xtmp - 0.5 * ls_value * normal[0]
-        contact_point[1] = ytmp - 0.5 * ls_value * normal[1]
-        contact_point[2] = ztmp - 0.5 * ls_value * normal[2]
-
         // Lever arm on grain i
-        double **grain_com = atom->darray[index_ls_dem_com];
-        lever[0] = contact_point[0] - grain_com[i][0]
-        lever[1] = contact_point[1] - grain_com[i][1]
-        lever[2] = contact_point[2] - grain_com[i][2]
-        MathExtra::cross3(lever,fpair,torque)
+        lever[0] = contact_point[0] - grain_com[i][0];
+        lever[1] = contact_point[1] - grain_com[i][1];
+        lever[2] = contact_point[2] - grain_com[i][2];
+        // Compute torque
+        MathExtra::cross3(lever,fpair,torque);
 
         // Apply torques on grain i
         t[i][0] += torque[0]
@@ -255,13 +262,13 @@ void PairLSDEM::compute(int eflag, int vflag)
         f[j][0] -= fpair[0];
         f[j][1] -= fpair[1];
         f[j][2] -= fpair[2];
-        lever[0] = contact_point[0] - grain_com[j][0]
-        lever[1] = contact_point[1] - grain_com[j][1]
-        lever[2] = contact_point[2] - grain_com[j][2]
-        MathExtra::cross3(lever,-fpair,torque)
-        t[j][0] += torque[0]
-        t[j][1] += torque[1]
-        t[j][2] += torque[2]
+        lever[0] = contact_point[0] - grain_com[j][0];
+        lever[1] = contact_point[1] - grain_com[j][1];
+        lever[2] = contact_point[2] - grain_com[j][2];
+        MathExtra::cross3(lever,-fpair,torque);
+        t[j][0] += torque[0];
+        t[j][1] += torque[1];
+        t[j][2] += torque[2];
       }
 
       // virial contribution TBD
