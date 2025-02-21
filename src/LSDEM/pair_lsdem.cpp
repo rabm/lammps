@@ -63,11 +63,11 @@ void PairLSDEM::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, key, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
-  double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl, fpair;
+  double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, ls_value;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
-  double normal[3];
+  double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque[3];
 
   evdwl = 0.0;
   if (eflag || vflag)
@@ -78,6 +78,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **x = atom->x;
   double **v = atom->v;
   double **f = atom->f;
+  double **t = atom->t; // DOES THIS GET THE TORQUES?
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -88,7 +89,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   auto fixlist = modify->get_fix_by_style("rigid");
   if (fixlist.size() != 1)
-    error->all(FLERR, "Must have one instance of fix rigid for pair lsdem");
+    error->all(FLERR, "Must have one instance of fix rigid for pair LS-DEM.");
   auto fixrigid = dynamic_cast<FixRigid *>(fixlist.front());
   int *body = fixrigid->get_body_array();
   int nbody = fixrigid->get_nbody();
@@ -98,9 +99,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
-  // loop to find closest neighbors
-
-  for (ii = 0; ii < inum; ii++) {
+  // Loop to find closest neighbors
+  for (ii = 0; ii < inum; ii++) { // Loop through nodes?
     i = ilist[ii];
     xtmp = x[i][0];
     ytmp = x[i][1];
@@ -110,7 +110,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     jlist = firstneigh[i];
     jnum = numneigh[i];
 
-    for (jj = 0; jj < jnum; jj++) {
+    for (jj = 0; jj < jnum; jj++) { // Loop through neighbouring nodes?
       j = jlist[jj];
       factor_lj = special_lj[sbmask(j)];
 
@@ -121,29 +121,31 @@ void PairLSDEM::compute(int eflag, int vflag)
       jbody = body[j];
       jtag = tag[j];
 
+      // Separation distance between the two nodes
       delx = xtmp - x[j][0];
       dely = ytmp - x[j][1];
       delz = ztmp - x[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
       r = sqrt(rsq);
 
+
       key = nbody * itag + ibody;
-      // If first interation between atom i and j's grain, create entry
+      // If first interation between node i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(jtag, r);
       } else {
-        // overwrite if ij are closer
+        // Overwrite if i and j are closer
         if (r < min_distances[key].second)
           min_distances[key] = std::make_pair(jtag, r);
       }
 
-      // do the same for atom j
+      // Do the same for node j
       if (newton_pair || j < nlocal) {
         key = nbody * jtag + jbody;
         if (min_distances.find(key) == min_distances.end()) {
           min_distances[key] = std::make_pair(itag, r);
         } else {
-          // overwrite if ij are closer
+          // Overwrite if i and j are closer
           if (r < min_distances[key].second)
             min_distances[key] = std::make_pair(itag, r);
         }
@@ -203,35 +205,73 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // calculate other joint properties...
 
+      // Force of node i penetrating grain j
       if (calc_force_of_i_on_j) {
+        // The ls_value is negative and the normal points away from j.
         ls_value = get_ls_value(i, j, normal);
+        // With penetration distance d and normal n (i->j),
+        // we have: F_{j->i} = f(ls_value) = - k_n * d * n.
+        // The minus sign of ls_value and normal cancel each other.
+        double k_n = 0.0
+        // Force magnitude and direction i -> j
+        fpair_mag = - k_n * ls_value;
+        fpair[0] = fpair_mag * normal[0];
+        fpair[1] = fpair_mag * normal[1];
+        fpair[2] = fpair_mag * normal[2];
+
+        // Force on grain i
+        f[i][0] += fpair[0];
+        f[i][1] += fpair[1];
+        f[i][2] += fpair[2];
+
+        // Contact point
+        contact_point[0] = xtmp - 0.5 * ls_value * normal[0]
+        contact_point[1] = ytmp - 0.5 * ls_value * normal[1]
+        contact_point[2] = ztmp - 0.5 * ls_value * normal[2]
+
+        // Lever arm on grain i
+        double **grain_com = atom->darray[index_ls_dem_com];
+        lever[0] = contact_point[0] - grain_com[i][0]
+        lever[1] = contact_point[1] - grain_com[i][1]
+        lever[2] = contact_point[0] - grain_com[i][2]
+        MathExtra::cross3(lever,fpair,torque)
+
+        // Apply torques on grain i
+        t[i][0] += torque[0]
+        t[i][1] += torque[1]
+        t[i][2] += torque[2]
+
+        // Mirror forces and torques on grain j
+        f[j][0] -= fpair[0];
+        f[j][1] -= fpair[1];
+        f[j][2] -= fpair[2];
+        lever[0] = contact_point[0] - grain_com[j][0]
+        lever[1] = contact_point[1] - grain_com[j][1]
+        lever[2] = contact_point[0] - grain_com[j][2]
+        MathExtra::cross3(lever,-fpair,torque)
+        t[j][0] += torque[0]
+        t[j][1] += torque[1]
+        t[j][2] += torque[2]
+      }
+
+      // We typically mirror the forces, not calculating for both,
+      // since this doubles the computational cost. Only the nodes
+      // of the smallest grain should be considered.
+
+      // Can we somehow make sure that we always make sure we have i->j? Flip definitions?
+
+      if (calc_force_of_j_on_i) {
+        ls_value = get_ls_value(j, i, normal);
         // calculate force...
         // penetration distance; d = -ls_value
         // contact normal; n = -ls_normal
         // F = f(ls_value) = - k_n * d * n
         double k_n = 0.0
         fpair = - k_n * (-ls_value);
-        f[i][0] += delx * fpair; // fpair * n[0]
-        f[i][1] += dely * fpair;
-        f[i][2] += delz * fpair;
-      }
-
-      // We typically mirror the forces, not calculating for both,
-      // since this doubles the computational cost. Only the nodes
-      // of the smallest grain should be considered
-      if (calc_force_of_i_on_j) {
-        ls_value = get_ls_value(j, i, normal);
-        // calculate force...
-        fpair = 0.0;
         f[j][0] += normal[0] * fpair;
         f[j][1] += normal[1] * fpair;
         f[j][2] += normal[2] * fpair;
       }
-
-      // Need to add torques too!
-      // contact_point = x[i] - ls_value * ls_normal
-      // grain_torque[i] += ( contact_point - grain_com[i] )  xCROSS_PRODUCTx force[i]
-      // grain_torque[j] += -( contact_point - grain_com[i] )  xCROSS_PRODUCTx force[i]
 
       // virial contribution TBD
       // if (evflag) ev_tally(i, j, nlocal, newton_pair, evdwl, 0.0, fpair, delx, dely, delz);
@@ -507,8 +547,7 @@ double PairLSDEM::single(int i, int j, int itype, int jtype, double rsq, double 
 }
 
 /* ----------------------------------------------------------------------
-   Find the value of node (atom) i in j's LS grid, (dx, dy, dz) = xi - xj,
-   where xi and xj are the centre coordinates of i and j, respectively.
+   Find the value of node (atom) i in j's LS grid.
 ------------------------------------------------------------------------- */
 
 double PairLSDEM::get_ls_value(int i, int j, double *normal)
@@ -651,6 +690,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 		}
 	}
 
+  // Assign normal
   normal[0] = nx;
   normal[1] = ny;
   normal[2] = nz;
