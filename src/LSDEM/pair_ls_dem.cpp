@@ -32,6 +32,7 @@
 static constexpr double EPSILON = 1e-10;
 
 using namespace LAMMPS_NS;
+using namespace MathConst;
 
 /* ---------------------------------------------------------------------- */
 
@@ -92,7 +93,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double *special_lj = force->special_lj;
 
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
-  double *grain_vol = atom->varray[index_ls_dem_vol];
+  double *grain_vol = atom->dvector[index_ls_dem_vol];
 
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
@@ -210,7 +211,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Neither is closest
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 1)
-        error->warn(FLERR, "Should this happen? If not, simplify");
+        error->warning(FLERR, "Should this happen? If not, simplify");
 
       jtype = type[j];
 
@@ -229,7 +230,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Dummy value for elastic stiffness while we don't have a contact law
-      double k_n = 0.0
+      double k_n = 0.0;
 
       // Forces and torques
       if (calc_force_of_i_on_j || calc_force_of_i_on_j) {
@@ -261,18 +262,19 @@ void PairLSDEM::compute(int eflag, int vflag)
         MathExtra::cross3(lever,fpair,torque_pair);
 
         // Apply torques on grain i
-        torque[i][0] += torque_pair[0]
-        torque[i][1] += torque_pair[1]
-        torque[i][2] += torque_pair[2]
+        torque[i][0] += torque_pair[0];
+        torque[i][1] += torque_pair[1];
+        torque[i][2] += torque_pair[2];
 
         // Mirror forces and torques on grain j
-        f[j][0] -= fpair[0];
-        f[j][1] -= fpair[1];
-        f[j][2] -= fpair[2];
+        MathExtra::negate3(fpair);
+        f[j][0] += fpair[0];
+        f[j][1] += fpair[1];
+        f[j][2] += fpair[2];
         lever[0] = contact_point[0] - grain_com[j][0];
         lever[1] = contact_point[1] - grain_com[j][1];
         lever[2] = contact_point[2] - grain_com[j][2];
-        MathExtra::cross3(lever,-fpair,torque_pair);
+        MathExtra::cross3(lever,fpair,torque_pair);
         torque[j][0] += torque_pair[0];
         torque[j][1] += torque_pair[1];
         torque[j][2] += torque_pair[2];
@@ -346,7 +348,7 @@ void PairLSDEM::settings(int narg, char ** arg)
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 
   double **ls_dem_grid = atom->darray[index_ls_dem_grid];
-  double *ls_dem_vol = atom->varray[index_ls_dem_vol];
+  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
 
   double delx, dely;
   for (int i = 0; i < atom->nlocal; i++) {
