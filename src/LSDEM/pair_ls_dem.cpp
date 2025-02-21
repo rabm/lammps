@@ -109,7 +109,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   firstneigh = list->firstneigh;
 
   // Loop to find closest neighbors
-  for (ii = 0; ii < inum; ii++) { // Loop through nodes?
+  for (ii = 0; ii < inum; ii++) {
+    // Loop through local nodes
     i = ilist[ii];
     xtmp = x[i][0];
     ytmp = x[i][1];
@@ -119,7 +120,8 @@ void PairLSDEM::compute(int eflag, int vflag)
     jlist = firstneigh[i];
     jnum = numneigh[i];
 
-    for (jj = 0; jj < jnum; jj++) { // Loop through neighbouring nodes?
+    for (jj = 0; jj < jnum; jj++) {
+      // Loop through neighbouring nodes
       j = jlist[jj];
       factor_lj = special_lj[sbmask(j)];
 
@@ -141,7 +143,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // are used in combination with the level set of grain j.
       // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
 
-      key = nbody * itag + ibody;
+      key = nbody * itag + jbody;
       // If first interation between node i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(jtag, r);
@@ -152,15 +154,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Do the same for node j
-      if (j < nlocal) {
-        key = nbody * jtag + jbody;
-        if (min_distances.find(key) == min_distances.end()) {
+      key = nbody * jtag + ibody;
+      if (min_distances.find(key) == min_distances.end()) {
+        min_distances[key] = std::make_pair(itag, r);
+      } else {
+        // Overwrite if i and j are closer
+        if (r < min_distances[key].second)
           min_distances[key] = std::make_pair(itag, r);
-        } else {
-          // Overwrite if i and j are closer
-          if (r < min_distances[key].second)
-            min_distances[key] = std::make_pair(itag, r);
-        }
       }
     }
   }
@@ -195,20 +195,22 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // if node j is closest on its grain to i
       calc_force_of_j_on_i = 0;
-      key = nbody * jtag + jbody;
+      key = nbody * jtag + ibody;
       if (min_distances.find(key) != min_distances.end())
         calc_force_of_j_on_i = 1;
 
       // if node i is closest on its grain to j & j is owned
       calc_force_of_i_on_j = 0;
       if (j < nlocal) {
-        key = nbody * itag + ibody;
+        key = nbody * itag + jbody;
         if (min_distances.find(key) != min_distances.end())
           calc_force_of_i_on_j = 1;
       }
 
       // Neither is closest
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
+      if (calc_force_of_i_on_j + calc_force_of_j_on_i == 1)
+        error->warn(FLERR, "Should this happen? If not, simplify");
 
       jtype = type[j];
 
@@ -475,23 +477,6 @@ void PairLSDEM::read_restart(FILE *fp)
         MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
     }
-}
-
-
-/* ----------------------------------------------------------------------
-   proc 0 writes to restart file
-------------------------------------------------------------------------- */
-
-void PairLSDEM::write_restart_settings(FILE *fp)
-{
-}
-
-/* ----------------------------------------------------------------------
-   proc 0 reads from restart file, bcasts
-------------------------------------------------------------------------- */
-
-void PairLSDEM::read_restart_settings(FILE *fp)
-{
 }
 
 /* ----------------------------------------------------------------------
