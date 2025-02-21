@@ -67,7 +67,10 @@ void PairLSDEM::compute(int eflag, int vflag)
   double r, rsq, rinv, factor_lj, u;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
-  double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque[3];
+  double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
+
+  // Newton must be off.
+  // Internal interactions between atoms in rigid must be off.
 
   evdwl = 0.0;
   if (eflag || vflag)
@@ -78,7 +81,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **x = atom->x;
   double **v = atom->v;
   double **f = atom->f;
-  double **t = atom->t; // DOES THIS GET THE TORQUES?
+  double **torque = atom->torque;
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -130,6 +133,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       rsq = delx * delx + dely * dely + delz * delz;
       r = sqrt(rsq);
 
+      // Need an additional check such that only nodes of the smallest grain i
+      // are used in combination with the level set of grain j.
 
       key = nbody * itag + ibody;
       // If first interation between node i and j's grain, create entry
@@ -183,6 +188,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       jbody = body[j];
       jtag = tag[j];
 
+      // These keys need to be checked.
+
       // if node j is closest on its grain to i
       calc_force_of_j_on_i = 0;
       key = nbody * jtag + jbody;
@@ -198,14 +205,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Neither is closest
-      if (calc_force_of_i_on_j + calc_force_of_j_on_i == 1) continue;
+      if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
 
-      delx = xtmp - x[j][0];
-      dely = ytmp - x[j][1];
-      delz = ztmp - x[j][2];
       jtype = type[j];
-
-
 
       // Evaluate the level set, and assign the interaction direction based on 
       // node-grain combination. Force magnitude and direction go i -> j by definition.
@@ -225,7 +227,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       double k_n = 0.0
 
       // Forces and torques
-      if ( calc_force_of_i_on_j || calc_force_of_i_on_j) {
+      if (calc_force_of_i_on_j || calc_force_of_i_on_j) {
 
         // With penetration distance u and normal n (i->j),
         // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
@@ -251,12 +253,12 @@ void PairLSDEM::compute(int eflag, int vflag)
         lever[1] = contact_point[1] - grain_com[i][1];
         lever[2] = contact_point[2] - grain_com[i][2];
         // Compute torque
-        MathExtra::cross3(lever,fpair,torque);
+        MathExtra::cross3(lever,fpair,torque_pair);
 
         // Apply torques on grain i
-        t[i][0] += torque[0]
-        t[i][1] += torque[1]
-        t[i][2] += torque[2]
+        torque[i][0] += torque_pair[0]
+        torque[i][1] += torque_pair[1]
+        torque[i][2] += torque_pair[2]
 
         // Mirror forces and torques on grain j
         f[j][0] -= fpair[0];
@@ -265,10 +267,10 @@ void PairLSDEM::compute(int eflag, int vflag)
         lever[0] = contact_point[0] - grain_com[j][0];
         lever[1] = contact_point[1] - grain_com[j][1];
         lever[2] = contact_point[2] - grain_com[j][2];
-        MathExtra::cross3(lever,-fpair,torque);
-        t[j][0] += torque[0];
-        t[j][1] += torque[1];
-        t[j][2] += torque[2];
+        MathExtra::cross3(lever,-fpair,torque_pair);
+        torque[j][0] += torque_pair[0];
+        torque[j][1] += torque_pair[1];
+        torque[j][2] += torque_pair[2];
       }
 
       // virial contribution TBD
@@ -695,6 +697,3 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 
   return dist;
 }
-
-
-
