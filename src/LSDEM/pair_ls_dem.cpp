@@ -219,14 +219,16 @@ void PairLSDEM::compute(int eflag, int vflag)
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
         // The ls_value is negative and the normal points away from j. Correct the signs.
-        u = -get_ls_value(i, j, normal);
+        u = get_ls_value(i, j, normal);
+        u *= -1;
         normal[0] = -normal[0];
         normal[1] = -normal[1];
         normal[2] = -normal[2];
       }
       if (calc_force_of_j_on_i) {
         // The ls_value is negative and the normal points towards j. Correct only ls_value.
-        u = -get_ls_value(j, i, normal);
+        u = get_ls_value(j, i, normal);
+        u *= -1;
       }
 
       // Dummy value for elastic stiffness while we don't have a contact law
@@ -245,9 +247,9 @@ void PairLSDEM::compute(int eflag, int vflag)
         fpair[2] = fpair_mag * normal[2];
 
         // Contact point
-        contact_point[0] = xtmp - 0.5 * ls_value * normal[0];
-        contact_point[1] = ytmp - 0.5 * ls_value * normal[1];
-        contact_point[2] = ztmp - 0.5 * ls_value * normal[2];
+        contact_point[0] = xtmp - 0.5 * u * normal[0];
+        contact_point[1] = ytmp - 0.5 * u * normal[1];
+        contact_point[2] = ztmp - 0.5 * u * normal[2];
 
         // Force on grain i
         f[i][0] += fpair[0];
@@ -329,6 +331,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   nrow = 21;
   ncol = 21;
+  nslice = 1;
   double l_grid = 1.0;
   double x_com = 10.5;
   double y_com = 10.5;
@@ -340,14 +343,17 @@ void PairLSDEM::settings(int narg, char ** arg)
   grid_min[2] = 0;
   spac = l_grid;
 
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} writedata no ghost yes", id_fix, ngrid));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_grid_coord writedata no ghost yes", id_fix, ngrid, 2*ngrid));
   int tmp1, tmp2;
   index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
+  index_ls_dem_grid_coord = atom->find_custom("ls_dem_grid_coord", tmp1, tmp2);
+
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 
   double **ls_dem_grid = atom->darray[index_ls_dem_grid];
+  double **ls_dem_grid_coord = atom->darray[index_ls_dem_grid_coord];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
 
   double delx, dely;
@@ -358,6 +364,8 @@ void PairLSDEM::settings(int narg, char ** arg)
         delx = a * l_grid - x_com;
         dely = b * l_grid - y_com;
         ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
+        ls_dem_grid_coord[i][2 * (b * ncol + a)] = delx;
+        ls_dem_grid_coord[i][1 + 2 * (b * ncol + a)] = dely;
 
         //printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
       }
@@ -512,6 +520,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
   double **grain_grid = atom->darray[index_ls_dem_grid];
+  double **grain_grid_coord = atom->darray[index_ls_dem_grid_coord];
 
   int nrow_offset = 0; // Offsets for local subgrid, to implement later
   int ncol_offset = 0; //   currently subgrid = grid, so offsets are zero
@@ -570,7 +579,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //        will have to normalise )
   int ind_x = int( (x_local - grid_min[0]) / spac ); // Here, int() do the same as floor() + conversion
   int ind_y = int( (y_local - grid_min[1]) / spac );
-  // int ind_z = int( (z_local - grid_min[2]) / spac );
+  int ind_z = 0; //int( (z_local - grid_min[2]) / spac );
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
   // errors later.
@@ -587,16 +596,16 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Apply offsets, there is probably a more proper way
   ind_x = ind_x - nrow_offset;
   ind_y = ind_y - ncol_offset;
-  // ind_z = ind_z - nslice_offset;
+  ind_z = ind_z - nslice_offset;
 
   //
   //  DO THE BILINEAR INTERPOLATION
   //
 
   // Coordinates of the grid lower grid point of the cell we are in
-  double x0 = grain_grid_coord[j][ind_x + ind_y * ncol][0]; // + ind_z + nslice
-  double y0 = grain_grid_coord[j][ind_x + ind_y * ncol][1];
-  //double z0 = grain_grid_coord[j][ind_x + ind_y * ncol + ind_z * nslice][2];
+  double x0 = grain_grid_coord[j][2 * (ind_x + ind_y * ncol)]; // + ind_z + nslice
+  double y0 = grain_grid_coord[j][1 + 2 * (ind_x + ind_y * ncol)];
+  double z0 = 0; //grain_grid_coord[j][ind_x + ind_y * ncol + ind_z * nslice][2];
 
   // Level-set values on the grid points
   double ls000 = grain_grid[j][ind_x   + ind_y     * ncol]; // + ind_z * nslice

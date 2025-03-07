@@ -43,10 +43,11 @@ class PairLSDEM : public Pair {
 
   char *id_fix;
   int index_ls_dem_grid;
+  int index_ls_dem_grid_coord;
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
-  int ngrid, nrow, ncol;
+  int ngrid, nrow, ncol, nslice;
   int grid_min[3];
   double spac;
 
