@@ -343,17 +343,21 @@ void PairLSDEM::settings(int narg, char ** arg)
   grid_min[2] = 0;
   spac = l_grid;
 
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_grid_coord writedata no ghost yes", id_fix, ngrid, 2*ngrid));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx d2_ls_dem_gridy d2_ls_dem_gridz writedata no ghost yes", id_fix, ngrid, ngrid, ngrid, ngrid));
   int tmp1, tmp2;
   index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
-  index_ls_dem_grid_coord = atom->find_custom("ls_dem_grid_coord", tmp1, tmp2);
+  index_ls_dem_gridx = atom->find_custom("ls_dem_gridx", tmp1, tmp2);
+  index_ls_dem_gridy = atom->find_custom("ls_dem_gridy", tmp1, tmp2);
+  index_ls_dem_gridz = atom->find_custom("ls_dem_gridz", tmp1, tmp2);
 
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 
   double **ls_dem_grid = atom->darray[index_ls_dem_grid];
-  double **ls_dem_grid_coord = atom->darray[index_ls_dem_grid_coord];
+  double **ls_dem_gridx = atom->darray[index_ls_dem_gridx];
+  double **ls_dem_gridy = atom->darray[index_ls_dem_gridy];
+  double **ls_dem_gridz = atom->darray[index_ls_dem_gridz];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
 
   double delx, dely;
@@ -364,8 +368,9 @@ void PairLSDEM::settings(int narg, char ** arg)
         delx = a * l_grid - x_com;
         dely = b * l_grid - y_com;
         ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
-        ls_dem_grid_coord[i][2 * (b * ncol + a)] = delx;
-        ls_dem_grid_coord[i][1 + 2 * (b * ncol + a)] = dely;
+        ls_dem_gridx[i][b * ncol + a] = delx;
+        ls_dem_gridy[i][b * ncol + a] = dely;
+        ls_dem_gridz[i][b * ncol + a] = 0;
 
         //printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
       }
@@ -520,7 +525,9 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
   double **grain_grid = atom->darray[index_ls_dem_grid];
-  double **grain_grid_coord = atom->darray[index_ls_dem_grid_coord];
+  double **grain_grid_x = atom->darray[index_ls_dem_gridx];
+  double **grain_grid_y = atom->darray[index_ls_dem_gridy];
+  double **grain_grid_z = atom->darray[index_ls_dem_gridz];
 
   int nrow_offset = 0; // Offsets for local subgrid, to implement later
   int ncol_offset = 0; //   currently subgrid = grid, so offsets are zero
@@ -603,9 +610,9 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //
 
   // Coordinates of the grid lower grid point of the cell we are in
-  double x0 = grain_grid_coord[j][2 * (ind_x + ind_y * ncol)]; // + ind_z + nslice
-  double y0 = grain_grid_coord[j][1 + 2 * (ind_x + ind_y * ncol)];
-  double z0 = 0; //grain_grid_coord[j][ind_x + ind_y * ncol + ind_z * nslice][2];
+  double x0 = grain_grid_x[j][ind_x + ind_y * ncol]; // + ind_z + nslice
+  double y0 = grain_grid_y[j][ind_x + ind_y * ncol];
+  double z0 = 0; //grain_grid_z[j][ind_x + ind_y * ncol + ind_z * nslice][2];
 
   // Level-set values on the grid points
   double ls000 = grain_grid[j][ind_x   + ind_y     * ncol]; // + ind_z * nslice

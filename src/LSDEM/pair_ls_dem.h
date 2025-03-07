@@ -43,7 +43,9 @@ class PairLSDEM : public Pair {
 
   char *id_fix;
   int index_ls_dem_grid;
-  int index_ls_dem_grid_coord;
+  int index_ls_dem_gridx;
+  int index_ls_dem_gridy;
+  int index_ls_dem_gridz;
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
