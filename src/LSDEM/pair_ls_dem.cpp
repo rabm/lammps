@@ -343,7 +343,8 @@ void PairLSDEM::settings(int narg, char ** arg)
   grid_min[2] = 0;
   spac = l_grid;
 
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx d2_ls_dem_gridy d2_ls_dem_gridz writedata no ghost yes", id_fix, ngrid, ngrid, ngrid, ngrid));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
+    id_fix, ngrid, ngrid, ngrid, ngrid));
   int tmp1, tmp2;
   index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
   index_ls_dem_gridx = atom->find_custom("ls_dem_gridx", tmp1, tmp2);

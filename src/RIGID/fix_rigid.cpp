@@ -701,9 +701,9 @@ void FixRigid::post_constructor()  // TEMP LSDEM HACK
   // Store positional information of grain on all atoms
 
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_quat 4 d2_ls_dem_x 3 d_ls_dem_vol writedata no", id_fix));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_quat 4 d2_ls_dem_com 3 d_ls_dem_vol writedata no", id_fix));
   int tmp1, tmp2;
-  index_ls_dem_com = atom->find_custom("ls_dem_x", tmp1, tmp2);
+  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 }
