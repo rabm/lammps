@@ -145,13 +145,14 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
 
       key = nbody * itag + jbody;
-      // If first interation between node i and j's grain, create entry
+      // If first interation between i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(jtag, r);
       } else {
         // Overwrite if i and j are closer
-        if (r < min_distances[key].second)
+        if (r < min_distances[key].second) {
           min_distances[key] = std::make_pair(jtag, r);
+        }
       }
 
       // Do the same for node j
@@ -160,8 +161,9 @@ void PairLSDEM::compute(int eflag, int vflag)
         min_distances[key] = std::make_pair(itag, r);
       } else {
         // Overwrite if i and j are closer
-        if (r < min_distances[key].second)
+        if (r < min_distances[key].second) {
           min_distances[key] = std::make_pair(itag, r);
+        }
       }
     }
   }
@@ -196,22 +198,22 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // if node j is closest on its grain to i
       calc_force_of_j_on_i = 0;
-      key = nbody * jtag + ibody;
+      key = nbody * itag + jbody;
       if (min_distances.find(key) != min_distances.end())
-        calc_force_of_j_on_i = 1;
+        if (jtag == min_distances[key].first)
+          calc_force_of_j_on_i = 1;
 
       // if node i is closest on its grain to j & j is owned
       calc_force_of_i_on_j = 0;
       if (j < nlocal) {
-        key = nbody * itag + jbody;
+        key = nbody * jtag + ibody;
         if (min_distances.find(key) != min_distances.end())
-          calc_force_of_i_on_j = 1;
+          if (itag == min_distances[key].first)
+            calc_force_of_i_on_j = 1;
       }
 
       // Neither is closest
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
-      if (calc_force_of_i_on_j + calc_force_of_j_on_i == 1)
-        error->warning(FLERR, "Should this happen? If not, simplify");
 
       jtype = type[j];
 
@@ -231,15 +233,12 @@ void PairLSDEM::compute(int eflag, int vflag)
         u *= -1;
       }
 
-      // Dummy value for elastic stiffness while we don't have a contact law
-      double k_n = 0.0;
-
       // Forces and torques
       if (calc_force_of_i_on_j || calc_force_of_i_on_j) {
 
         // With penetration distance u and normal n (i->j),
         // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-        fpair_mag = - k_n * u;
+        fpair_mag = - k[itype][jtype] * u;
 
         // The pair force vector
         fpair[0] = fpair_mag * normal[0];
@@ -329,18 +328,15 @@ void PairLSDEM::settings(int narg, char ** arg)
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
 
-  nrow = 21;
-  ncol = 21;
+  nrow = 11;
+  ncol = 11;
   nslice = 1;
   double l_grid = 1.0;
-  double x_com = 10.5;
-  double y_com = 10.5;
-  double r = 10.0;
+  double x_com = 5.5;
+  double y_com = 5.5;
+  double r = 5.0;
 
   ngrid = nrow * ncol;
-  grid_min[0] = 0;  // Later convert to peratom values
-  grid_min[1] = 0;
-  grid_min[2] = 0;
   spac = l_grid;
 
   modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
@@ -374,6 +370,11 @@ void PairLSDEM::settings(int narg, char ** arg)
         ls_dem_gridz[i][b * ncol + a] = 0;
 
         //printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
+        if (a == 0 && b == 0) {
+          grid_min[0] = delx;  // Later convert to peratom values
+          grid_min[1] = dely;
+          grid_min[2] = 0;
+        }
       }
       //printf("\n");
     }
@@ -585,7 +586,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
   //        will have to normalise )
-  int ind_x = int( (x_local - grid_min[0]) / spac ); // Here, int() do the same as floor() + conversion
+  int ind_x = int( (x_local - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
   int ind_y = int( (y_local - grid_min[1]) / spac );
   int ind_z = 0; //int( (z_local - grid_min[2]) / spac );
 
@@ -596,7 +597,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   if ( (ind_x < 0) || (ind_y < 0) ) { // || (indz < 0)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node is outside of LS grid");
-  } else if ( (ind_x > nrow-1) || (ind_y > ncol-1)  ) {  // || (ind_z > nslice-1)
+  } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1)  ) {  // || (ind_z > nslice-1)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node is outside of LS grid");
   }

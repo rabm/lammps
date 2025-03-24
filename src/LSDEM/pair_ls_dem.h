@@ -50,7 +50,7 @@ class PairLSDEM : public Pair {
   int index_ls_dem_quat;
   int index_ls_dem_vol;
   int ngrid, nrow, ncol, nslice;
-  int grid_min[3];
+  double grid_min[3];
   double spac;
 
   void allocate();
