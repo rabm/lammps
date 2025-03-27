@@ -67,7 +67,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int i, j, ii, jj, key, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
   double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
-  double r, rsq, rinv, factor_lj, u;
+  double r, rsq, rinv, factor_lj, u, ivol, jvol;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
@@ -91,6 +91,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int *type = atom->type;
   int nlocal = atom->nlocal;
   double *special_lj = force->special_lj;
+  int newton_pair = force->newton_pair;
 
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
   double *grain_vol = atom->dvector[index_ls_dem_vol];
@@ -180,6 +181,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     vztmp = v[i][2];
     itype = type[i];
     ibody = body[i];
+    ivol = grain_vol[i];
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -193,96 +195,101 @@ void PairLSDEM::compute(int eflag, int vflag)
       j &= NEIGHMASK;
       jbody = body[j];
       jtag = tag[j];
+      jvol = grain_vol[j];
+      jtype = type[j];
 
-      // These keys need to be checked.
+      // Figure out whether either force is calculated
+      //   Only calculate force of smaller grain on larger grain
+      //     in ties, go by grain ID
+      //   Only calculate force between closest set of nodes
 
-      // if node j is closest on its grain to i
       calc_force_of_j_on_i = 0;
-      key = nbody * itag + jbody;
-      if (min_distances.find(key) != min_distances.end())
-        if (jtag == min_distances[key].first)
-          calc_force_of_j_on_i = 1;
-
-      // if node i is closest on its grain to j & j is owned
       calc_force_of_i_on_j = 0;
-      if (j < nlocal) {
+
+      if (ivol < jvol || (ivol == jvol && ibody < jbody)) {
+        // if node j is closest on its grain to i
+        key = nbody * itag + jbody;
+        if (min_distances.find(key) != min_distances.end())
+          if (jtag == min_distances[key].first)
+            calc_force_of_j_on_i = 1;
+      } else {
+        // if node i is closest on its grain to j & j is owned
         key = nbody * jtag + ibody;
         if (min_distances.find(key) != min_distances.end())
           if (itag == min_distances[key].first)
             calc_force_of_i_on_j = 1;
       }
 
-      // Neither is closest
+      // If no forces are calculated
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
-
-      jtype = type[j];
 
       // Evaluate the level set, and assign the interaction direction based on
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
-        // The ls_value is negative and the normal points away from j. Correct the signs.
+        // The normal points away from j, correct signs
         u = get_ls_value(i, j, normal);
-        u *= -1;
-        normal[0] = -normal[0];
-        normal[1] = -normal[1];
-        normal[2] = -normal[2];
-      }
-      if (calc_force_of_j_on_i) {
-        // The ls_value is negative and the normal points towards j. Correct only ls_value.
+        MathExtra::negate3(normal);
+      } else {
         u = get_ls_value(j, i, normal);
-        u *= -1;
       }
 
-      // Forces and torques
-      if (calc_force_of_i_on_j || calc_force_of_i_on_j) {
+      // Apply forces and torques
 
-        // With penetration distance u and normal n (i->j),
-        // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-        fpair_mag = - k[itype][jtype] * u;
+      // no beyond contact forces
+      if (u < 0) continue;
 
-        // The pair force vector
-        fpair[0] = fpair_mag * normal[0];
-        fpair[1] = fpair_mag * normal[1];
-        fpair[2] = fpair_mag * normal[2];
+      // With penetration distance u and normal n (i->j),
+      // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
+      fpair_mag = k[itype][jtype] * u;
 
-        // Contact point
-        contact_point[0] = xtmp - 0.5 * u * normal[0];
-        contact_point[1] = ytmp - 0.5 * u * normal[1];
-        contact_point[2] = ztmp - 0.5 * u * normal[2];
+      // The pair force vector
+      fpair[0] = fpair_mag * normal[0];
+      fpair[1] = fpair_mag * normal[1];
+      fpair[2] = fpair_mag * normal[2];
 
-        // Force on grain i
-        f[i][0] += fpair[0];
-        f[i][1] += fpair[1];
-        f[i][2] += fpair[2];
+      // Contact point
+      contact_point[0] = xtmp - 0.5 * u * normal[0];
+      contact_point[1] = ytmp - 0.5 * u * normal[1];
+      contact_point[2] = ztmp - 0.5 * u * normal[2];
 
-        // Lever arm on grain i
-        lever[0] = contact_point[0] - grain_com[i][0];
-        lever[1] = contact_point[1] - grain_com[i][1];
-        lever[2] = contact_point[2] - grain_com[i][2];
-        // Compute torque
-        MathExtra::cross3(lever,fpair,torque_pair);
+      // Force on grain i
+      f[i][0] += fpair[0];
+      f[i][1] += fpair[1];
+      f[i][2] += fpair[2];
 
-        // Apply torques on grain i
-        torque[i][0] += torque_pair[0];
-        torque[i][1] += torque_pair[1];
-        torque[i][2] += torque_pair[2];
+      // Lever arm on grain i
+      lever[0] = contact_point[0] - grain_com[i][0];
+      lever[1] = contact_point[1] - grain_com[i][1];
+      lever[2] = contact_point[2] - grain_com[i][2];
 
-        // Mirror forces and torques on grain j
+      // Compute torque
+      MathExtra::cross3(lever, fpair, torque_pair);
+
+      // Apply torques on grain i
+      torque[i][0] += torque_pair[0];
+      torque[i][1] += torque_pair[1];
+      torque[i][2] += torque_pair[2];
+
+      // Mirror forces and torques on grain j
+      if (newton_pair || j < nlocal) {
         MathExtra::negate3(fpair);
         f[j][0] += fpair[0];
         f[j][1] += fpair[1];
         f[j][2] += fpair[2];
+
         lever[0] = contact_point[0] - grain_com[j][0];
         lever[1] = contact_point[1] - grain_com[j][1];
         lever[2] = contact_point[2] - grain_com[j][2];
-        MathExtra::cross3(lever,fpair,torque_pair);
+
+        MathExtra::cross3(lever, fpair, torque_pair);
+
         torque[j][0] += torque_pair[0];
         torque[j][1] += torque_pair[1];
         torque[j][2] += torque_pair[2];
       }
 
-      // virial contribution TBD
-      // if (evflag) ev_tally(i, j, nlocal, 0, evdwl, 0.0, fpair, delx, dely, delz);
+      // virial contribution: need to check
+      if (evflag) ev_tally(i, j, nlocal, 0, evdwl, 0.0, fpair_mag, normal[0], normal[1], normal[2]);
     }
   }
 
@@ -328,13 +335,13 @@ void PairLSDEM::settings(int narg, char ** arg)
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
 
-  nrow = 11;
-  ncol = 11;
+  nrow = 20;
+  ncol = 20;
   nslice = 1;
-  double l_grid = 1.0;
-  double x_com = 5.5;
-  double y_com = 5.5;
-  double r = 5.0;
+  double l_grid = 0.5;
+  double x_com = 5.25;
+  double y_com = 5.25;
+  double r = 2.5;
 
   ngrid = nrow * ncol;
   spac = l_grid;
@@ -364,19 +371,19 @@ void PairLSDEM::settings(int narg, char ** arg)
         // stored value is at lower left corner of grid
         delx = a * l_grid - x_com;
         dely = b * l_grid - y_com;
-        ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
+        ls_dem_grid[i][b * ncol + a] = r - sqrt(delx * delx + dely * dely);
         ls_dem_gridx[i][b * ncol + a] = delx;
         ls_dem_gridy[i][b * ncol + a] = dely;
         ls_dem_gridz[i][b * ncol + a] = 0;
 
-        //printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
+        //if (i == 0) printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
         if (a == 0 && b == 0) {
           grid_min[0] = delx;  // Later convert to peratom values
           grid_min[1] = dely;
           grid_min[2] = 0;
         }
       }
-      //printf("\n");
+      //if (i == 0) printf("\n");
     }
     ls_dem_vol[i] = MY_PI * pow(5.0, 2);
   }
@@ -567,15 +574,15 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double q_z = -grain_quat[j][3];
 
   // Apply quaternion rotation to move into local reference frame of grain j grid
-  // x' = (q*x)*q^-1
-  double x_local = (1 - 2 * (q_y * q_y + q_z * q_z)) * delx + 2 * (q_x * q_y - q_w * q_z) * dely + 2 * (q_x * q_z + q_w * q_y) * delz;
-  double y_local = 2 * (q_x * q_y + q_w * q_z) * delx + (1 - 2 * (q_x * q_x + q_z * q_z)) * dely + 2 * (q_y * q_z - q_w * q_x) * delz;
-  double z_local = 2 * (q_x * q_z - q_w * q_y) * delx + 2 * (q_y * q_z + q_w * q_x) * dely + (1 - 2 * (q_x * q_x + q_y * q_y)) * delz;
+  // x' = (q*x)*q^-1 // Joel: this code might have a typo so I replaced it with the method below
+  //double x_local = (1 - 2 * (q_y * q_y + q_z * q_z)) * delx + 2 * (q_x * q_y - q_w * q_z) * dely + 2 * (q_x * q_z + q_w * q_y) * delz;
+  //double y_local = 2 * (q_x * q_y + q_w * q_z) * delx + (1 - 2 * (q_x * q_x + q_z * q_z)) * dely + 2 * (q_y * q_z - q_w * q_x) * delz;
+  //double z_local = 2 * (q_x * q_z - q_w * q_y) * delx + 2 * (q_y * q_z + q_w * q_x) * dely + (1 - 2 * (q_x * q_x + q_y * q_y)) * delz;
 
   // sample code with math_extra, feel free to add MathExtra to namespace if helpful
-  double x_local2[3];
+  double x_local[3];
   double dx[3] = {delx, dely, delz};
-  MathExtra::quatrotvec(grain_quat[j], dx, x_local2); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
+  MathExtra::quatrotvec(grain_quat[j], dx, x_local); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
   // see comments above functions in math_extra.h/cpp for details
 
   //
@@ -586,9 +593,9 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
   //        will have to normalise )
-  int ind_x = int( (x_local - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
-  int ind_y = int( (y_local - grid_min[1]) / spac );
-  int ind_z = 0; //int( (z_local - grid_min[2]) / spac );
+  int ind_x = int( (x_local[0] - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
+  int ind_y = int( (x_local[1] - grid_min[1]) / spac );
+  int ind_z = 0; //int( (x_local[2] - grid_min[2]) / spac );
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
   // errors later.
@@ -596,10 +603,10 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 
   if ( (ind_x < 0) || (ind_y < 0) ) { // || (indz < 0)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node is outside of LS grid");
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
   } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1)  ) {  // || (ind_z > nslice-1)
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node is outside of LS grid");
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
   }
 
   // Apply offsets, there is probably a more proper way
@@ -624,9 +631,9 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 
   // The reduced coordinates
   // May be safe to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  double x_red = (x_local - x0) / spac;
-  double y_red = (y_local - y0) / spac;
-  double z_red = (z_local - z0) / spac;
+  double x_red = (x_local[0] - x0) / spac;
+  double y_red = (x_local[1] - y0) / spac;
+  double z_red = (x_local[2] - z0) / spac;
 
   // The bilinear interpolation
   double term = y_red * (ls110 - ls100 - ls010 + ls000) + ls100 - ls000;
@@ -655,12 +662,12 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 	// Computing normal as the gradient of trilinear interpolation
 	for (int a = 0; a < 2; a++) {
 		for (int b = 0; b < 2; b++) {
-			for (int c = 0; c < 2; c++) {
-				double lsVal = grain_grid[j][(ind_x + a) + (ind_x + b)*ncol + (ind_z + c)*nslice];
-				nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
-				ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
-				nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
-			}
+			//for (int c = 0; c < 2; c++) { // Joel: I temporarily commented out the z stuff so it's easier to debug
+			double lsVal = grain_grid[j][(ind_x + a) + (ind_y + b) * ncol]; // + (ind_z + c)*nslice];
+			nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red); // * ((1 - c) * (1 - z_red) + c * z_red);
+			ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red); // * ((1 - c) * (1 - z_red) + c * z_red);
+			//nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
+			//}
 		}
 	}
 
@@ -668,6 +675,11 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   normal[0] = nx;
   normal[1] = ny;
   normal[2] = nz;
+
+  // Rotate normal back to global coordinates
+  double quatconj[4];
+  MathExtra::qconjugate(grain_quat[j], quatconj);
+  MathExtra::quatrotvec(quatconj, normal, normal);
 
   return dist;
 }
