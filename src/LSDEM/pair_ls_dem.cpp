@@ -143,7 +143,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Need an additional check such that only nodes of the smallest grain i
       // are used in combination with the level set of grain j.
+      // If grain volumes are equal, always take the nodes of the grian with the lowest
+      // particle id number.
       // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
+
+      // What does this code do exactly? Does this make both neighbour lists 
+      // min_distance(i) = j and min_distance(j) = i? 
 
       key = nbody * itag + jbody;
       // If first interation between i and j's grain, create entry
@@ -202,6 +207,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       //   Only calculate force of smaller grain on larger grain
       //     in ties, go by grain ID
       //   Only calculate force between closest set of nodes
+      // Danny: There is a similar note above, do we resolve this there or here?
+      //        If only one of the two is used, can we reduce the nieghbour search above?
 
       calc_force_of_j_on_i = 0;
       calc_force_of_i_on_j = 0;
@@ -235,7 +242,10 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Apply forces and torques
 
-      // no beyond contact forces
+      // No adhesion, cohesion, or ranged forces
+      // Danny: the result of get_ls_value should be negative because level-sets are typically
+      // defined to have a negative value inside the grain. Should adjust line 237 and 240 to
+      // u = -get_ls_value ... once this convention has been applied.
       if (u < 0) continue;
 
       // With penetration distance u and normal n (i->j),
@@ -271,6 +281,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       torque[i][2] += torque_pair[2];
 
       // Mirror forces and torques on grain j
+      // Danny: Shouldn't these need a sign swap?
       if (newton_pair || j < nlocal) {
         MathExtra::negate3(fpair);
         f[j][0] += fpair[0];
@@ -346,6 +357,103 @@ void PairLSDEM::settings(int narg, char ** arg)
   ngrid = nrow * ncol;
   spac = l_grid;
 
+  /*
+  
+  // Volume integration
+  double **grain_grid = atom->darray[index_ls_dem_grid];
+  double **grain_grid_x = atom->darray[index_ls_dem_gridx];
+  double **grain_grid_y = atom->darray[index_ls_dem_gridy];
+  double **grain_grid_z = atom->darray[index_ls_dem_gridz];
+
+  // This is the reference distance values that determines the smearing with of
+  // the Heaviside step function. Current expression is the half-diagional of the
+  // grid cell divided by a smearing constant.
+  double smearCoeff = 1.5;
+  double ls_ref = 0.0;
+  if (smearCoeff != 0){
+    ls_ref = sqrt(0.75) * spac / smearCoeff;
+  }
+  // Initialise volume and centre of mass
+  double volume = 0.0, x_com = 0.0, y_com = 0.0, z_com = 0.0;
+  // Cell volume, temporary grid points, integration volume.
+  double volume_cell = spac*spac*spac;
+  double x_grid, y_grid, z_grid, dV = 0.0;
+
+  // Integration
+	for (int ind_x = 0; ind_x < nrow; xIndex++){
+		for (int ind_y = 0; ind_y < ncol; yIndex++){
+			for (int ind_z = 0; ind_z < nslice; zIndex++){
+        ls_val = grain_grid[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+				if (abs(ls_val) < ls_ref){
+          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
+					dV = smearedHeavisideStep(-ls_val/ls_ref)* volume_cell;
+        }else if (ls_val < 0){
+          // Inside and far away from boundary
+					dV = volume_cell;
+        }else if (ls_val > 0){
+          // Outside and far away from boundary
+					dV = 0.0;
+        }
+				if (dV > 0.) {
+          volume += dV;
+          x_grid = grain_grid_x[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+          y_grid = grain_grid_y[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+          z_grid = grain_grid_z[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+					x_com += x_grid * dV;
+					y_com += y_grid * dV;
+					z_com += z_grid * dV;
+				}
+			}
+		}
+	}
+  x_com /= volume;
+  y_com /= volume;
+  z_com /= volume;
+  
+  // Computing the inertia tensor (a double loop is unavoidable).
+  double Ixx = 0.0, Iyy = 0.0, Izz = 0.0, Ixy = 0.0, Ixz = 0.0, Iyz = 0.0;
+	for (int ind_x = 0; ind_x < nrow; xIndex++){
+		for (int ind_y = 0; ind_y < ncol; yIndex++){
+			for (int ind_z = 0; ind_z < nslice; zIndex++){
+        ls_val = grain_grid[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+				if (abs(ls_val) < ls_ref){
+          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
+					dV = smearedHeavisideStep(-ls_val/ls_ref)* volume_cell;
+        }else if (ls_val < 0){
+          // Inside and far away from boundary
+					dV = volume_cell;
+        }else if (ls_val > 0){
+          // Outside and far away from boundary
+					dV = 0.0;
+        }
+				if (dV > 0.) {
+          x_grid = grain_grid_x[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+          y_grid = grain_grid_y[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+          z_grid = grain_grid_z[ind_x + ind_y * nrow + ind_z * nrow * ncol];
+          Ixx += (pow(y_grid - y_com, 2) + pow(z_grid - z_com, 2)) * dV;
+					Iyy += (pow(x_grid - x_com, 2) + pow(z_grid - z_com, 2)) * dV;
+					Izz += (pow(x_grid - x_com, 2) + pow(y_grid - y_com, 2)) * dV;
+					Ixy -= (x_grid - x_com) * (y_grid - y_com) * dV;
+					Ixz -= (x_grid - x_com) * (z_grid - z_com) * dV;
+					Iyz -= (y_grid - y_com) * (z_grid - z_com) * dV;
+        }
+			}
+		}
+	}
+  
+  // Check to see if level set has a non-inertial reference frame
+  double I_diag_norm = sqrt(Ixx*Ixx + Iyy*Iyy + Izz*Izz);
+  double I_off_diag_norm = sqrt(2*Ixy*Ixy + 2*Ixz*Ixz + 2*Iyz*Iyz);
+  if (I_off_diag_norm / I_diag_norm > 0.01){
+    // Throw some kind of error. Level set is not given in a non-inertial frame.
+    // Intergration of rotational motion will be wrong.
+  }
+  // ASSIGN INERTIA
+
+  // This is the part where we load or initialise surface nodes :)
+
+  */
+
   modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
     id_fix, ngrid, ngrid, ngrid, ngrid));
   int tmp1, tmp2;
@@ -387,6 +495,7 @@ void PairLSDEM::settings(int narg, char ** arg)
     }
     ls_dem_vol[i] = MY_PI * pow(5.0, 2);
   }
+
 }
 
 /* ----------------------------------------------------------------------
@@ -683,3 +792,17 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 
   return dist;
 }
+
+/* ----------------------------------------------------------------------
+   Smeared Heaviside step function
+------------------------------------------------------------------------- */
+double PairLSDEM::smearedHeavisideStep(double x)
+{
+  // A function that smoothly transition from 0 to 1 when x goes from -1 to 1.
+  // For x < -1, the function should be 0. For x > 1, the function should be 1.
+  // This is not implemented here, and up to the user to take care of ouside 
+  // this function. See Kawamoto et al. (2016).
+  return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
+}
+
+// End of file
