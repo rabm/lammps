@@ -233,24 +233,22 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Evaluate the level set, and assign the interaction direction based on
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
+        // Note: level set is by definition negative inside the particle, so swap the sign. 
+        u = - get_ls_value(i, j, normal);
         // The normal points away from j, correct signs
-        u = get_ls_value(i, j, normal);
         MathExtra::negate3(normal);
       } else {
-        u = get_ls_value(j, i, normal);
+        u = - get_ls_value(j, i, normal);
       }
 
       // Apply forces and torques
 
-      // No adhesion, cohesion, or ranged forces
-      // Danny: the result of get_ls_value should be negative because level-sets are typically
-      // defined to have a negative value inside the grain. Should adjust line 237 and 240 to
-      // u = -get_ls_value ... once this convention has been applied.
-      if (u < 0) continue;
+      // No adhesion, cohesion, or ranged forces.
+      if (u > 0) continue;
 
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fpair_mag = k[itype][jtype] * u;
+      fpair_mag = - k[itype][jtype] * u;
 
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
@@ -271,6 +269,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       lever[0] = contact_point[0] - grain_com[i][0];
       lever[1] = contact_point[1] - grain_com[i][1];
       lever[2] = contact_point[2] - grain_com[i][2];
+      // Account for PBCs
+      domain->minimum_image(lever);
 
       // Compute torque
       MathExtra::cross3(lever, fpair, torque_pair);
@@ -281,9 +281,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       torque[i][2] += torque_pair[2];
 
       // Mirror forces and torques on grain j
-      // Danny: Shouldn't these need a sign swap?
       if (newton_pair || j < nlocal) {
-        MathExtra::negate3(fpair);
+        MathExtra::negate3(fpair); // Sign swap
         f[j][0] += fpair[0];
         f[j][1] += fpair[1];
         f[j][2] += fpair[2];
@@ -291,6 +290,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         lever[0] = contact_point[0] - grain_com[j][0];
         lever[1] = contact_point[1] - grain_com[j][1];
         lever[2] = contact_point[2] - grain_com[j][2];
+        domain->minimum_image(lever);
 
         MathExtra::cross3(lever, fpair, torque_pair);
 
@@ -479,7 +479,8 @@ void PairLSDEM::settings(int narg, char ** arg)
         // stored value is at lower left corner of grid
         delx = a * l_grid - x_com;
         dely = b * l_grid - y_com;
-        ls_dem_grid[i][b * ncol + a] = r - sqrt(delx * delx + dely * dely);
+        // Negative inside by definition
+        ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
         ls_dem_gridx[i][b * ncol + a] = delx;
         ls_dem_gridy[i][b * ncol + a] = dely;
         ls_dem_gridz[i][b * ncol + a] = 0;
@@ -657,19 +658,14 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //   grain_com[j][0-2] = CoM of j's grain
   //   grain_quat[j][0-3] = quat of j's grain
 
-  // Danny: How does LAMMPS take care of the periodic shift?
-  //        YADE uses an offset coordinate shift2 that is added to x[j] or grain_com[j]
-
   //
   //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
   //
 
   // Relative coordinate of node i w.r.t. centre of mass grain j
-  // Danny: I will asumme x is in global coordinates.
   double delx = x[i][0]-grain_com[j][0];
   double dely = x[i][1]-grain_com[j][1];
   double delz = 0; // x[i][2]-grain_com[j][2];
-
   // Account for PBCs
   domain->minimum_image(delx, dely, delz);
 
@@ -701,7 +697,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Calculate index from coordinate, need to be more careful with integer division
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
-  //        will have to normalise )
+  //        will have to normalise.)
   int ind_x = int( (x_local[0] - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
   int ind_y = int( (x_local[1] - grid_min[1]) / spac );
   int ind_z = 0; //int( (x_local[2] - grid_min[2]) / spac );
@@ -710,10 +706,10 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // errors later.
   // Joel: I added a macro EPSILON which might be useful for biasing rounding
 
-  if ( (ind_x < 0) || (ind_y < 0) ) { // || (indz < 0)
+  if ( (ind_x < 0) || (ind_y < 0) || (indz < 0) ) {
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1)  ) {  // || (ind_z > nslice-1)
+  } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1) || (ind_z > nslice-1) ) {
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
   }
@@ -786,9 +782,9 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   normal[2] = nz;
 
   // Rotate normal back to global coordinates
-  double quatconj[4];
-  MathExtra::qconjugate(grain_quat[j], quatconj);
-  MathExtra::quatrotvec(quatconj, normal, normal);
+  double grain_quat_conj[4];
+  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
+  MathExtra::quatrotvec(grain_quat_conj, normal, normal);
 
   return dist;
 }
