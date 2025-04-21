@@ -17,7 +17,7 @@
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
-#include "fix_rigid.h"
+#include "fix_rigid_ls_dem.h"
 #include "force.h"
 #include "math_const.h"
 #include "math_extra.h"
@@ -98,10 +98,10 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
-  auto fixlist = modify->get_fix_by_style("rigid");
+  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
   if (fixlist.size() != 1)
-    error->all(FLERR, "Must have one instance of fix rigid for pair LS-DEM.");
-  auto fixrigid = dynamic_cast<FixRigid *>(fixlist.front());
+    error->all(FLERR, "Must have one instance of fix rigid/ls/dem for pair LS-DEM.");
+  auto fixrigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
   int *body = fixrigid->get_body_array();
   int nbody = fixrigid->get_nbody();
 

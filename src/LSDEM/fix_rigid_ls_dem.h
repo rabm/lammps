@@ -20,36 +20,36 @@ FixStyle(rigid/ls/dem,FixRigidLSDEM);
 #ifndef LMP_FIX_RIGID_LS_DEM_H
 #define LMP_FIX_RIGID_LS_DEM_H
 
-#include "fix.h"
+#include "fix_rigid.h"
 
 namespace LAMMPS_NS {
 
-class FixRigidLSDEM : public Fix {
-  friend class ComputeRigidLocal;
-
+class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this class will not redefine
  public:
   FixRigidLSDEM(class LAMMPS *, int, char **);
   ~FixRigidLSDEM() override;
   int setmask() override;
+  void post_constructor() override;                                 // TEMP LSDEM HACK
+  int pack_forward_comm(int, int *, double *, int, int *) override; // TEMP LSDEM HACK
+  void unpack_forward_comm(int, int, double *) override;            // TEMP LSDEM HACK
   void init() override;
   void setup(int) override;
+  void setup_pre_force(int) override; // TEMP LSDEM HACK
   void initial_integrate(int) override;
+  void pre_force(int) override; // TEMP LSDEM HACK
   void post_force(int) override;
   void final_integrate() override;
   void initial_integrate_respa(int, int, int) override;
   void final_integrate_respa(int, int) override;
   void write_restart_file(const char *) override;
+  double compute_scalar() override;
 
+  double memory_usage() override;
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
   void set_arrays(int) override;
-
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
-  int pack_forward_comm(int, int *, double *, int, int *) override;
-  void unpack_forward_comm(int, int, double *) override;
-  int pack_reverse_comm(int, int, double *) override;
-  void unpack_reverse_comm(int, int *, double *) override;
 
   void setup_pre_neighbor() override;
   void pre_neighbor() override;
@@ -62,119 +62,104 @@ class FixRigidLSDEM : public Fix {
   void *extract(const char *, int &) override;
   double extract_ke();
   double extract_erotational();
-  double compute_scalar() override;
-  double memory_usage() override;
+  double compute_array(int, int) override;
+
+  inline int *get_body_array() { return body; };
+  inline int get_nbody() { return nbody; };
 
  protected:
+  char *id_fix;          // TEMP LSDEM HACK
+  int index_ls_dem_vol;  // TEMP LSDEM HACK
+  int index_ls_dem_com;  // TEMP LSDEM HACK
+  int index_ls_dem_quat; // TEMP LSDEM HACK
+  int index_ls_dem_size; // TEMP LSDEM HACK
+
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
 
-  char *inpfile;       // file to read rigid body attributes from
-  int setupflag;       // 1 if body properties are setup, else 0
-  int earlyflag;       // 1 if forces/torques are computed at post_force()
-  int commflag;        // various modes of forward/reverse comm
-  int nbody;           // total # of rigid bodies
-  int nlinear;         // total # of linear rigid bodies
-  tagint maxmol;       // max mol-ID
-  double maxextent;    // furthest distance from body owner to body atom
+  char *inpfile;    // file to read rigid body attributes from
 
-  struct Body {
-    int natoms;            // total number of atoms in body
-    int ilocal;            // index of owning atom
-    double mass;           // total mass of body
-    double xcm[3];         // COM position
-    double xgc[3];         // geometric center position
-    double vcm[3];         // COM velocity
-    double fcm[3];         // force on COM
-    double torque[3];      // torque around COM
-    double quat[4];        // quaternion for orientation of body
-    double inertia[3];     // 3 principal components of inertia
-    double ex_space[3];    // principal axes in space coords
-    double ey_space[3];
-    double ez_space[3];
-    double xgc_body[3];    // geometric center relative to xcm in body coords
-    double angmom[3];      // space-frame angular momentum of body
-    double omega[3];       // space-frame omega of body
-    double conjqm[4];      // conjugate quaternion momentum
-    int remapflag[4];      // PBC remap flags
-    int nls[3];            // Number of level-set grid points in each principal direction
-    int xls[3];            // Position of the 000 corner of level-set grid in principal directions, relative to the COM
-    int sls[3];            // Stride of level-set grid in each principal direction
-    int lls[3];            // Length of level-set grid in each principal direction
-    float *** fls;         // Values of the level-set at grid points in principal coordinates
-    imageint image;        // image flags of xcm
-    imageint dummy;        // dummy entry for better alignment
-  };
+  int rstyle;       // SINGLE,MOLECULE,GROUP
+  int setupflag;    // 1 if body properties are setup, else 0
+  int earlyflag;    // 1 if forces/torques computed at post_force()
 
-  Body *body;         // list of rigid bodies, owned and ghost
-  int nlocal_body;    // # of owned rigid bodies
-  int nghost_body;    // # of ghost rigid bodies
-  int nmax_body;      // max # of bodies that body can hold
-  int bodysize;       // sizeof(Body) in doubles
+  int nbody;        // # of rigid bodies
+  int nlinear;      // # of linear rigid bodies
+  int *nrigid;      // # of atoms in each rigid body
+  int *mol2body;    // convert mol-ID to rigid body index
+  int *body2mol;    // convert rigid body index to mol-ID
+  int maxmol;       // size of mol2body = max mol-ID
 
-  // per-atom quantities
-  // only defined for owned atoms, except bodyown for own+ghost
+  int *body;            // which body each atom is part of (-1 if none)
+  double **displace;    // displacement of each atom in body coords
 
-  int *bodyown;          // index of body if atom owns a body, -1 if not
-  tagint *bodytag;       // ID of body this atom is in, 0 if none
-                         // ID = tag of atom that owns body
-  int *atom2body;        // index of owned/ghost body this atom is in, -1 if not
-                         // can point to original or any image of the body
+  double *masstotal;    // total mass of each rigid body
+  double **xcm;         // coords of center-of-mass of each rigid body
+  double **vcm;         // velocity of center-of-mass of each
+  double **fcm;         // force on center-of-mass of each
+  double **inertia;     // 3 principal components of inertia of each
+  double **ex_space, **ey_space, **ez_space;
+  // principal axes of each in space coords
+  double **angmom;        // angular momentum of each in space coords
+  double **omega;         // angular velocity of each in space coords
+  double **torque;        // torque on each rigid body in space coords
+  double **quat;          // quaternion of each rigid body
+  imageint *imagebody;    // image flags of xcm of each rigid body
+  double **fflag;         // flag for on/off of center-of-mass force
+  double **tflag;         // flag for on/off of center-of-mass torque
+  double **langextra;     // Langevin thermostat forces and torques
+
+  double **sum, **all;    // work vectors for each rigid body
+  int **remapflag;        // PBC remap flags for each rigid body
+
+  int extended;       // 1 if any particles have extended attributes
+  int orientflag;     // 1 if particles store spatial orientation
+  int dorientflag;    // 1 if particles store dipole orientation
+  int reinitflag;     // 1 if re-initialize rigid bodies between runs
+
   imageint *xcmimage;    // internal image flags for atoms in rigid bodies
                          // set relative to in-box xcm of each body
-  double **displace;     // displacement of each atom in body coords
+  int *eflags;           // flags for extended particles
+  double **orient;       // orientation vector of particle wrt rigid body
+  double **dorient;      // orientation of dipole mu wrt rigid body
 
-  // temporary per-body storage
+  double tfactor;    // scale factor on temperature of rigid bodies
+  int langflag;      // 0/1 = no/yes Langevin thermostat
 
-  int **counts;        // counts of atom types in bodies
-  double **itensor;    // 6 space-frame components of inertia tensor
+  int tstat_flag;    // NVT settings
+  double t_start, t_stop, t_target;
+  double t_period, t_freq;
+  int t_chain, t_iter, t_order;
 
-  // mass per body, accessed by granular pair styles
+  int pstat_flag;    // NPT settings
+  double p_start[3], p_stop[3];
+  double p_period[3], p_freq[3];
+  int p_flag[3];
+  int pcouple, pstyle;
+  int p_chain;
 
-  double *mass_body;
-  int nmax_mass;
+  int allremap;            // remap all atoms
+  int dilate_group_bit;    // mask for dilation group
+  char *id_dilate;         // group name to dilate
 
   char *id_gravity;    // ID of fix gravity command to add gravity forces
   double *gvec;        // ptr to gravity vector inside the fix
 
-  // class data used by ring communication callbacks
-
-  double rsqfar;
-
-  struct InRvous {
-    int me, ilocal;
-    tagint atomID, bodyID;
-    double x[3];
-  };
-
-  struct OutRvous {
-    int ilocal;
-    tagint atomID;
-  };
-
-  // local methods
+  class RanMars *random;
+  class AtomVecEllipsoid *avec_ellipsoid;
+  class AtomVecLine *avec_line;
+  class AtomVecTri *avec_tri;
 
   void image_shift();
   void set_xv();
   void set_v();
-  void create_bodies(tagint *);
-  void setup_bodies();
   void setup_bodies_static();
   void setup_bodies_dynamic();
+  void apply_langevin_thermostat();
   virtual void compute_forces_and_torques();
   void enforce2d();
-  void readfile(int, double **);
-  void grow_body();
-  void reset_atom2body();
-
-  // callback function for rendezvous communication
-
-  static int rendezvous_body(int, char *, int &, int *&, char *&, void *);
-
-  // debug
-
-  //void check(int);
+  void readfile(int, double *, double **, double **, double **, imageint *, int *);
 };
 
 }    // namespace LAMMPS_NS
