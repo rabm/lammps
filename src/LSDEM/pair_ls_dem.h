@@ -55,6 +55,7 @@ class PairLSDEM : public Pair {
 
   void allocate();
   double get_ls_value(int, int, double *);
+  double smearedHeavisideStep(double);
 };
 
 }    // namespace LAMMPS_NS

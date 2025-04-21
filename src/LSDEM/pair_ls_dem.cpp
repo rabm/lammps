@@ -706,7 +706,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // errors later.
   // Joel: I added a macro EPSILON which might be useful for biasing rounding
 
-  if ( (ind_x < 0) || (ind_y < 0) || (indz < 0) ) {
+  if ( (ind_x < 0) || (ind_y < 0) || (ind_z < 0) ) {
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
   } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1) || (ind_z > nslice-1) ) {
