@@ -73,12 +73,14 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_com;  // TEMP LSDEM HACK
   int index_ls_dem_quat; // TEMP LSDEM HACK
   int index_ls_dem_size; // TEMP LSDEM HACK
+  int **ngrid;           // TEMP LSDEM HACK, numer of grid points in each dimension [nbody, (nx, ny, nz)]
+  int **grid_ls_val;     // TEMP LSDEM HACK, Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
 
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
 
-  char *inpfile;    // file to read rigid body attributes from
+  char *inpfile;    // file to read rigid body attributes from // TEMP LSDEM HACK
 
   int rstyle;       // SINGLE,MOLECULE,GROUP
   int setupflag;    // 1 if body properties are setup, else 0
@@ -160,6 +162,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   virtual void compute_forces_and_torques();
   void enforce2d();
   void readfile(int, double *, double **, double **, double **, imageint *, int *);
+  void read_gridfile(char**, double *); // TEMP LSDEM HACK
 };
 
 }    // namespace LAMMPS_NS
