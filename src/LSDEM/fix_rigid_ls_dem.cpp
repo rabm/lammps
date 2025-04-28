@@ -1776,7 +1776,10 @@ void FixRigidLSDEM::set_v()
    sets body image flags
    may read some properties from inpfile
 ------------------------------------------------------------------------- */
-
+// TODO: there is so much stuff we don't need in here for LS-DEM
+// I started removing it in the first dump commit but we should do that again
+// For now, I kept everything as is, and added a new `which`=2 mode in readfile()
+// to read the level-set data and call that readfile(2, ...)
 void FixRigidLSDEM::setup_bodies_static()
 {
   int i,ibody;
@@ -1950,7 +1953,7 @@ void FixRigidLSDEM::setup_bodies_static()
 
     memory->create(inbody,nbody,"rigid:inbody");
     for (ibody = 0; ibody < nbody; ibody++) inbody[ibody] = 0;
-    readfile(0,masstotal,xcm,vcm,angmom,imagebody,inbody);
+    readfile(0,masstotal,xcm,vcm,angmom,imagebody,inbody,nullptr);
   }
 
   // remap the xcm of each body back into simulation box
@@ -2055,7 +2058,7 @@ void FixRigidLSDEM::setup_bodies_static()
 
   // overwrite Cartesian inertia tensor with file values
 
-  if (inpfile) readfile(1,nullptr,all,nullptr,nullptr,nullptr,inbody);
+  if (inpfile) readfile(1,nullptr,all,nullptr,nullptr,nullptr,inbody,nullptr);
 
   // diagonalize inertia tensor for each body via Jacobi rotations
   // inertia = 3 eigenvalues = principal moments of inertia
@@ -2304,6 +2307,34 @@ void FixRigidLSDEM::setup_bodies_static()
       error->all(FLERR,"Fix rigid: Bad principal moments");
   }
 
+  // Read the level-set information from gridfiles
+  if (inpfile) {
+    char **ls_grid_files;
+    double *scale;
+    memory->create(scale,nbody,"rigid/ls/dem:scale"); // TODO: I copied this pattern from inbody, not sure why we cannot do double scale[nbody] ?
+    memory->create(ls_grid_files,nbody,MAXLINE,"rigid/ls/dem:ls_grid_files");
+
+    // Read scaling factors and gridfiles names
+    readfile(2,scale,nullptr,nullptr,nullptr,nullptr,inbody,ls_grid_files);
+
+    // Read grid dimensions for all bodies
+    read_gridfile(0,ls_grid_files,nullptr);
+    int *ngrid_flat;
+    memory->create(ngrid_flat,nbody,"rigid/ls/dem:ngrid_flat");
+    for (int ibody = 0; ibody < nbody ; ibody++)
+        ngrid_flat[ibody] = ngrid[ibody][0] + ngrid[ibody][1] + ngrid[ibody][2];
+
+    // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
+    // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
+    memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_las_val");
+
+    // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
+    read_gridfile(1,ls_grid_files,scale);
+
+    memory->destroy(ls_grid_files);
+    memory->destroy(scale);
+  }
+
   if (inpfile) memory->destroy(inbody);
 }
 
@@ -2406,6 +2437,7 @@ void FixRigidLSDEM::setup_bodies_dynamic()
    read per rigid body info from user-provided file
    which = 0 to read everything except 6 moments of inertia
    which = 1 to read 6 moments of inertia
+   which = 2 to read LSDEM scaling and gridfile
    flag inbody = 0 for bodies whose info is read from file
    nlines = # of lines of rigid body info
    one line = rigid-ID mass xcm ycm zcm ixx iyy izz ixy ixz iyz
@@ -2413,7 +2445,7 @@ void FixRigidLSDEM::setup_bodies_dynamic()
 ------------------------------------------------------------------------- */
 
 void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **array2, double **array3,
-                        imageint *ivec, int *inbody)
+                        imageint *ivec, int *inbody, char** gridfiles)
 {
   int nchunk,id,eofflag,xbox,ybox,zbox;
   int nlines;
@@ -2505,7 +2537,7 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
           ivec[id] = ((imageint) (xbox + IMGMAX) & IMGMASK) |
             (((imageint) (ybox + IMGMAX) & IMGMASK) << IMGBITS) |
             (((imageint) (zbox + IMGMAX) & IMGMASK) << IMG2BITS);
-        } else {
+        } else if (which == 1) {
           values.skip(4);
           array1[id][0] = values.next_double();
           array1[id][1] = values.next_double();
@@ -2513,9 +2545,13 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
           array1[id][5] = values.next_double();
           array1[id][4] = values.next_double();
           array1[id][3] = values.next_double();
+        } else if (which == 2) {
+            values.skip(19);
+            vec[id] = values.next_double();
+            strcpy(gridfiles[id], values.next_string().data()); // TODO: I'm not up to date on C-string vs std::string in LAMMPS. Possible important refactor here with std::vector<string> instead of char**
         }
       } catch (TokenizerException &e) {
-        error->all(FLERR, "Invalid fix rigid infile: {}", e.what());
+        error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
       }
       buf = next + 1;
     }

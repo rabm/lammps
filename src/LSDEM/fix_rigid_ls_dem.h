@@ -156,12 +156,12 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void image_shift();
   void set_xv();
   void set_v();
-  void setup_bodies_static();
+  void setup_bodies_static(); // TEMP LSDEM HACK
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   virtual void compute_forces_and_torques();
   void enforce2d();
-  void readfile(int, double *, double **, double **, double **, imageint *, int *);
+  void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
   void read_gridfile(int, char**, double *); // TEMP LSDEM HACK
 };
 
