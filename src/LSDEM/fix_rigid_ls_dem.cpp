@@ -53,7 +53,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     imagebody(nullptr), fflag(nullptr), tflag(nullptr), langextra(nullptr), sum(nullptr),
     all(nullptr), remapflag(nullptr), xcmimage(nullptr), eflags(nullptr), orient(nullptr),
     dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), random(nullptr),
-    avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
+    avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr),
+    ngrid(nullptr), grid_ls_val(nullptr)
 {
   id_fix = nullptr; // TEMP LSDEM HACK
   comm_forward = 8; // TEMP LSDEM HACK
@@ -286,6 +287,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(sum, nbody, 6, "rigid:sum");
   memory->create(all, nbody, 6, "rigid:all");
   memory->create(remapflag, nbody, 4, "rigid:remapflag");
+
+  memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
 
   // initialize force/torque flags to default = 1.0
   // for 2d: fz, tx, ty = 0.0
@@ -677,6 +680,9 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(sum);
   memory->destroy(all);
   memory->destroy(remapflag);
+
+  memory->destroy(ngrid);
+  memory->destroy(grid_ls_val);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2923,12 +2929,17 @@ double FixRigidLSDEM::compute_array(int i, int j)
    files ls_grid_files to read from stored previously by readfile() function
    first line = ngridx ngridy ngridz
    followed by ngridx * ngridy * ngridz lines of level set values at the grid points
+   which = 0, read only the size of the level-set grid
+   which = 1, read the values of the level-set grid
    TODO: User responsible for knowing what the LS values in their file are
    scaled to, and pick the correct scaling factor
    TODO: left my editor with 4-space tab, LAMMPS style is 2-space tab
+   TODO: this assumes all rigid bodies are LSDEM grains. Otherwise, we should pass and read *inbody.
+        Not sure if there is a use for this: why would fix rigid lsdem have tigid bodies not be LSDEM ?
+        Refactor readfile() accordingly if this is the route we take
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile(char **ls_grid_files, double* scale)
+void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale)
 {
     int nchunk,eofflag;
     int grid_buf[3];
@@ -2963,9 +2974,6 @@ void FixRigidLSDEM::read_gridfile(char **ls_grid_files, double* scale)
         MPI_Bcast(grid_buf, 3, MPI_INT, 0, world);
 
         nlines = grid_buf[0] * grid_buf[1] * grid_buf[2];
-        ngrid[ibody][0] = grid_buf[0];
-        ngrid[ibody][1] = grid_buf[1];
-        ngrid[ibody][2] = grid_buf[2];
 
         // TODO: I left the 2 lines below from original rigid::readline() not sure if needed
         // empty file with 0 lines is needed to trigger initial restart file
@@ -2973,44 +2981,49 @@ void FixRigidLSDEM::read_gridfile(char **ls_grid_files, double* scale)
         if (nlines == 0) return;
         else if (nlines < 0) error->all(FLERR,"Fix rigid/ls/dem gridfile has incorrect format");
 
-        auto buffer = new char[CHUNK*MAXLINE];
-        int nread = 0;
-        int me = comm->me;
-        while (nread < nlines) {
-            nchunk = MIN(nlines-nread,CHUNK);
-            eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
-            if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+        if (which == 0) {
+            ngrid[ibody][0] = grid_buf[0];
+            ngrid[ibody][1] = grid_buf[1];
+            ngrid[ibody][2] = grid_buf[2];
+        } else {
+            auto buffer = new char[CHUNK*MAXLINE];
+            int nread = 0;
+            int me = comm->me;
+            while (nread < nlines) {
+                nchunk = MIN(nlines-nread,CHUNK);
+                eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
+                if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
 
-            buf = buffer;
-            next = strchr(buf,'\n');
-            *next = '\0';
-            int nwords = utils::count_words(utils::trim_comment(buf));
-            *next = '\n';
-
-            // TODO: there must be a better way than tokenizing single value
-            // Kept as is for now to re-use existing rigid::readfile() code
-            // Maybe in the future we want to have multiple value per line,
-            // In which case it will be useful to have that architecture
-            if (nwords != 1)
-                error->all(FLERR,"LSDEM gridfile format requires one entry per line");
-
-            // loop over lines of level set grid and tokenize level set values
-            for (int i = 0; i < nchunk; i++) {
+                buf = buffer;
                 next = strchr(buf,'\n');
                 *next = '\0';
+                int nwords = utils::count_words(utils::trim_comment(buf));
+                *next = '\n';
 
-                try {
-                    ValueTokenizer values(buf);
-                    grid_ls_val[ibody][nread+i] = values.next_double() * scale[ibody];
-                } catch (TokenizerException &e) {
-                    error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
+                // TODO: there must be a better way than tokenizing single value
+                // Kept as is for now to re-use existing rigid::readfile() code
+                // Maybe in the future we want to have multiple value per line,
+                // In which case it will be useful to have that architecture
+                if (nwords != 1)
+                    error->all(FLERR,"LSDEM gridfile format requires one entry per line");
+
+                // loop over lines of level set grid and tokenize level set values
+                for (int i = 0; i < nchunk; i++) {
+                    next = strchr(buf,'\n');
+                    *next = '\0';
+
+                    try {
+                        ValueTokenizer values(buf);
+                        grid_ls_val[ibody][nread+i] = values.next_double() * scale[ibody];
+                    } catch (TokenizerException &e) {
+                        error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
+                    }
+                    buf = next + 1;
                 }
-                buf = next + 1;
+                nread += nchunk;
             }
-            nread += nchunk;
+            delete[] buffer;
         }
-
         if (comm->me == 0) fclose(fp);
-        delete[] buffer;
     }
 }

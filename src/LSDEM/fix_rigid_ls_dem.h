@@ -74,7 +74,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_quat; // TEMP LSDEM HACK
   int index_ls_dem_size; // TEMP LSDEM HACK
   int **ngrid;           // TEMP LSDEM HACK, numer of grid points in each dimension [nbody, (nx, ny, nz)]
-  int **grid_ls_val;     // TEMP LSDEM HACK, Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
+  double **grid_ls_val;  // TEMP LSDEM HACK, Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
 
   double dtv, dtf, dtq;
   double *step_respa;
@@ -162,7 +162,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   virtual void compute_forces_and_torques();
   void enforce2d();
   void readfile(int, double *, double **, double **, double **, imageint *, int *);
-  void read_gridfile(char**, double *); // TEMP LSDEM HACK
+  void read_gridfile(int, char**, double *); // TEMP LSDEM HACK
 };
 
 }    // namespace LAMMPS_NS
