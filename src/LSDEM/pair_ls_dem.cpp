@@ -454,55 +454,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   */
 
-  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
-  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
-  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
-  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
-  if (lsdem_fixes.size() > 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
-  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
-  ncol = my_lsdem_fix->get_ngrid_array()[0][0];
-  nrow = my_lsdem_fix->get_ngrid_array()[0][1];
-  nslice = my_lsdem_fix->get_ngrid_array()[0][2];
-  grid_min[0] = my_lsdem_fix->get_grid_min_array()[0][0];
-  grid_min[1] = my_lsdem_fix->get_grid_min_array()[0][1];
-  grid_min[2] = my_lsdem_fix->get_grid_min_array()[0][2];
-  spac = my_lsdem_fix->get_grid_stride_array()[0];
-  ngrid = ncol * nrow * nslice;
 
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
-    id_fix, ngrid, ngrid, ngrid, ngrid));
-  int tmp1, tmp2;
-  index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
-  index_ls_dem_gridx = atom->find_custom("ls_dem_gridx", tmp1, tmp2);
-  index_ls_dem_gridy = atom->find_custom("ls_dem_gridy", tmp1, tmp2);
-  index_ls_dem_gridz = atom->find_custom("ls_dem_gridz", tmp1, tmp2);
-
-  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
-  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
-
-  double **ls_dem_grid = atom->darray[index_ls_dem_grid];
-  double **ls_dem_gridx = atom->darray[index_ls_dem_gridx];
-  double **ls_dem_gridy = atom->darray[index_ls_dem_gridy];
-  double **ls_dem_gridz = atom->darray[index_ls_dem_gridz];
-  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
-
-  double *ls_val = my_lsdem_fix->get_grid_ls_val_array()[0];
-  for (int i = 0; i < atom->nlocal; i++) {
-    for (int iz = 0 ; iz < nslice ; iz++) {
-      for (int iy = 0 ; iy < nrow ; iy++) {
-        for (int ix = 0 ; ix < ncol ; ix++) {
-            int ndx = ix + iy * ncol + iz * ncol * nrow;
-            ls_dem_grid[i][ndx] = ls_val[ndx];
-            ls_dem_gridx[i][ndx] = grid_min[0] + ix * spac;
-            ls_dem_gridy[i][ndx] = grid_min[1] + iy * spac;
-            ls_dem_gridz[i][ndx] = grid_min[2] + iz * spac;
-        }
-      }
-    }
-    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
-    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
-  }
 }
 
 /* ----------------------------------------------------------------------
@@ -805,6 +757,66 @@ double PairLSDEM::smearedHeavisideStep(double x)
   // This is not implemented here, and up to the user to take care of ouside 
   // this function. See Kawamoto et al. (2016).
   return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
+}
+
+/* ---------------------------------------------------------------------- */
+void PairLSDEM::setup()
+{
+  // Create per-atom properties necessary for current implementation of LS-DEM
+  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
+  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
+  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
+  if (lsdem_fixes.size() > 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
+  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
+  ncol = my_lsdem_fix->get_ngrid_array()[0][0];
+  nrow = my_lsdem_fix->get_ngrid_array()[0][1];
+  nslice = my_lsdem_fix->get_ngrid_array()[0][2];
+  grid_min[0] = my_lsdem_fix->get_grid_min_array()[0][0];
+  grid_min[1] = my_lsdem_fix->get_grid_min_array()[0][1];
+  grid_min[2] = my_lsdem_fix->get_grid_min_array()[0][2];
+  spac = my_lsdem_fix->get_grid_stride_array()[0];
+  ngrid = ncol * nrow * nslice;
+
+  // TODO: We may want to create this Fix inside fix_rigid_ls_dem::init()
+  if (!modify->get_fix_by_id(id_fix)) {
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
+                                id_fix, ngrid, ngrid, ngrid, ngrid));
+  }
+
+  int tmp1, tmp2;
+  index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
+  index_ls_dem_gridx = atom->find_custom("ls_dem_gridx", tmp1, tmp2);
+  index_ls_dem_gridy = atom->find_custom("ls_dem_gridy", tmp1, tmp2);
+  index_ls_dem_gridz = atom->find_custom("ls_dem_gridz", tmp1, tmp2);
+
+  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
+  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
+  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
+
+  double **ls_dem_grid = atom->darray[index_ls_dem_grid];
+  double **ls_dem_gridx = atom->darray[index_ls_dem_gridx];
+  double **ls_dem_gridy = atom->darray[index_ls_dem_gridy];
+  double **ls_dem_gridz = atom->darray[index_ls_dem_gridz];
+  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
+
+  double *ls_val = my_lsdem_fix->get_grid_ls_val_array()[0];
+  for (int i = 0; i < atom->nlocal; i++) {
+    for (int iz = 0 ; iz < nslice ; iz++) {
+      for (int iy = 0 ; iy < nrow ; iy++) {
+        for (int ix = 0 ; ix < ncol ; ix++) {
+            int ndx = ix + iy * ncol + iz * ncol * nrow;
+            ls_dem_grid[i][ndx] = ls_val[ndx];
+            ls_dem_gridx[i][ndx] = grid_min[0] + ix * spac;
+            ls_dem_gridy[i][ndx] = grid_min[1] + iy * spac;
+            ls_dem_gridz[i][ndx] = grid_min[2] + iz * spac;
+        }
+      }
+    }
+    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
+    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
+  }
+
 }
 
 // End of file

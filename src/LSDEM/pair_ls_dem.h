@@ -37,6 +37,7 @@ class PairLSDEM : public Pair {
   void read_restart(FILE *) override;
   void write_data(FILE *) override;
   void write_data_all(FILE *) override;
+  void setup() override;
 
  protected:
   double **k, **cut, **gamma;
