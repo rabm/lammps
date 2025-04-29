@@ -346,16 +346,16 @@ void PairLSDEM::settings(int narg, char ** arg)
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
 
-  nrow = 20;
-  ncol = 20;
-  nslice = 1;
-  double l_grid = 0.5;
-  double x_com = 5.25;
-  double y_com = 5.25;
-  double r = 2.5;
+//   nrow = 20;
+//   ncol = 20;
+//   nslice = 1;
+//   double l_grid = 0.5;
+//   double x_com = 5.25;
+//   double y_com = 5.25;
+//   double r = 2.5;
 
-  ngrid = nrow * ncol;
-  spac = l_grid;
+//   ngrid = nrow * ncol;
+//   spac = l_grid;
 
   /*
   
@@ -454,6 +454,21 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   */
 
+  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
+  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
+  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
+  if (lsdem_fixes.size() > 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
+  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
+  ncol = my_lsdem_fix->get_ngrid_array()[0][0];
+  nrow = my_lsdem_fix->get_ngrid_array()[0][1];
+  nslice = my_lsdem_fix->get_ngrid_array()[0][2];
+  grid_min[0] = my_lsdem_fix->get_grid_min_array()[0][0];
+  grid_min[1] = my_lsdem_fix->get_grid_min_array()[0][1];
+  grid_min[2] = my_lsdem_fix->get_grid_min_array()[0][2];
+  spac = my_lsdem_fix->get_grid_stride_array()[0];
+  ngrid = ncol * nrow * nslice;
+
   modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
     id_fix, ngrid, ngrid, ngrid, ngrid));
   int tmp1, tmp2;
@@ -472,31 +487,22 @@ void PairLSDEM::settings(int narg, char ** arg)
   double **ls_dem_gridz = atom->darray[index_ls_dem_gridz];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
 
-  double delx, dely;
+  double *ls_val = my_lsdem_fix->get_grid_ls_val_array()[0];
   for (int i = 0; i < atom->nlocal; i++) {
-    for (int a = 0; a < ncol; a++) {
-      for (int b = 0; b < nrow; b++) {
-        // stored value is at lower left corner of grid
-        delx = a * l_grid - x_com;
-        dely = b * l_grid - y_com;
-        // Negative inside by definition
-        ls_dem_grid[i][b * ncol + a] = sqrt(delx * delx + dely * dely) - r;
-        ls_dem_gridx[i][b * ncol + a] = delx;
-        ls_dem_gridy[i][b * ncol + a] = dely;
-        ls_dem_gridz[i][b * ncol + a] = 0;
-
-        //if (i == 0) printf("%.3g ", ls_dem_grid[i][b * ncol + a]);
-        if (a == 0 && b == 0) {
-          grid_min[0] = delx;  // Later convert to peratom values
-          grid_min[1] = dely;
-          grid_min[2] = 0;
+    for (int iz = 0 ; iz < nslice ; iz++) {
+      for (int iy = 0 ; iy < nrow ; iy++) {
+        for (int ix = 0 ; ix < ncol ; ix++) {
+            int ndx = ix + iy * ncol + iz * ncol * nrow;
+            ls_dem_grid[i][ndx] = ls_val[ndx];
+            ls_dem_gridx[i][ndx] = grid_min[0] + ix * spac;
+            ls_dem_gridy[i][ndx] = grid_min[1] + iy * spac;
+            ls_dem_gridz[i][ndx] = grid_min[2] + iz * spac;
         }
       }
-      //if (i == 0) printf("\n");
     }
-    ls_dem_vol[i] = MY_PI * pow(5.0, 2);
+    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
+    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
   }
-
 }
 
 /* ----------------------------------------------------------------------

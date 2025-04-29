@@ -67,6 +67,11 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
 
+  inline int **get_ngrid_array() {return ngrid;};                // TEMP LSDEM HACK
+  inline double *get_grid_stride_array() {return grid_stride;};  // TEMP LSDEM HACK
+  inline double **get_grid_min_array() {return grid_min;};       // TEMP LSDEM HACK
+  inline double **get_grid_ls_val_array() {return grid_ls_val;}; // TEMP LSDEM HACK
+
  protected:
   char *id_fix;          // TEMP LSDEM HACK
   int index_ls_dem_vol;  // TEMP LSDEM HACK
