@@ -30,7 +30,7 @@
 #include "modify.h"
 #include "random_mars.h"
 #include "respa.h"
-#include "rigid_const.h"
+#include "rigid_ls_dem_const.h"
 #include "tokenizer.h"
 #include "update.h"
 #include "variable.h"
@@ -41,7 +41,7 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
-using namespace RigidConst;
+using namespace RigidLSDEMConst;
 
 /* ---------------------------------------------------------------------- */
 

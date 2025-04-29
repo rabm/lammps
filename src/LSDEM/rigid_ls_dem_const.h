@@ -12,11 +12,11 @@
 ------------------------------------------------------------------------- */
 // clang-format off
 
-#ifndef LMP_LS_DEM_CONST_H
-#define LMP_LS_DEM_CONST_H
+#ifndef LMP_RIGID_LS_DEM_CONST_H
+#define LMP_RIGID_LS_DEM_CONST_H
 
 namespace LAMMPS_NS {
-  namespace LSDEMConst {
+  namespace RigidLSDEMConst {
 
     enum{SINGLE, MOLECULE, GROUP};
     enum{NONE, XYZ, XY, YZ, XZ};
@@ -38,10 +38,17 @@ namespace LAMMPS_NS {
     static constexpr double EPSILON   = 1.0e-7;
     static constexpr double BIG       = 1.0e20;
 
+    // moment of inertia prefactor for sphere
+    static constexpr double SINERTIA = 0.4;
+    // moment of inertia prefactor for ellipsoid
+    static constexpr double EINERTIA = 0.2;
+    // moment of inertia prefactor for line segment
+    static constexpr double LINERTIA = 1.0/12.0;
+
     static constexpr int MAXLINE    = 1024;
     static constexpr int CHUNK      = 1024;
     static constexpr int DELTA_BODY = 10000;
-    static constexpr int ATTRIBUTE_PERBODY = 27;
+    static constexpr int ATTRIBUTE_PERBODY = 22;
   }
 }
 
