@@ -2322,7 +2322,7 @@ void FixRigidLSDEM::setup_bodies_static()
     int *ngrid_flat;
     memory->create(ngrid_flat,nbody,"rigid/ls/dem:ngrid_flat");
     for (int ibody = 0; ibody < nbody ; ibody++)
-        ngrid_flat[ibody] = ngrid[ibody][0] + ngrid[ibody][1] + ngrid[ibody][2];
+        ngrid_flat[ibody] = ngrid[ibody][0] * ngrid[ibody][1] * ngrid[ibody][2];
 
     // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
     // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
