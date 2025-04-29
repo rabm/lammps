@@ -75,6 +75,8 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_size; // TEMP LSDEM HACK
   int **ngrid;           // TEMP LSDEM HACK, numer of grid points in each dimension [nbody, (nx, ny, nz)]
   double **grid_ls_val;  // TEMP LSDEM HACK, Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
+  double **grid_min;     // TEMP LSDEM HACK, the lowest corner (in -1,-1,-1 direction) of the grid relative to COM
+  double *grid_stride;   // TEMP LSDEM HACK, the LS grid stride, assumed equal in all directions
 
   double dtv, dtf, dtq;
   double *step_respa;

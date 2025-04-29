@@ -54,7 +54,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     all(nullptr), remapflag(nullptr), xcmimage(nullptr), eflags(nullptr), orient(nullptr),
     dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), random(nullptr),
     avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr),
-    ngrid(nullptr), grid_ls_val(nullptr)
+    ngrid(nullptr), grid_ls_val(nullptr), grid_min(nullptr), grid_stride(nullptr)
 {
   id_fix = nullptr; // TEMP LSDEM HACK
   comm_forward = 8; // TEMP LSDEM HACK
@@ -289,6 +289,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(remapflag, nbody, 4, "rigid:remapflag");
 
   memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
+  memory->create(grid_min, nbody, 3, "rigid/ls/dem:grid_min");
+  memory->create(grid_stride, nbody, "rigid/ls/dem:grid_stride");
 
   // initialize force/torque flags to default = 1.0
   // for 2d: fz, tx, ty = 0.0
@@ -683,6 +685,8 @@ FixRigidLSDEM::~FixRigidLSDEM()
 
   memory->destroy(ngrid);
   memory->destroy(grid_ls_val);
+  memory->destroy(grid_min);
+  memory->destroy(grid_stride);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2318,7 +2322,7 @@ void FixRigidLSDEM::setup_bodies_static()
     readfile(2,scale,nullptr,nullptr,nullptr,nullptr,inbody,ls_grid_files);
 
     // Read grid dimensions for all bodies
-    read_gridfile(0,ls_grid_files,nullptr);
+    read_gridfile(0,ls_grid_files,scale);
     int *ngrid_flat;
     memory->create(ngrid_flat,nbody,"rigid/ls/dem:ngrid_flat");
     for (int ibody = 0; ibody < nbody ; ibody++)
@@ -2326,7 +2330,7 @@ void FixRigidLSDEM::setup_bodies_static()
 
     // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
     // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
-    memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_las_val");
+    memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
 
     // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
     read_gridfile(1,ls_grid_files,scale);
@@ -2978,7 +2982,8 @@ double FixRigidLSDEM::compute_array(int i, int j)
 void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale)
 {
     int nchunk,eofflag;
-    int grid_buf[3];
+    int grid_shape_buf[3];
+    double grid_size_buf[4];
     int nlines;
     FILE *fp;
     char *eof,*start,*next,*buf;
@@ -2986,6 +2991,7 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
 
     // open file and read and parse first non-empty, non-comment line containing the 3 grid dimensions
     // Broadcast to other procs
+    // TODO: there must be a better way to read the first 3 lines
     for (int ibody = 0 ; ibody < nbody ; ibody++) {
         char* gridfile = ls_grid_files[ibody];
         if (comm->me == 0) {
@@ -2998,18 +3004,35 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
                 start = &line[strspn(line," \t\n\v\f\r")];
                 if (*start != '\0' && *start != '#') break;
             }
-            auto grid_dims = utils::split_words(line);
-            if (grid_dims.size() != 3)
-                error->all(FLERR,"Dimensions for fix rigid/ls/dem gridfile {} must be 3, {} given",
-                                  gridfile,grid_dims.size());
-            grid_buf[0] = utils::inumeric(FLERR, grid_dims[0], false, lmp);
-            grid_buf[1] = utils::inumeric(FLERR, grid_dims[1], false, lmp);
-            grid_buf[2] = utils::inumeric(FLERR, grid_dims[2], false, lmp);
+            auto grid_shape = utils::split_words(line);
+            if (grid_shape.size() != 3)
+                error->one(FLERR,"Dimensions for fix rigid/ls/dem gridfile {} must be 3, {} given",
+                                  gridfile,grid_shape.size());
+            grid_shape_buf[0] = utils::inumeric(FLERR, grid_shape[0], false, lmp);
+            grid_shape_buf[1] = utils::inumeric(FLERR, grid_shape[1], false, lmp);
+            grid_shape_buf[2] = utils::inumeric(FLERR, grid_shape[2], false, lmp);
+
+            eof = fgets(line,MAXLINE,fp);
+            if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+            grid_size_buf[3] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+            if (grid_size_buf[3] <= 0.0)
+                error->one(FLERR,"Grid stride for rigid/ls/dem gridfile {} must be positive",gridfile);
+
+            eof = fgets(line,MAXLINE,fp);
+            if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+            auto grid_corner = utils::split_words(line);
+            if (grid_corner.size() != 3)
+                error->one(FLERR,"Fix rigid/ls/dem gridfile {} must specify 3 coordinates for grid corner, {} given",
+                                  gridfile,grid_corner.size());
+            grid_size_buf[4] = utils::numeric(FLERR, grid_corner[0], false, lmp);
+            grid_size_buf[5] = utils::numeric(FLERR, grid_corner[1], false, lmp);
+            grid_size_buf[6] = utils::numeric(FLERR, grid_corner[2], false, lmp);
             utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
         }
-        MPI_Bcast(grid_buf, 3, MPI_INT, 0, world);
+        MPI_Bcast(grid_shape_buf, 3, MPI_INT, 0, world);
+        MPI_Bcast(grid_size_buf, 4, MPI_DOUBLE, 0, world);
 
-        nlines = grid_buf[0] * grid_buf[1] * grid_buf[2];
+        nlines = grid_shape_buf[0] * grid_shape_buf[1] * grid_shape_buf[2];
 
         // TODO: I left the 2 lines below from original rigid::readline() not sure if needed
         // empty file with 0 lines is needed to trigger initial restart file
@@ -3018,9 +3041,13 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
         else if (nlines < 0) error->all(FLERR,"Fix rigid/ls/dem gridfile has incorrect format");
 
         if (which == 0) {
-            ngrid[ibody][0] = grid_buf[0];
-            ngrid[ibody][1] = grid_buf[1];
-            ngrid[ibody][2] = grid_buf[2];
+            ngrid[ibody][0] = grid_shape_buf[0];
+            ngrid[ibody][1] = grid_shape_buf[1];
+            ngrid[ibody][2] = grid_shape_buf[2];
+            grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
+            grid_min[ibody][0] = grid_size_buf[1] * scale[ibody];
+            grid_min[ibody][1] = grid_size_buf[2] * scale[ibody];
+            grid_min[ibody][2] = grid_size_buf[3] * scale[ibody];
         } else {
             auto buffer = new char[CHUNK*MAXLINE];
             int nread = 0;
