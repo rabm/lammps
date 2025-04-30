@@ -39,7 +39,6 @@ using namespace MathConst;
 PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr)
 {
   writedata = 1;
-  id_fix = nullptr;
   single_enable = 0;
 }
 
@@ -47,8 +46,6 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma
 
 PairLSDEM::~PairLSDEM()
 {
-  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
-  delete[] id_fix;
 
   if (allocated) {
     memory->destroy(setflag);
@@ -337,11 +334,6 @@ void PairLSDEM::settings(int narg, char ** arg)
   while (iarg < narg) {
     error->all(FLERR, "Illegal pair_style command {}", arg[iarg]);
   }
-
-  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
-
-  if (!id_fix)
-    id_fix = utils::strdup(std::string("PAIR_LS_DEM") + std::to_string(instance_me));
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
