@@ -3027,8 +3027,8 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
 
             eof = fgets(line,MAXLINE,fp);
             if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-            grid_size_buf[3] = utils::numeric(FLERR, utils::trim(line), false, lmp);
-            if (grid_size_buf[3] <= 0.0)
+            grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+            if (grid_size_buf[0] <= 0.0)
                 error->one(FLERR,"Grid stride for rigid/ls/dem gridfile {} must be positive",gridfile);
 
             eof = fgets(line,MAXLINE,fp);
@@ -3037,9 +3037,9 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
             if (grid_corner.size() != 3)
                 error->one(FLERR,"Fix rigid/ls/dem gridfile {} must specify 3 coordinates for grid corner, {} given",
                                   gridfile,grid_corner.size());
-            grid_size_buf[4] = utils::numeric(FLERR, grid_corner[0], false, lmp);
-            grid_size_buf[5] = utils::numeric(FLERR, grid_corner[1], false, lmp);
-            grid_size_buf[6] = utils::numeric(FLERR, grid_corner[2], false, lmp);
+            grid_size_buf[1] = utils::numeric(FLERR, grid_corner[0], false, lmp);
+            grid_size_buf[2] = utils::numeric(FLERR, grid_corner[1], false, lmp);
+            grid_size_buf[3] = utils::numeric(FLERR, grid_corner[2], false, lmp);
             utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
         }
         MPI_Bcast(grid_shape_buf, 3, MPI_INT, 0, world);
