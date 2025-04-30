@@ -73,7 +73,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   inline double **get_grid_ls_val_array() {return grid_ls_val;}; // TEMP LSDEM HACK
 
  protected:
-  char *id_fix;          // TEMP LSDEM HACK
+  char *id_fix, *id_fix2;          // TEMP LSDEM HACK
   int index_ls_dem_vol;  // TEMP LSDEM HACK
   int index_ls_dem_com;  // TEMP LSDEM HACK
   int index_ls_dem_quat; // TEMP LSDEM HACK

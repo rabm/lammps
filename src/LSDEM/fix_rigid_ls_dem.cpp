@@ -57,6 +57,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     ngrid(nullptr), grid_ls_val(nullptr), grid_min(nullptr), grid_stride(nullptr)
 {
   id_fix = nullptr; // TEMP LSDEM HACK
+  id_fix2 = nullptr; // TEMP LSDEM HACK
   comm_forward = 8; // TEMP LSDEM HACK
 
   int i, ibody;
@@ -637,6 +638,8 @@ FixRigidLSDEM::~FixRigidLSDEM()
 {
   if (id_fix && modify->nfix) modify->delete_fix(id_fix); // TEMP LSDEM HACK
   delete[] id_fix;                                        // TEMP LSDEM HACK
+  if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2); // TEMP LSDEM HACK
+  delete[] id_fix2;                                        // TEMP LSDEM HACK
 
   // unregister callbacks to this fix from Atom class
 
@@ -804,6 +807,16 @@ void FixRigidLSDEM::init()
     setupflag = 1;
   }
 
+  // Create per-atom properties necessary for current implementation of LS-DEM
+  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
+  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
+  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+  if (!modify->get_fix_by_id(id_fix2)) {
+    int n = ngrid[0][0] * ngrid[0][1] * ngrid[0][2];
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
+                                id_fix2, n, n, n, n));
+  }
   // temperature scale factor
 
   double ndof = 0.0;

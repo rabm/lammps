@@ -762,12 +762,11 @@ double PairLSDEM::smearedHeavisideStep(double x)
 /* ---------------------------------------------------------------------- */
 void PairLSDEM::setup()
 {
-  // Create per-atom properties necessary for current implementation of LS-DEM
   // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
   // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
   // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
   auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
-  if (lsdem_fixes.size() > 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
+  if (lsdem_fixes.size() != 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
   auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
   ncol = my_lsdem_fix->get_ngrid_array()[0][0];
   nrow = my_lsdem_fix->get_ngrid_array()[0][1];
@@ -777,12 +776,6 @@ void PairLSDEM::setup()
   grid_min[2] = my_lsdem_fix->get_grid_min_array()[0][2];
   spac = my_lsdem_fix->get_grid_stride_array()[0];
   ngrid = ncol * nrow * nslice;
-
-  // TODO: We may want to create this Fix inside fix_rigid_ls_dem::init()
-  if (!modify->get_fix_by_id(id_fix)) {
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
-                                id_fix, ngrid, ngrid, ngrid, ngrid));
-  }
 
   int tmp1, tmp2;
   index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
