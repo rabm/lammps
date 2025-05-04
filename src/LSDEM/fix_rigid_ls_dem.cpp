@@ -28,6 +28,8 @@
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
+#include "pair.h"
+#include "pair_ls_dem.h"
 #include "random_mars.h"
 #include "respa.h"
 #include "rigid_ls_dem_const.h"
@@ -571,18 +573,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
       id_gravity = utils::strdup(arg[iarg + 1]);
       iarg += 2;
 
-    } else if (strcmp(arg[iarg], "cutoff") == 0) {
-      if (iarg + 2 > narg)
-        utils::missing_cmd_args(FLERR, fmt::format("fix {} cutoff", style), error);
-      maxcut = utils::numeric(FLERR, arg[iarg + 1], false, lmp);
-      iarg += 2;
-
     } else
       error->all(FLERR, "Illegal fix {} command", style);
   }
-
-  if (maxcut <= 0.0)
-    error->all(FLERR, "Must define maximum cutoff > 0.0");
 
   // clang-format off
 
@@ -829,6 +822,12 @@ void FixRigidLSDEM::init()
   if (ndof > 0.0) tfactor = force->mvv2e / (ndof * force->boltz);
   else tfactor = 0.0;
 
+  // Copy maximu
+  if (!utils::strmatch(force->pair_style,"^ls/dem"))
+    error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
+  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  maxcut = pair->maxcut;
+
   // Initialize peratom arrays once
   if (id_fix2) return;
 
@@ -876,7 +875,8 @@ void FixRigidLSDEM::init()
   double delx, dely;
   double **x = atom->x;
   int xbin, ybin, zbin, xminbin, yminbin, zminbin, index;
-  int ix_global, iy_global, iz_global, indx;
+  int ix_global, iy_global, iz_global;
+  int index_global, index_local;
   for (int i = 0; i < atom->nlocal; i++) {
     // location of bin containing atom/node in global grid
     xbin = (x[i][0] - grain_com[i][0]) / spac;
@@ -896,12 +896,13 @@ void FixRigidLSDEM::init()
           iy_global = iy_local + grid_min_local[i][1];
           iz_global = iz_local + grid_min_local[i][2];
 
-          indx = ix_global + iy_global * ncol + iz_global * ncol * nrow;
+          index_global = ix_global + iy_global * ncol + iz_global * ncol * nrow;
+          index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
 
-          grid[i][indx] = ls_val[indx];
-          gridx[i][indx] = grid_min[i][0] + ix_global * spac;
-          gridy[i][indx] = grid_min[i][1] + iy_global * spac;
-          gridz[i][indx] = grid_min[i][2] + iz_global * spac;
+          grid[i][index_local] = ls_val[index_global];
+          gridx[i][index_local] = grid_min[i][0] + ix_global * spac;
+          gridy[i][index_local] = grid_min[i][1] + iy_global * spac;
+          gridz[i][index_local] = grid_min[i][2] + iz_global * spac;
         }
       }
     }

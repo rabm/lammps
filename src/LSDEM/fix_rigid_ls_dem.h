@@ -70,6 +70,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   inline int **get_ngrid_array() {return ngrid;};
   inline int *get_ngrid_local_array() {return ngrid_local;};
   inline double *get_grid_stride_array() {return grid_stride;};
+  inline double get_grid_stride() {return spac;};
   inline double **get_grid_min_array() {return grid_min;};
   inline double **get_grid_ls_val_array() {return grid_ls_val;};
 

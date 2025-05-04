@@ -331,9 +331,10 @@ void PairLSDEM::allocate()
 
 void PairLSDEM::settings(int narg, char ** arg)
 {
-  int iarg = 0;
-  while (iarg < narg)
-    error->all(FLERR, "Illegal pair_style command {}", arg[iarg]);
+  if (narg != 1)
+    error->all(FLERR, "Illegal pair_style command");
+
+  maxcut = utils::numeric(FLERR, arg[0], false, lmp);
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
@@ -501,17 +502,18 @@ void PairLSDEM::init_style()
 void PairLSDEM::setup()
 {
   int n = atom->ntypes;
-  maxcut = -1;
+  double maxcut2 = -1;
   for (int i = 1; i <= n; i++)
     for (int j = 1; j <= n; j++)
-      maxcut = MAX(maxcut, cut[i][j]);
+      maxcut2 = MAX(maxcut2, cut[i][j]);
 
   auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
   if (fixlist.size() != 1)
     error->all(FLERR, "Must have one instance of fix rigid/ls/dem for pair LS-DEM.");
   auto fixrigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
-  if (fixrigid->get_maxcut() != maxcut)
-    error->all(FLERR, "Cutoff for fix rigid must match pair style");
+
+  if (maxcut < maxcut2)
+    error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
 
   // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
   // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
@@ -519,7 +521,7 @@ void PairLSDEM::setup()
   auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
   if (lsdem_fixes.size() != 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
   auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
-  spac = my_lsdem_fix->get_grid_stride_array();
+  spac = my_lsdem_fix->get_grid_stride();
   ncol = my_lsdem_fix->get_ngrid_local_array()[0];
   nrow = my_lsdem_fix->get_ngrid_local_array()[1];
   nslice = my_lsdem_fix->get_ngrid_local_array()[2];

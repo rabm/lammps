@@ -39,8 +39,10 @@ class PairLSDEM : public Pair {
   void write_data(FILE *) override;
   void write_data_all(FILE *) override;
 
+  double maxcut;
+
  protected:
-  double **k, **cut, **gamma, maxcut;
+  double **k, **cut, **gamma;
 
   int index_ls_grid;
   int index_ls_gridx;
