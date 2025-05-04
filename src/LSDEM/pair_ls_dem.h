@@ -32,25 +32,26 @@ class PairLSDEM : public Pair {
   void coeff(int, char **) override;
   void settings(int, char **) override;
   void init_style() override;
+  void setup() override;
   double init_one(int, int) override;
   void write_restart(FILE *) override;
   void read_restart(FILE *) override;
   void write_data(FILE *) override;
   void write_data_all(FILE *) override;
-  void setup() override;
 
  protected:
-  double **k, **cut, **gamma;
+  double **k, **cut, **gamma, maxcut;
 
-  int index_ls_dem_grid;
-  int index_ls_dem_gridx;
-  int index_ls_dem_gridy;
-  int index_ls_dem_gridz;
+  int index_ls_grid;
+  int index_ls_gridx;
+  int index_ls_gridy;
+  int index_ls_gridz;
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
-  int ngrid, nrow, ncol, nslice;
-  double grid_min[3];
+  int index_ls_gridmin;
+  int index_ls_local_gridmin;
+  int ngrid, rbin, nrow, ncol, nslice;
   double spac;
 
   void allocate();

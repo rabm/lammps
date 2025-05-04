@@ -46,7 +46,6 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma
 
 PairLSDEM::~PairLSDEM()
 {
-
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
@@ -138,14 +137,16 @@ void PairLSDEM::compute(int eflag, int vflag)
       rsq = delx * delx + dely * dely + delz * delz;
       r = sqrt(rsq);
 
+      if (r > maxcut) continue;
+
       // Need an additional check such that only nodes of the smallest grain i
       // are used in combination with the level set of grain j.
       // If grain volumes are equal, always take the nodes of the grian with the lowest
       // particle id number.
       // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
 
-      // What does this code do exactly? Does this make both neighbour lists 
-      // min_distance(i) = j and min_distance(j) = i? 
+      // What does this code do exactly? Does this make both neighbour lists
+      // min_distance(i) = j and min_distance(j) = i?
 
       key = nbody * itag + jbody;
       // If first interation between i and j's grain, create entry
@@ -230,7 +231,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Evaluate the level set, and assign the interaction direction based on
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
-        // Note: level set is by definition negative inside the particle, so swap the sign. 
+        // Note: level set is by definition negative inside the particle, so swap the sign.
         u = - get_ls_value(i, j, normal);
         // The normal points away from j, correct signs
         MathExtra::negate3(normal);
@@ -331,9 +332,8 @@ void PairLSDEM::allocate()
 void PairLSDEM::settings(int narg, char ** arg)
 {
   int iarg = 0;
-  while (iarg < narg) {
+  while (iarg < narg)
     error->all(FLERR, "Illegal pair_style command {}", arg[iarg]);
-  }
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
@@ -350,12 +350,12 @@ void PairLSDEM::settings(int narg, char ** arg)
 //   spac = l_grid;
 
   /*
-  
+
   // Volume integration
-  double **grain_grid = atom->darray[index_ls_dem_grid];
-  double **grain_grid_x = atom->darray[index_ls_dem_gridx];
-  double **grain_grid_y = atom->darray[index_ls_dem_gridy];
-  double **grain_grid_z = atom->darray[index_ls_dem_gridz];
+  double **grain_grid = atom->darray[index_ls_grid];
+  double **grain_grid_x = atom->darray[index_ls_gridx];
+  double **grain_grid_y = atom->darray[index_ls_gridy];
+  double **grain_grid_z = atom->darray[index_ls_gridz];
 
   // This is the reference distance values that determines the smearing with of
   // the Heaviside step function. Current expression is the half-diagional of the
@@ -401,7 +401,7 @@ void PairLSDEM::settings(int narg, char ** arg)
   x_com /= volume;
   y_com /= volume;
   z_com /= volume;
-  
+
   // Computing the inertia tensor (a double loop is unavoidable).
   double Ixx = 0.0, Iyy = 0.0, Izz = 0.0, Ixy = 0.0, Ixz = 0.0, Iyz = 0.0;
 	for (int ind_x = 0; ind_x < nrow; xIndex++){
@@ -432,7 +432,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 			}
 		}
 	}
-  
+
   // Check to see if level set has a non-inertial reference frame
   double I_diag_norm = sqrt(Ixx*Ixx + Iyy*Iyy + Izz*Izz);
   double I_off_diag_norm = sqrt(2*Ixy*Ixy + 2*Ixz*Ixz + 2*Iyz*Iyz);
@@ -494,6 +494,47 @@ void PairLSDEM::init_style()
     error->all(FLERR, "Pair LS/DEM requires ghost atoms store velocity");
 
   neighbor->add_request(this);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void PairLSDEM::setup()
+{
+  int n = atom->ntypes;
+  maxcut = -1;
+  for (int i = 1; i <= n; i++)
+    for (int j = 1; j <= n; j++)
+      maxcut = MAX(maxcut, cut[i][j]);
+
+  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
+  if (fixlist.size() != 1)
+    error->all(FLERR, "Must have one instance of fix rigid/ls/dem for pair LS-DEM.");
+  auto fixrigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
+  if (fixrigid->get_maxcut() != maxcut)
+    error->all(FLERR, "Cutoff for fix rigid must match pair style");
+
+  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
+  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
+  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
+  if (lsdem_fixes.size() != 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
+  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
+  spac = my_lsdem_fix->get_grid_stride_array();
+  ncol = my_lsdem_fix->get_ngrid_local_array()[0];
+  nrow = my_lsdem_fix->get_ngrid_local_array()[1];
+  nslice = my_lsdem_fix->get_ngrid_local_array()[2];
+
+  int tmp1, tmp2;
+  index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
+  index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
+  index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
+  index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
+  index_ls_gridmin = atom->find_custom("ls_gridmin", tmp1, tmp2);
+  index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
+
+  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
+  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
+  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
 }
 
 /* ----------------------------------------------------------------------
@@ -593,14 +634,16 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **x = atom->x;
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_grid = atom->darray[index_ls_dem_grid];
-  double **grain_grid_x = atom->darray[index_ls_dem_gridx];
-  double **grain_grid_y = atom->darray[index_ls_dem_gridy];
-  double **grain_grid_z = atom->darray[index_ls_dem_gridz];
+  double **grain_grid = atom->darray[index_ls_grid];
+  double **grain_grid_x = atom->darray[index_ls_gridx];
+  double **grain_grid_y = atom->darray[index_ls_gridy];
+  double **grain_grid_z = atom->darray[index_ls_gridz];
+  double **grid_min = atom->darray[index_ls_gridmin];
+  double **local_grid_min = atom->darray[index_ls_local_gridmin];
 
-  int nrow_offset = 0; // Offsets for local subgrid, to implement later
-  int ncol_offset = 0; //   currently subgrid = grid, so offsets are zero
-  int nslice_offset = 0;
+  int nrow_offset = local_grid_min[j][0]; // Offsets for local subgrid
+  int ncol_offset = local_grid_min[j][1];
+  int nslice_offset = local_grid_min[j][2];
 
   // Calculate position of i in j's grid using:
   //   x[i][0-2] = location of i
@@ -613,8 +656,8 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //
 
   // Relative coordinate of node i w.r.t. centre of mass grain j
-  double delx = x[i][0]-grain_com[j][0];
-  double dely = x[i][1]-grain_com[j][1];
+  double delx = x[i][0] - grain_com[j][0];
+  double dely = x[i][1] - grain_com[j][1];
   double delz = 0; // x[i][2]-grain_com[j][2];
   // Account for PBCs
   domain->minimum_image(delx, dely, delz);
@@ -648,26 +691,27 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
   //        will have to normalise.)
-  int ind_x = int( (x_local[0] - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
-  int ind_y = int( (x_local[1] - grid_min[1]) / spac );
-  int ind_z = 0; //int( (x_local[2] - grid_min[2]) / spac );
+  int ind_x = x_local[0] / spac; //int( (x_local[0] - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
+  int ind_y = x_local[1] / spac; //int( (x_local[1] - grid_min[1]) / spac );
+  int ind_z = x_local[2] / spac; //int( (x_local[2] - grid_min[2]) / spac );
 
-  // We might need an extra check. If x_local is very close to grid_min, it may pass and give
-  // errors later.
-  // Joel: I added a macro EPSILON which might be useful for biasing rounding
-
-  if ( (ind_x < 0) || (ind_y < 0) || (ind_z < 0) ) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  } else if ( (ind_x > nrow - 1) || (ind_y > ncol - 1) || (ind_z > nslice-1) ) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  }
-
-  // Apply offsets, there is probably a more proper way
+  // Apply local offsets
   ind_x = ind_x - nrow_offset;
   ind_y = ind_y - ncol_offset;
   ind_z = ind_z - nslice_offset;
+
+
+  // We might need an extra check. If x_local is very close to grid_min, it may pass and give
+  // errors later.
+  // Joel: added +/- for interpolation
+
+  if ( (ind_x < 1) || (ind_y < 1) || (ind_z < 1) ) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || (ind_z >= nslice-1) ) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  }
 
   //
   //  DO THE BILINEAR INTERPOLATION
@@ -742,66 +786,12 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
 /* ----------------------------------------------------------------------
    Smeared Heaviside step function
 ------------------------------------------------------------------------- */
+
 double PairLSDEM::smearedHeavisideStep(double x)
 {
   // A function that smoothly transition from 0 to 1 when x goes from -1 to 1.
   // For x < -1, the function should be 0. For x > 1, the function should be 1.
-  // This is not implemented here, and up to the user to take care of ouside 
+  // This is not implemented here, and up to the user to take care of ouside
   // this function. See Kawamoto et al. (2016).
   return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
 }
-
-/* ---------------------------------------------------------------------- */
-void PairLSDEM::setup()
-{
-  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
-  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
-  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
-  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
-  if (lsdem_fixes.size() != 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
-  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
-  ncol = my_lsdem_fix->get_ngrid_array()[0][0];
-  nrow = my_lsdem_fix->get_ngrid_array()[0][1];
-  nslice = my_lsdem_fix->get_ngrid_array()[0][2];
-  grid_min[0] = my_lsdem_fix->get_grid_min_array()[0][0];
-  grid_min[1] = my_lsdem_fix->get_grid_min_array()[0][1];
-  grid_min[2] = my_lsdem_fix->get_grid_min_array()[0][2];
-  spac = my_lsdem_fix->get_grid_stride_array()[0];
-  ngrid = ncol * nrow * nslice;
-
-  int tmp1, tmp2;
-  index_ls_dem_grid = atom->find_custom("ls_dem_grid", tmp1, tmp2);
-  index_ls_dem_gridx = atom->find_custom("ls_dem_gridx", tmp1, tmp2);
-  index_ls_dem_gridy = atom->find_custom("ls_dem_gridy", tmp1, tmp2);
-  index_ls_dem_gridz = atom->find_custom("ls_dem_gridz", tmp1, tmp2);
-
-  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
-  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
-
-  double **ls_dem_grid = atom->darray[index_ls_dem_grid];
-  double **ls_dem_gridx = atom->darray[index_ls_dem_gridx];
-  double **ls_dem_gridy = atom->darray[index_ls_dem_gridy];
-  double **ls_dem_gridz = atom->darray[index_ls_dem_gridz];
-  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
-
-  double *ls_val = my_lsdem_fix->get_grid_ls_val_array()[0];
-  for (int i = 0; i < atom->nlocal; i++) {
-    for (int iz = 0 ; iz < nslice ; iz++) {
-      for (int iy = 0 ; iy < nrow ; iy++) {
-        for (int ix = 0 ; ix < ncol ; ix++) {
-            int ndx = ix + iy * ncol + iz * ncol * nrow;
-            ls_dem_grid[i][ndx] = ls_val[ndx];
-            ls_dem_gridx[i][ndx] = grid_min[0] + ix * spac;
-            ls_dem_gridy[i][ndx] = grid_min[1] + iy * spac;
-            ls_dem_gridz[i][ndx] = grid_min[2] + iz * spac;
-        }
-      }
-    }
-    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
-    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
-  }
-
-}
-
-// End of file

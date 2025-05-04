@@ -56,9 +56,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr),
     ngrid(nullptr), grid_ls_val(nullptr), grid_min(nullptr), grid_stride(nullptr)
 {
-  id_fix = nullptr; // TEMP LSDEM HACK
-  id_fix2 = nullptr; // TEMP LSDEM HACK
-  comm_forward = 8; // TEMP LSDEM HACK
+  id_fix = nullptr;
+  id_fix2 = nullptr;
+  comm_forward = 8;
 
   int i, ibody;
 
@@ -71,6 +71,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   create_attribute = 1;
   dof_flag = 1;
   centroidstressflag = CENTROID_NOTAVAIL;
+
+  maxcut = -1;
 
   // perform initial allocation of atom-based arrays
   // register with Atom class
@@ -569,9 +571,18 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
       id_gravity = utils::strdup(arg[iarg + 1]);
       iarg += 2;
 
+    } else if (strcmp(arg[iarg], "cutoff") == 0) {
+      if (iarg + 2 > narg)
+        utils::missing_cmd_args(FLERR, fmt::format("fix {} cutoff", style), error);
+      maxcut = utils::numeric(FLERR, arg[iarg + 1], false, lmp);
+      iarg += 2;
+
     } else
       error->all(FLERR, "Illegal fix {} command", style);
   }
+
+  if (maxcut <= 0.0)
+    error->all(FLERR, "Must define maximum cutoff > 0.0");
 
   // clang-format off
 
@@ -636,10 +647,10 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigidLSDEM::~FixRigidLSDEM()
 {
-  if (id_fix && modify->nfix) modify->delete_fix(id_fix); // TEMP LSDEM HACK
-  delete[] id_fix;                                        // TEMP LSDEM HACK
-  if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2); // TEMP LSDEM HACK
-  delete[] id_fix2;                                        // TEMP LSDEM HACK
+  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
+  delete[] id_fix;
+  if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2);
+  delete[] id_fix2;
 
   // unregister callbacks to this fix from Atom class
 
@@ -698,7 +709,7 @@ int FixRigidLSDEM::setmask()
 {
   int mask = 0;
   mask |= INITIAL_INTEGRATE;
-  mask |= PRE_FORCE; // TEMP LSDEM HACK
+  mask |= PRE_FORCE;
   mask |= FINAL_INTEGRATE;
   if (langflag) mask |= POST_FORCE;
   mask |= PRE_NEIGHBOR;
@@ -709,7 +720,7 @@ int FixRigidLSDEM::setmask()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLSDEM::post_constructor()  // TEMP LSDEM HACK
+void FixRigidLSDEM::post_constructor()
 {
   // Store positional information of grain on all atoms
 
@@ -807,16 +818,6 @@ void FixRigidLSDEM::init()
     setupflag = 1;
   }
 
-  // Create per-atom properties necessary for current implementation of LS-DEM
-  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
-  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
-  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
-  id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-  if (!modify->get_fix_by_id(id_fix2)) {
-    int n = ngrid[0][0] * ngrid[0][1] * ngrid[0][2];
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_grid {} d2_ls_dem_gridx {} d2_ls_dem_gridy {} d2_ls_dem_gridz {} writedata no ghost yes",
-                                id_fix2, n, n, n, n));
-  }
   // temperature scale factor
 
   double ndof = 0.0;
@@ -827,6 +828,102 @@ void FixRigidLSDEM::init()
   ndof -= nlinear;
   if (ndof > 0.0) tfactor = force->mvv2e / (ndof * force->boltz);
   else tfactor = 0.0;
+
+  // Initialize peratom arrays once
+  if (id_fix2) return;
+
+  // Create per-atom properties necessary for current implementation of LS-DEM
+  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
+  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
+  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+  spac = 0.5; // TODO make a user specified input
+  rbin = maxcut / spac + 1; // +1 for interpolation
+  for (int a = 0; a < 3; a++)
+    ngrid_local[a] = 2 * rbin + 1;  // +1 for middle cell (is this needed?)
+  if (!modify->get_fix_by_id(id_fix2)) {
+    int n = ngrid_local[0] * ngrid_local[1];
+    if (domain->dimension == 3)
+      n *= ngrid_local[2];
+
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_gridx {} d2_ls_gridy {} d2_ls_gridz {} d2_ls_gridmin {} d2_ls_local_gridmin {} writedata no ghost yes",
+                                id_fix2, n, n, n, n, 3, 3));
+  }
+
+  int tmp1, tmp2;
+  index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
+  index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
+  index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
+  index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
+  index_ls_gridmin = atom->find_custom("ls_gridmin", tmp1, tmp2);
+  index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
+
+  // Populate local arrays
+  double **grid = atom->darray[index_ls_grid];
+  double **gridx = atom->darray[index_ls_gridx];
+  double **gridy = atom->darray[index_ls_gridy];
+  double **gridz = atom->darray[index_ls_gridz];
+  double **grid_min = atom->darray[index_ls_gridmin];
+  double **grid_min_local = atom->darray[index_ls_local_gridmin];
+  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
+  double *ls_val = grid_ls_val[0]; // JTC: what is the first index?
+  double **grain_com = atom->darray[index_ls_dem_com];
+
+  int ncol = ngrid[0][0];
+  int nrow = ngrid[0][1];
+  int nslice = ngrid[0][2];
+
+  double delx, dely;
+  double **x = atom->x;
+  int xbin, ybin, zbin, xminbin, yminbin, zminbin, index;
+  int ix_global, iy_global, iz_global, indx;
+  for (int i = 0; i < atom->nlocal; i++) {
+    // location of bin containing atom/node in global grid
+    xbin = (x[i][0] - grain_com[i][0]) / spac;
+    ybin = (x[i][1] - grain_com[i][1]) / spac;
+    ybin = (x[i][2] - grain_com[i][2]) / spac;
+
+    // offset minimum by (-rbin, -rbin, -rbin)
+    grid_min_local[i][0] = xbin - rbin;
+    grid_min_local[i][1] = ybin - rbin;
+    grid_min_local[i][2] = zbin - rbin;
+
+    for (int iz_local = 0 ; iz_local < ngrid_local[2] ; iz_local++) {
+      for (int iy_local = 0 ; iy_local < ngrid_local[1] ; iy_local++) {
+        for (int ix_local = 0 ; ix_local < ngrid_local[0] ; ix_local++) {
+          // shift local bin to global bin
+          ix_global = ix_local + grid_min_local[i][0];
+          iy_global = iy_local + grid_min_local[i][1];
+          iz_global = iz_local + grid_min_local[i][2];
+
+          indx = ix_global + iy_global * ncol + iz_global * ncol * nrow;
+
+          grid[i][indx] = ls_val[indx];
+          gridx[i][indx] = grid_min[i][0] + ix_global * spac;
+          gridy[i][indx] = grid_min[i][1] + iy_global * spac;
+          gridz[i][indx] = grid_min[i][2] + iz_global * spac;
+        }
+      }
+    }
+    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
+    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
+  }
+
+  double **x_lsdem = atom->darray[index_ls_dem_com];
+  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+
+  int ibody;
+  for (int i = 0; i < atom->nlocal; i++) {
+    ibody = body[i];
+    x_lsdem[i][0] = xcm[ibody][0];
+    x_lsdem[i][1] = xcm[ibody][1];
+    x_lsdem[i][2] = xcm[ibody][2];
+
+    quat_lsdem[i][0] = quat[ibody][0];
+    quat_lsdem[i][1] = quat[ibody][1];
+    quat_lsdem[i][2] = quat[ibody][2];
+    quat_lsdem[i][3] = quat[ibody][3];
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -957,14 +1054,14 @@ void FixRigidLSDEM::setup(int vflag)
 /* ---------------------------------------------------------------------- */
 
 void FixRigidLSDEM::setup_pre_force(int vflag)
-{ // TEMP LSDEM HACK
+{
   pre_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */
 
 void FixRigidLSDEM::pre_force(int vflag)
-{ // TEMP LSDEM HACK
+{
   comm->forward_comm(this);
 }
 
@@ -1580,7 +1677,7 @@ void FixRigidLSDEM::set_xv()
     }
   }
 
-  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   for (int i = 0; i < nlocal; i++) {
@@ -1602,7 +1699,7 @@ void FixRigidLSDEM::set_xv()
 int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
 {
   int i, j, m;
-  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   m = 0;
@@ -1627,7 +1724,7 @@ int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag
 void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   int i, m, last;
-  double **x_lsdem = atom->darray[index_ls_dem_com];          // TEMP LSDEM HACK
+  double **x_lsdem = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
   m = 0;

@@ -29,14 +29,14 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   FixRigidLSDEM(class LAMMPS *, int, char **);
   ~FixRigidLSDEM() override;
   int setmask() override;
-  void post_constructor() override;                                 // TEMP LSDEM HACK
-  int pack_forward_comm(int, int *, double *, int, int *) override; // TEMP LSDEM HACK
-  void unpack_forward_comm(int, int, double *) override;            // TEMP LSDEM HACK
+  void post_constructor() override;
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
   void init() override;
   void setup(int) override;
-  void setup_pre_force(int) override; // TEMP LSDEM HACK
+  void setup_pre_force(int) override;
   void initial_integrate(int) override;
-  void pre_force(int) override; // TEMP LSDEM HACK
+  void pre_force(int) override;
   void post_force(int) override;
   void final_integrate() override;
   void initial_integrate_respa(int, int, int) override;
@@ -67,27 +67,42 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
 
-  inline int **get_ngrid_array() {return ngrid;};                // TEMP LSDEM HACK
-  inline double *get_grid_stride_array() {return grid_stride;};  // TEMP LSDEM HACK
-  inline double **get_grid_min_array() {return grid_min;};       // TEMP LSDEM HACK
-  inline double **get_grid_ls_val_array() {return grid_ls_val;}; // TEMP LSDEM HACK
+  inline int **get_ngrid_array() {return ngrid;};
+  inline int *get_ngrid_local_array() {return ngrid_local;};
+  inline double *get_grid_stride_array() {return grid_stride;};
+  inline double **get_grid_min_array() {return grid_min;};
+  inline double **get_grid_ls_val_array() {return grid_ls_val;};
+
+  inline double get_maxcut() {return maxcut;};
 
  protected:
-  char *id_fix, *id_fix2;          // TEMP LSDEM HACK
-  int index_ls_dem_vol;  // TEMP LSDEM HACK
-  int index_ls_dem_com;  // TEMP LSDEM HACK
-  int index_ls_dem_quat; // TEMP LSDEM HACK
-  int index_ls_dem_size; // TEMP LSDEM HACK
-  int **ngrid;           // TEMP LSDEM HACK, numer of grid points in each dimension [nbody, (nx, ny, nz)]
-  double **grid_ls_val;  // TEMP LSDEM HACK, Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
-  double **grid_min;     // TEMP LSDEM HACK, the lowest corner (in -1,-1,-1 direction) of the grid relative to COM
-  double *grid_stride;   // TEMP LSDEM HACK, the LS grid stride, assumed equal in all directions
+  char *id_fix, *id_fix2;
+  int index_ls_dem_vol;
+  int index_ls_dem_com;
+  int index_ls_dem_quat;
+  int index_ls_dem_size;
+
+  int index_ls_grid;
+  int index_ls_gridx;
+  int index_ls_gridy;
+  int index_ls_gridz;
+  int index_ls_gridmin;
+  int index_ls_local_gridmin;
+
+  int **ngrid;           // number of grid points in each dimension [nbody, (nx, ny, nz)]
+  int ngrid_local[3];    // number of local grid points in each dimension
+  double **grid_ls_val;  // Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
+  double **grid_min;
+  double *grid_stride;   // the LS grid stride, assumed equal in all directions
+                         // JTC: is there a reason this would vary across grains?
+  double spac, maxcut;
+  int rbin;
 
   double dtv, dtf, dtq;
   double *step_respa;
   int triclinic;
 
-  char *inpfile;    // file to read rigid body attributes from // TEMP LSDEM HACK
+  char *inpfile;    // file to read rigid body attributes from
 
   int rstyle;       // SINGLE,MOLECULE,GROUP
   int setupflag;    // 1 if body properties are setup, else 0
@@ -163,13 +178,13 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void image_shift();
   void set_xv();
   void set_v();
-  void setup_bodies_static(); // TEMP LSDEM HACK
+  void setup_bodies_static();
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   virtual void compute_forces_and_torques();
   void enforce2d();
   void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
-  void read_gridfile(int, char**, double *); // TEMP LSDEM HACK
+  void read_gridfile(int, char**, double *);
 };
 
 }    // namespace LAMMPS_NS
