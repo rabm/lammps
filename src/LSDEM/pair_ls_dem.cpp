@@ -531,7 +531,6 @@ void PairLSDEM::setup()
   index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
   index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
   index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
-  index_ls_gridmin = atom->find_custom("ls_gridmin", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
@@ -640,12 +639,11 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_grid_x = atom->darray[index_ls_gridx];
   double **grain_grid_y = atom->darray[index_ls_gridy];
   double **grain_grid_z = atom->darray[index_ls_gridz];
-  double **grid_min = atom->darray[index_ls_gridmin];
   double **local_grid_min = atom->darray[index_ls_local_gridmin];
 
-  int nrow_offset = local_grid_min[j][0]; // Offsets for local subgrid
-  int ncol_offset = local_grid_min[j][1];
-  int nslice_offset = local_grid_min[j][2];
+  //int nrow_offset = local_grid_min[j][0]; // Offsets for local subgrid
+  //int ncol_offset = local_grid_min[j][1];
+  //int nslice_offset = local_grid_min[j][2];
 
   // Calculate position of i in j's grid using:
   //   x[i][0-2] = location of i
@@ -693,14 +691,14 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
   //        will have to normalise.)
-  int ind_x = x_local[0] / spac; //int( (x_local[0] - grid_min[0]) / spac ); // Here, int() does the same as floor() + conversion
-  int ind_y = x_local[1] / spac; //int( (x_local[1] - grid_min[1]) / spac );
-  int ind_z = x_local[2] / spac; //int( (x_local[2] - grid_min[2]) / spac );
+  int ind_x = int((x_local[0] - local_grid_min[i][0]) / spac); // Here, int() does the same as floor() + conversion
+  int ind_y = int((x_local[1] - local_grid_min[i][1]) / spac);
+  int ind_z = int((x_local[2] - local_grid_min[i][2]) / spac);
 
   // Apply local offsets
-  ind_x = ind_x - nrow_offset;
-  ind_y = ind_y - ncol_offset;
-  ind_z = ind_z - nslice_offset;
+  //ind_x = ind_x - nrow_offset;
+  //ind_y = ind_y - ncol_offset;
+  //ind_z = ind_z - nslice_offset;
 
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
@@ -710,7 +708,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   if ( (ind_x < 1) || (ind_y < 1) || (ind_z < 1) ) {
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || (ind_z >= nslice-1) ) {
+  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || (ind_z >= nslice - 1) ) {
     // Point is outside the LS grid of grain j. Cannot compute distance or normal.
     error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
   }

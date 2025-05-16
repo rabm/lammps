@@ -837,15 +837,15 @@ void FixRigidLSDEM::init()
   // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
   id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
   spac = 0.5; // TODO make a user specified input
-  rbin = maxcut / spac + 1; // +1 for interpolation
+  rcell = maxcut / spac + 1; // +1 for interpolation
   for (int a = 0; a < 3; a++)
-    ngrid_local[a] = 2 * rbin + 1;  // +1 for middle cell (is this needed?)
+    ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (is this needed?)
   if (!modify->get_fix_by_id(id_fix2)) {
     int n = ngrid_local[0] * ngrid_local[1];
     if (domain->dimension == 3)
       n *= ngrid_local[2];
 
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_gridx {} d2_ls_gridy {} d2_ls_gridz {} d2_ls_gridmin {} d2_ls_local_gridmin {} writedata no ghost yes",
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_gridx {} d2_ls_gridy {} d2_ls_gridz {} d2_ls_local_gridmin {} writedata no ghost yes",
                                 id_fix2, n, n, n, n, 3, 3));
   }
 
@@ -854,7 +854,6 @@ void FixRigidLSDEM::init()
   index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
   index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
   index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
-  index_ls_gridmin = atom->find_custom("ls_gridmin", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
   // Populate local arrays
@@ -862,7 +861,6 @@ void FixRigidLSDEM::init()
   double **gridx = atom->darray[index_ls_gridx];
   double **gridy = atom->darray[index_ls_gridy];
   double **gridz = atom->darray[index_ls_gridz];
-  double **grid_min = atom->darray[index_ls_gridmin];
   double **grid_min_local = atom->darray[index_ls_local_gridmin];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
   double *ls_val = grid_ls_val[0]; // JTC: what is the first index?
@@ -872,37 +870,49 @@ void FixRigidLSDEM::init()
   int nrow = ngrid[0][1];
   int nslice = ngrid[0][2];
 
-  double delx, dely;
+  double delx, dely, delz;
   double **x = atom->x;
-  int xbin, ybin, zbin, xminbin, yminbin, zminbin, index;
+  int ibody, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
   int ix_global, iy_global, iz_global;
   int index_global, index_local;
   for (int i = 0; i < atom->nlocal; i++) {
-    // location of bin containing atom/node in global grid
-    xbin = (x[i][0] - grain_com[i][0]) / spac;
-    ybin = (x[i][1] - grain_com[i][1]) / spac;
-    ybin = (x[i][2] - grain_com[i][2]) / spac;
+    ibody = body[i];
 
-    // offset minimum by (-rbin, -rbin, -rbin)
-    grid_min_local[i][0] = xbin - rbin;
-    grid_min_local[i][1] = ybin - rbin;
-    grid_min_local[i][2] = zbin - rbin;
+    // location of atom/node relative to CoM
+    delx = x[i][0] - grain_com[i][0];
+    dely = x[i][1] - grain_com[i][1];
+    delz = x[i][2] - grain_com[i][2];
 
-    for (int iz_local = 0 ; iz_local < ngrid_local[2] ; iz_local++) {
-      for (int iy_local = 0 ; iy_local < ngrid_local[1] ; iy_local++) {
-        for (int ix_local = 0 ; ix_local < ngrid_local[0] ; ix_local++) {
-          // shift local bin to global bin
-          ix_global = ix_local + grid_min_local[i][0];
-          iy_global = iy_local + grid_min_local[i][1];
-          iz_global = iz_local + grid_min_local[i][2];
+    // location of atom/node relative to global grid minimum
+    delx -= grid_min[ibody][0];
+    dely -= grid_min[ibody][1];
+    delz -= grid_min[ibody][2];
+
+    // index of atom/node in global grid
+    ix_node = delx / spac;
+    iy_node = dely / spac;
+    iz_node = delz / spac;
+
+    // location of local grid minimum (offset by # of cells in cutoff)
+    grid_min_local[i][0] = (ix_node - rcell) * spac;
+    grid_min_local[i][1] = (iy_node - rcell) * spac;
+    grid_min_local[i][2] = (iz_node - rcell) * spac;
+
+    for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
+      for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
+        for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
+          // shift local cell to global cell
+          ix_global = ix_local + ix_node;
+          iy_global = iy_local + iy_node;
+          iz_global = iz_local + iz_node;
 
           index_global = ix_global + iy_global * ncol + iz_global * ncol * nrow;
           index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
 
           grid[i][index_local] = ls_val[index_global];
-          gridx[i][index_local] = grid_min[i][0] + ix_global * spac;
-          gridy[i][index_local] = grid_min[i][1] + iy_global * spac;
-          gridz[i][index_local] = grid_min[i][2] + iz_global * spac;
+          gridx[i][index_local] = grid_min_local[i][0] + ix_local * spac;
+          gridy[i][index_local] = grid_min_local[i][1] + iy_local * spac;
+          gridz[i][index_local] = grid_min_local[i][2] + iz_local * spac;
         }
       }
     }

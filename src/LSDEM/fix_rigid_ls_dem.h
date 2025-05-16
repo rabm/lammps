@@ -87,7 +87,6 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_gridx;
   int index_ls_gridy;
   int index_ls_gridz;
-  int index_ls_gridmin;
   int index_ls_local_gridmin;
 
   int **ngrid;           // number of grid points in each dimension [nbody, (nx, ny, nz)]
@@ -97,7 +96,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double *grid_stride;   // the LS grid stride, assumed equal in all directions
                          // JTC: is there a reason this would vary across grains?
   double spac, maxcut;
-  int rbin;
+  int rcell;
 
   double dtv, dtf, dtq;
   double *step_respa;

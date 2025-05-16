@@ -51,7 +51,6 @@ class PairLSDEM : public Pair {
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
-  int index_ls_gridmin;
   int index_ls_local_gridmin;
   int ngrid, rbin, nrow, ncol, nslice;
   double spac;
