@@ -923,7 +923,6 @@ void FixRigidLSDEM::init()
   double **x_lsdem = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
-  int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
     x_lsdem[i][0] = xcm[ibody][0];
