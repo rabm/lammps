@@ -22,6 +22,8 @@ PairStyle(ls/dem,PairLSDEM);
 
 #include "pair.h"
 
+#include "fix_rigid_ls_dem.h"
+
 namespace LAMMPS_NS {
 
 class PairLSDEM : public Pair {
@@ -54,6 +56,8 @@ class PairLSDEM : public Pair {
   int index_ls_local_gridmin;
   int ngrid, rbin, nrow, ncol, nslice;
   double spac;
+
+  class FixRigidLSDEM *fix_rigid;
 
   void allocate();
   double get_ls_value(int, int, double *);

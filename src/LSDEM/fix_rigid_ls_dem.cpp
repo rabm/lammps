@@ -856,6 +856,22 @@ void FixRigidLSDEM::init()
   index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
+  // Update center of mass
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+
+  for (int i = 0; i < atom->nlocal; i++) {
+    ibody = body[i];
+    grain_com[i][0] = xcm[ibody][0];
+    grain_com[i][1] = xcm[ibody][1];
+    grain_com[i][2] = xcm[ibody][2];
+
+    quat_lsdem[i][0] = quat[ibody][0];
+    quat_lsdem[i][1] = quat[ibody][1];
+    quat_lsdem[i][2] = quat[ibody][2];
+    quat_lsdem[i][3] = quat[ibody][3];
+  }
+
   // Populate local arrays
   double **grid = atom->darray[index_ls_grid];
   double **gridx = atom->darray[index_ls_gridx];
@@ -863,8 +879,7 @@ void FixRigidLSDEM::init()
   double **gridz = atom->darray[index_ls_gridz];
   double **grid_min_local = atom->darray[index_ls_local_gridmin];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
-  double *ls_val = grid_ls_val[0]; // JTC: what is the first index?
-  double **grain_com = atom->darray[index_ls_dem_com];
+  double *ls_val = grid_ls_val[0];
 
   int ncol = ngrid[0][0];
   int nrow = ngrid[0][1];
@@ -882,11 +897,22 @@ void FixRigidLSDEM::init()
     delx = x[i][0] - grain_com[i][0];
     dely = x[i][1] - grain_com[i][1];
     delz = x[i][2] - grain_com[i][2];
+    if (atom->tag[i] == 37)
+    printf("X %g %g %g, com %g %g %g\n", x[i][0], x[i][1], x[i][2], grain_com[i][0], grain_com[i][1], grain_com[i][2]);
+
+    // Account for PBCs
+    domain->minimum_image(delx, dely, delz);
+
+    if (atom->tag[i] == 37)
+    printf("Relative to CoM %g %g %g\n", delx, dely, delz);
 
     // location of atom/node relative to global grid minimum
     delx -= grid_min[ibody][0];
     dely -= grid_min[ibody][1];
     delz -= grid_min[ibody][2];
+
+    if (atom->tag[i] == 37)
+    printf("Relative to global grid %g %g %g\n", delx, dely, delz);
 
     // index of atom/node in global grid
     ix_node = delx / spac;
@@ -897,6 +923,13 @@ void FixRigidLSDEM::init()
     grid_min_local[i][0] = (ix_node - rcell) * spac;
     grid_min_local[i][1] = (iy_node - rcell) * spac;
     grid_min_local[i][2] = (iz_node - rcell) * spac;
+    // Later add global shift too to avoid dragging it around
+
+    if (atom->tag[i] == 37) {
+      printf("global grid min %g %g %g, ix node %d %d %d, rcell %d  \n", grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], ix_node, iy_node, iz_node, rcell);
+      printf("delx %g %g %g -> local grid min %g %g %g \n", delx, dely, delz, grid_min_local[i][0], grid_min_local[i][1], grid_min_local[i][2]);
+
+    }
 
     for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
       for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
@@ -918,21 +951,6 @@ void FixRigidLSDEM::init()
     }
     // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
     ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
-  }
-
-  double **x_lsdem = atom->darray[index_ls_dem_com];
-  double **quat_lsdem = atom->darray[index_ls_dem_quat];
-
-  for (int i = 0; i < atom->nlocal; i++) {
-    ibody = body[i];
-    x_lsdem[i][0] = xcm[ibody][0];
-    x_lsdem[i][1] = xcm[ibody][1];
-    x_lsdem[i][2] = xcm[ibody][2];
-
-    quat_lsdem[i][0] = quat[ibody][0];
-    quat_lsdem[i][1] = quat[ibody][1];
-    quat_lsdem[i][2] = quat[ibody][2];
-    quat_lsdem[i][3] = quat[ibody][3];
   }
 }
 

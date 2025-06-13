@@ -36,7 +36,7 @@ using namespace MathConst;
 
 /* ---------------------------------------------------------------------- */
 
-PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr)
+PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
 {
   writedata = 1;
   single_enable = 0;
@@ -91,15 +91,10 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
   double *grain_vol = atom->dvector[index_ls_dem_vol];
-
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
-  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
-  if (fixlist.size() != 1)
-    error->all(FLERR, "Must have one instance of fix rigid/ls/dem for pair LS-DEM.");
-  auto fixrigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
-  int *body = fixrigid->get_body_array();
-  int nbody = fixrigid->get_nbody();
+  int *body = fix_rigid->get_body_array();
+  int nbody = fix_rigid->get_nbody();
 
   inum = list->inum;
   ilist = list->ilist;
@@ -507,24 +502,22 @@ void PairLSDEM::setup()
     for (int j = 1; j <= n; j++)
       maxcut2 = MAX(maxcut2, cut[i][j]);
 
-  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
-  if (fixlist.size() != 1)
-    error->all(FLERR, "Must have one instance of fix rigid/ls/dem for pair LS-DEM.");
-  auto fixrigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
-
   if (maxcut < maxcut2)
     error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
 
   // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
   // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
   // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
-  auto lsdem_fixes = modify->get_fix_by_style("rigid/ls/dem");
-  if (lsdem_fixes.size() != 1) error->all(FLERR, "Temporarily support only 1 Fix rigid/ls/dem command");
-  auto my_lsdem_fix = static_cast<FixRigidLSDEM *>(lsdem_fixes[0]);
-  spac = my_lsdem_fix->get_grid_stride();
-  ncol = my_lsdem_fix->get_ngrid_local_array()[0];
-  nrow = my_lsdem_fix->get_ngrid_local_array()[1];
-  nslice = my_lsdem_fix->get_ngrid_local_array()[2];
+
+  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
+  if (fixlist.size() != 1)
+  error->all(FLERR, "Must have one, and only one, instance of fix rigid/ls/dem for pair LS-DEM.");
+  fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
+
+  spac = fix_rigid->get_grid_stride();
+  ncol = fix_rigid->get_ngrid_local_array()[0];
+  nrow = fix_rigid->get_ngrid_local_array()[1];
+  nslice = fix_rigid->get_ngrid_local_array()[2];
 
   int tmp1, tmp2;
   index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
@@ -640,6 +633,8 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_grid_y = atom->darray[index_ls_gridy];
   double **grain_grid_z = atom->darray[index_ls_gridz];
   double **local_grid_min = atom->darray[index_ls_local_gridmin];
+  double **grid_min = fix_rigid->get_grid_min_array();
+  int *body = fix_rigid->get_body_array();
 
   //int nrow_offset = local_grid_min[j][0]; // Offsets for local subgrid
   //int ncol_offset = local_grid_min[j][1];
@@ -655,12 +650,24 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
   //
 
-  // Relative coordinate of node i w.r.t. centre of mass grain j
+  // location of atom/node relative to CoM
   double delx = x[i][0] - grain_com[j][0];
   double dely = x[i][1] - grain_com[j][1];
   double delz = 0; // x[i][2]-grain_com[j][2];
+
+  printf("Xi %g %g %g, Xj %g %g %g com %g %g %g\n", x[i][0], x[i][1], x[i][2], x[j][0], x[j][1], x[j][2], grain_com[j][0], grain_com[j][1], grain_com[j][2]);
+
   // Account for PBCs
   domain->minimum_image(delx, dely, delz);
+
+  printf("Relative to CoM %g %g %g\n", delx, dely, delz);
+
+  // location of atom/node relative to global grid minimum
+  delx -= grid_min[body[j]][0];
+  dely -= grid_min[body[j]][1];
+  delz -= grid_min[body[j]][2];
+
+  printf("Relative to global grid %g %g %g\n", delx, dely, delz);
 
   // Extract quaternion components
   // Danny: How is grain_quat defined? Is it the rotation local -> global or global -> local?
@@ -691,15 +698,17 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
   //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
   //        will have to normalise.)
-  int ind_x = int((x_local[0] - local_grid_min[i][0]) / spac); // Here, int() does the same as floor() + conversion
-  int ind_y = int((x_local[1] - local_grid_min[i][1]) / spac);
-  int ind_z = int((x_local[2] - local_grid_min[i][2]) / spac);
+  int ind_x = int((x_local[0] - local_grid_min[j][0]) / spac); // Here, int() does the same as floor() + conversion
+  int ind_y = int((x_local[1] - local_grid_min[j][1]) / spac);
+  int ind_z = int((x_local[2] - local_grid_min[j][2]) / spac);
 
   // Apply local offsets
   //ind_x = ind_x - nrow_offset;
   //ind_y = ind_y - ncol_offset;
   //ind_z = ind_z - nslice_offset;
 
+  printf("%d - %d, delx %g %g, xlocal %g %g %g, local grid min %g %g %g\n", atom->tag[i], atom->tag[j], delx, dely, x_local[0], x_local[1], x_local[2], local_grid_min[j][0], local_grid_min[j][1], local_grid_min[j][2]);
+  printf("     xcom %g %g ind %d %d %d, nrow %d %d %d\n", grain_com[j][0], grain_com[j][1], ind_x, ind_y, ind_z, nrow, ncol, nslice);
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
   // errors later.
