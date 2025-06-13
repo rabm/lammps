@@ -837,7 +837,7 @@ void FixRigidLSDEM::init()
   // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
   id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
   spac = 0.5; // TODO make a user specified input
-  rcell = maxcut / spac + 1; // +1 for interpolation
+  rcell = maxcut / spac + 2; // +1 for interpolation +1 for safety
   for (int a = 0; a < 3; a++)
     ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (is this needed?)
   if (!modify->get_fix_by_id(id_fix2)) {
@@ -859,6 +859,7 @@ void FixRigidLSDEM::init()
   // Update center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  int ibody;
 
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
@@ -887,9 +888,9 @@ void FixRigidLSDEM::init()
 
   double delx, dely, delz;
   double **x = atom->x;
-  int ibody, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
+  int ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
   int ix_global, iy_global, iz_global;
-  int index_global, index_local;
+  int index_global, index_local, index_grid_min_local[3];
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
 
@@ -897,55 +898,62 @@ void FixRigidLSDEM::init()
     delx = x[i][0] - grain_com[i][0];
     dely = x[i][1] - grain_com[i][1];
     delz = x[i][2] - grain_com[i][2];
-    if (atom->tag[i] == 37)
-    printf("X %g %g %g, com %g %g %g\n", x[i][0], x[i][1], x[i][2], grain_com[i][0], grain_com[i][1], grain_com[i][2]);
+    if (atom->tag[i] == 1)
+    printf("Atom %d at X %g %g %g\n", atom->tag[i], x[i][0], x[i][1], x[i][2]);
 
     // Account for PBCs
     domain->minimum_image(delx, dely, delz);
 
-    if (atom->tag[i] == 37)
-    printf("Relative to CoM %g %g %g\n", delx, dely, delz);
+    if (atom->tag[i] == 1)
+    printf("Relative to CoM (%g %g %g) -> %g %g %g\n", grain_com[i][0], grain_com[i][1], grain_com[i][2], delx, dely, delz);
 
     // location of atom/node relative to global grid minimum
     delx -= grid_min[ibody][0];
     dely -= grid_min[ibody][1];
     delz -= grid_min[ibody][2];
 
-    if (atom->tag[i] == 37)
-    printf("Relative to global grid %g %g %g\n", delx, dely, delz);
+    if (atom->tag[i] == 1)
+    printf("Relative to global grid (%g %g %g) -> %g %g %g\n", grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], delx, dely, delz);
 
     // index of atom/node in global grid
     ix_node = delx / spac;
     iy_node = dely / spac;
-    iz_node = delz / spac;
+    iz_node = 0; //delz / spac;
 
-    // location of local grid minimum (offset by # of cells in cutoff)
-    grid_min_local[i][0] = (ix_node - rcell) * spac;
-    grid_min_local[i][1] = (iy_node - rcell) * spac;
-    grid_min_local[i][2] = (iz_node - rcell) * spac;
-    // Later add global shift too to avoid dragging it around
+    // index of local grid minimum in global grid
+    index_grid_min_local[0] = ix_node - rcell;
+    index_grid_min_local[1] = iy_node - rcell;
+    index_grid_min_local[2] = iz_node - rcell;
 
-    if (atom->tag[i] == 37) {
-      printf("global grid min %g %g %g, ix node %d %d %d, rcell %d  \n", grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], ix_node, iy_node, iz_node, rcell);
-      printf("delx %g %g %g -> local grid min %g %g %g \n", delx, dely, delz, grid_min_local[i][0], grid_min_local[i][1], grid_min_local[i][2]);
+    if (atom->tag[i] == 1)
+    printf("Local grid index value %d %d %d\n", index_grid_min_local[0], index_grid_min_local[1], index_grid_min_local[2]);
 
-    }
+    // location of local grid minimum relative to CoM
+    grid_min_local[i][0] = index_grid_min_local[0] * spac + grid_min[ibody][0];
+    grid_min_local[i][1] = index_grid_min_local[1] * spac + grid_min[ibody][1];
+    grid_min_local[i][2] = index_grid_min_local[2] * spac + grid_min[ibody][2];
+
+    if (atom->tag[i] == 1)
+    printf("Local grid min value %g %g %g\n", grid_min_local[i][0], grid_min_local[i][1], grid_min_local[i][2]);
 
     for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
       for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
         for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
           // shift local cell to global cell
-          ix_global = ix_local + ix_node;
-          iy_global = iy_local + iy_node;
-          iz_global = iz_local + iz_node;
+          ix_global = ix_local + index_grid_min_local[0];
+          iy_global = iy_local + index_grid_min_local[1];
+          iz_global = 0; //iz_local + index_grid_min_local[2];
 
           index_global = ix_global + iy_global * ncol + iz_global * ncol * nrow;
-          index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
+          index_local = ix_local + iy_local * ngrid_local[0]; // + iz_local * ngrid_local[0] * ngrid_local[1];
 
           grid[i][index_local] = ls_val[index_global];
           gridx[i][index_local] = grid_min_local[i][0] + ix_local * spac;
           gridy[i][index_local] = grid_min_local[i][1] + iy_local * spac;
           gridz[i][index_local] = grid_min_local[i][2] + iz_local * spac;
+
+          if (atom->tag[i] == 1 && iz_local == 4 && iy_local == 4)
+            printf(" ixlocal %d %d %d (local index %d ngrid local %d %d %d), ls_val %g (global index %d, %d %d %d, ngrid %d %d %d)\n", ix_local, iy_local, iz_local, index_local, ngrid_local[0], ngrid_local[1], ngrid_local[2], ls_val[index_global], index_global, ix_global, iy_global, iz_global, nrow, ncol, nslice);
         }
       }
     }
@@ -3119,112 +3127,112 @@ double FixRigidLSDEM::compute_array(int i, int j)
 
 void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale)
 {
-    int nchunk,eofflag;
-    int grid_shape_buf[3];
-    double grid_size_buf[4];
-    int nlines;
-    FILE *fp;
-    char *eof,*start,*next,*buf;
-    char line[MAXLINE] = {'\0'};
+  int nchunk,eofflag;
+  int grid_shape_buf[3];
+  double grid_size_buf[4];
+  int nlines;
+  FILE *fp;
+  char *eof,*start,*next,*buf;
+  char line[MAXLINE] = {'\0'};
 
-    // open file and read and parse first non-empty, non-comment line containing the 3 grid dimensions
-    // Broadcast to other procs
-    // TODO: there must be a better way to read the first 3 lines
-    for (int ibody = 0 ; ibody < nbody ; ibody++) {
-        char* gridfile = ls_grid_files[ibody];
-        if (comm->me == 0) {
-            fp = fopen(gridfile,"r");
-            if (fp == nullptr)
-                error->one(FLERR,"Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
-            while (true) {
-                eof = fgets(line,MAXLINE,fp);
-                if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-                start = &line[strspn(line," \t\n\v\f\r")];
-                if (*start != '\0' && *start != '#') break;
-            }
-            auto grid_shape = utils::split_words(line);
-            if (grid_shape.size() != 3)
-                error->one(FLERR,"Dimensions for fix rigid/ls/dem gridfile {} must be 3, {} given",
-                                  gridfile,grid_shape.size());
-            grid_shape_buf[0] = utils::inumeric(FLERR, grid_shape[0], false, lmp);
-            grid_shape_buf[1] = utils::inumeric(FLERR, grid_shape[1], false, lmp);
-            grid_shape_buf[2] = utils::inumeric(FLERR, grid_shape[2], false, lmp);
+  // open file and read and parse first non-empty, non-comment line containing the3 grid dimensions
+  // Broadcast to other procs
+  // TODO: there must be a better way to read the first 3 lines
+  for (int ibody = 0 ; ibody < nbody ; ibody++) {
+    char* gridfile = ls_grid_files[ibody];
+    if (comm->me == 0) {
+      fp = fopen(gridfile,"r");
+      if (fp == nullptr)
+        error->one(FLERR,"Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
+      while (true) {
+        eof = fgets(line,MAXLINE,fp);
+        if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+        start = &line[strspn(line," \t\n\v\f\r")];
+        if (*start != '\0' && *start != '#') break;
+      }
+      auto grid_shape = utils::split_words(line);
+      if (grid_shape.size() != 3)
+        error->one(FLERR,"Dimensions for fix rigid/ls/dem gridfile {} must be 3, {} given",
+                            gridfile,grid_shape.size());
+      grid_shape_buf[0] = utils::inumeric(FLERR, grid_shape[0], false, lmp);
+      grid_shape_buf[1] = utils::inumeric(FLERR, grid_shape[1], false, lmp);
+      grid_shape_buf[2] = utils::inumeric(FLERR, grid_shape[2], false, lmp);
 
-            eof = fgets(line,MAXLINE,fp);
-            if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-            grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
-            if (grid_size_buf[0] <= 0.0)
-                error->one(FLERR,"Grid stride for rigid/ls/dem gridfile {} must be positive",gridfile);
+      eof = fgets(line,MAXLINE,fp);
+      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+      grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+      if (grid_size_buf[0] <= 0.0)
+        error->one(FLERR,"Grid stride for rigid/ls/dem gridfile {} must be positive",gridfile);
 
-            eof = fgets(line,MAXLINE,fp);
-            if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-            auto grid_corner = utils::split_words(line);
-            if (grid_corner.size() != 3)
-                error->one(FLERR,"Fix rigid/ls/dem gridfile {} must specify 3 coordinates for grid corner, {} given",
-                                  gridfile,grid_corner.size());
-            grid_size_buf[1] = utils::numeric(FLERR, grid_corner[0], false, lmp);
-            grid_size_buf[2] = utils::numeric(FLERR, grid_corner[1], false, lmp);
-            grid_size_buf[3] = utils::numeric(FLERR, grid_corner[2], false, lmp);
-            utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
-        }
-        MPI_Bcast(grid_shape_buf, 3, MPI_INT, 0, world);
-        MPI_Bcast(grid_size_buf, 4, MPI_DOUBLE, 0, world);
-
-        nlines = grid_shape_buf[0] * grid_shape_buf[1] * grid_shape_buf[2];
-
-        // TODO: I left the 2 lines below from original rigid::readline() not sure if needed
-        // empty file with 0 lines is needed to trigger initial restart file
-        // generation when no infile was previously used.
-        if (nlines == 0) return;
-        else if (nlines < 0) error->all(FLERR,"Fix rigid/ls/dem gridfile has incorrect format");
-
-        if (which == 0) {
-            ngrid[ibody][0] = grid_shape_buf[0];
-            ngrid[ibody][1] = grid_shape_buf[1];
-            ngrid[ibody][2] = grid_shape_buf[2];
-            grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
-            grid_min[ibody][0] = grid_size_buf[1] * scale[ibody];
-            grid_min[ibody][1] = grid_size_buf[2] * scale[ibody];
-            grid_min[ibody][2] = grid_size_buf[3] * scale[ibody];
-        } else {
-            auto buffer = new char[CHUNK*MAXLINE];
-            int nread = 0;
-            int me = comm->me;
-            while (nread < nlines) {
-                nchunk = MIN(nlines-nread,CHUNK);
-                eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
-                if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-
-                buf = buffer;
-                next = strchr(buf,'\n');
-                *next = '\0';
-                int nwords = utils::count_words(utils::trim_comment(buf));
-                *next = '\n';
-
-                // TODO: there must be a better way than tokenizing single value
-                // Kept as is for now to re-use existing rigid::readfile() code
-                // Maybe in the future we want to have multiple value per line,
-                // In which case it will be useful to have that architecture
-                if (nwords != 1)
-                    error->all(FLERR,"LSDEM gridfile format requires one entry per line");
-
-                // loop over lines of level set grid and tokenize level set values
-                for (int i = 0; i < nchunk; i++) {
-                    next = strchr(buf,'\n');
-                    *next = '\0';
-
-                    try {
-                        ValueTokenizer values(buf);
-                        grid_ls_val[ibody][nread+i] = values.next_double() * scale[ibody];
-                    } catch (TokenizerException &e) {
-                        error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
-                    }
-                    buf = next + 1;
-                }
-                nread += nchunk;
-            }
-            delete[] buffer;
-        }
-        if (comm->me == 0) fclose(fp);
+      eof = fgets(line,MAXLINE,fp);
+      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+      auto grid_corner = utils::split_words(line);
+      if (grid_corner.size() != 3)
+        error->one(FLERR,"Fix rigid/ls/dem gridfile {} must specify 3 coordinates for grid corner, {} given",
+                            gridfile,grid_corner.size());
+      grid_size_buf[1] = utils::numeric(FLERR, grid_corner[0], false, lmp);
+      grid_size_buf[2] = utils::numeric(FLERR, grid_corner[1], false, lmp);
+      grid_size_buf[3] = utils::numeric(FLERR, grid_corner[2], false, lmp);
+      utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
     }
+    MPI_Bcast(grid_shape_buf, 3, MPI_INT, 0, world);
+    MPI_Bcast(grid_size_buf, 4, MPI_DOUBLE, 0, world);
+
+    nlines = grid_shape_buf[0] * grid_shape_buf[1] * grid_shape_buf[2];
+
+    // TODO: I left the 2 lines below from original rigid::readline() not sure ifneeded
+    // empty file with 0 lines is needed to trigger initial restart file
+    // generation when no infile was previously used.
+    if (nlines == 0) return;
+    else if (nlines < 0) error->all(FLERR,"Fix rigid/ls/dem gridfile has incorrectformat");
+
+    if (which == 0) {
+      ngrid[ibody][0] = grid_shape_buf[0];
+      ngrid[ibody][1] = grid_shape_buf[1];
+      ngrid[ibody][2] = grid_shape_buf[2];
+      grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
+      grid_min[ibody][0] = grid_size_buf[1] * scale[ibody];
+      grid_min[ibody][1] = grid_size_buf[2] * scale[ibody];
+      grid_min[ibody][2] = grid_size_buf[3] * scale[ibody];
+    } else {
+      auto buffer = new char[CHUNK*MAXLINE];
+      int nread = 0;
+      int me = comm->me;
+      while (nread < nlines) {
+        nchunk = MIN(nlines-nread,CHUNK);
+        eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
+        if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+
+        buf = buffer;
+        next = strchr(buf,'\n');
+        *next = '\0';
+        int nwords = utils::count_words(utils::trim_comment(buf));
+        *next = '\n';
+
+        // TODO: there must be a better way than tokenizing single value
+        // Kept as is for now to re-use existing rigid::readfile() code
+        // Maybe in the future we want to have multiple value per line,
+        // In which case it will be useful to have that architecture
+        if (nwords != 1)
+          error->all(FLERR,"LSDEM gridfile format requires one entry per line");
+
+        // loop over lines of level set grid and tokenize level set values
+        for (int i = 0; i < nchunk; i++) {
+          next = strchr(buf,'\n');
+          *next = '\0';
+
+          try {
+            ValueTokenizer values(buf);
+            grid_ls_val[ibody][nread+i] = values.next_double() * scale[ibody];
+          } catch (TokenizerException &e) {
+            error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
+          }
+          buf = next + 1;
+        }
+        nread += nchunk;
+      }
+      delete[] buffer;
+    }
+    if (comm->me == 0) fclose(fp);
+  }
 }
