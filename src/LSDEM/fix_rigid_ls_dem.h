@@ -84,9 +84,6 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_size;
 
   int index_ls_grid;
-  int index_ls_gridx;
-  int index_ls_gridy;
-  int index_ls_gridz;
   int index_ls_local_gridmin;
 
   int **ngrid;           // number of grid points in each dimension [nbody, (nx, ny, nz)]

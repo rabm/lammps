@@ -47,9 +47,6 @@ class PairLSDEM : public Pair {
   double **k, **cut, **gamma;
 
   int index_ls_grid;
-  int index_ls_gridx;
-  int index_ls_gridy;
-  int index_ls_gridz;
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;

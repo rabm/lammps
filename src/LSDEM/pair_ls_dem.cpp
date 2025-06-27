@@ -243,8 +243,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
       fpair_mag = k[itype][jtype] * u;
 
-      printf("%d-%d force %g, normal %g %g %g\n", atom->tag[i], atom->tag[j], fpair_mag, normal[0], normal[1], normal[2]);
-
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
       fpair[1] = fpair_mag * normal[1];
@@ -523,9 +521,6 @@ void PairLSDEM::setup()
 
   int tmp1, tmp2;
   index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
-  index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
-  index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
-  index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
@@ -631,9 +626,6 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
   double **grain_grid = atom->darray[index_ls_grid];
-  double **grain_grid_x = atom->darray[index_ls_gridx];
-  double **grain_grid_y = atom->darray[index_ls_gridy];
-  double **grain_grid_z = atom->darray[index_ls_gridz];
   double **local_grid_min = atom->darray[index_ls_local_gridmin];
   double **grid_min = fix_rigid->get_grid_min_array();
   int *body = fix_rigid->get_body_array();
@@ -657,21 +649,17 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double dely = x[i][1] - grain_com[j][1];
   double delz = 0; // x[i][2]-grain_com[j][2];
 
-  printf("PAIR %d %d Xi %g %g %g, Xj %g %g %g com %g %g %g\n", atom->tag[i], atom->tag[j], x[i][0], x[i][1], x[i][2], x[j][0], x[j][1], x[j][2], grain_com[j][0], grain_com[j][1], grain_com[j][2]);
-
   // Account for PBCs
   domain->minimum_image(delx, dely, delz);
-
-  printf("Relative to CoM %g %g %g\n", delx, dely, delz);
 
   // Extract quaternion components
   // Danny: How is grain_quat defined? Is it the rotation local -> global or global -> local?
   // I will assume it is local -> global
   // Remove minus signs if grain_quat is global -> local
-  double q_w = grain_quat[j][0];
-  double q_x = -grain_quat[j][1];
-  double q_y = -grain_quat[j][2];
-  double q_z = -grain_quat[j][3];
+  //double q_w = grain_quat[j][0];
+  //double q_x = -grain_quat[j][1];
+  //double q_y = -grain_quat[j][2];
+  //double q_z = -grain_quat[j][3];
 
   // Apply quaternion rotation to move into local reference frame of grain j grid
   // x' = (q*x)*q^-1 // Joel: this code might have a typo so I replaced it with the method below
@@ -682,11 +670,12 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   // sample code with math_extra, feel free to add MathExtra to namespace if helpful
   double x_local[3];
   double dx[3] = {delx, dely, delz};
-  MathExtra::quatrotvec(grain_quat[j], dx, x_local); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
+
+  // grain_quat is local->global I think
+  double grain_quat_conj[4];
+  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
+  MathExtra::quatrotvec(grain_quat_conj, dx, x_local); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
   // see comments above functions in math_extra.h/cpp for details
-
-  printf("Rotated to body frame %g %g %g\n", x_local[0], x_local[1], x_local[2]);
-
 
   //
   //  COMPUTE THE LS GRID INDICES
@@ -695,7 +684,6 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   x_local[0] -= local_grid_min[j][0];
   x_local[1] -= local_grid_min[j][1];
   x_local[2] -= local_grid_min[j][2];
-  printf("Relative to local grid %g %g %g\n", x_local[0], x_local[1], x_local[2]);
 
   // Calculate index from coordinate, need to be more careful with integer division
   // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
@@ -710,8 +698,6 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //ind_x = ind_x - nrow_offset;
   //ind_y = ind_y - ncol_offset;
   //ind_z = ind_z - nslice_offset;
-
-  printf("-> ind %d %d %d, nrow %d %d %d\n", ind_x, ind_y, ind_z, nrow, ncol, nslice);
 
   // We might need an extra check. If x_local is very close to grid_min, it may pass and give
   // errors later.
@@ -729,30 +715,21 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   //  DO THE BILINEAR INTERPOLATION
   //
 
-  // Coordinates of the grid lower grid point of the cell we are in
-  double x0 = grain_grid_x[j][ind_x + ind_y * ncol]; // + ind_z + nslice
-  double y0 = grain_grid_y[j][ind_x + ind_y * ncol];
-  double z0 = 0; //grain_grid_z[j][ind_x + ind_y * ncol + ind_z * nslice][2];
-
   // Level-set values on the grid points
   double ls000 = grain_grid[j][ind_x   + ind_y     * ncol]; // + ind_z * nslice
   double ls100 = grain_grid[j][ind_x+1 + ind_y     * ncol];
   double ls010 = grain_grid[j][ind_x   + (ind_y+1) * ncol];
   double ls110 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol];
 
-  printf("LS %g %g %g %g, x0 %g %g (index %d)\n", ls000, ls100, ls010, ls110, x0, y0, ind_x + ind_y * ncol);
-
   // The reduced coordinates
   // May be safe to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  double x_red = (x_local[0] - x0) / spac;
-  double y_red = (x_local[1] - y0) / spac;
-  double z_red = (x_local[2] - z0) / spac;
+  double x_red = x_local[0] / spac - static_cast<double>(ind_x);
+  double y_red = x_local[1] / spac - static_cast<double>(ind_y);
+  double z_red = x_local[2] / spac - static_cast<double>(ind_z);
 
   // The bilinear interpolation
   double term = y_red * (ls110 - ls100 - ls010 + ls000) + ls100 - ls000;
   double dist = x_red * term + y_red * (ls010 - ls000) + ls000;
-
-  printf("dist = %g\n", dist);
 
   /*
     FOR 3D
@@ -792,9 +769,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   normal[2] = nz;
 
   // Rotate normal back to global coordinates
-  double grain_quat_conj[4];
-  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
-  MathExtra::quatrotvec(grain_quat_conj, normal, normal);
+  MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }

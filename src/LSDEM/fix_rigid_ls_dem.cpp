@@ -845,15 +845,12 @@ void FixRigidLSDEM::init()
     if (domain->dimension == 3)
       n *= ngrid_local[2];
 
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_gridx {} d2_ls_gridy {} d2_ls_gridz {} d2_ls_local_gridmin {} writedata no ghost yes",
-                                id_fix2, n, n, n, n, 3, 3));
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_local_gridmin {} writedata no ghost yes",
+                                id_fix2, n, 3));
   }
 
   int tmp1, tmp2;
   index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
-  index_ls_gridx = atom->find_custom("ls_gridx", tmp1, tmp2);
-  index_ls_gridy = atom->find_custom("ls_gridy", tmp1, tmp2);
-  index_ls_gridz = atom->find_custom("ls_gridz", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
   // Update center of mass
@@ -875,12 +872,10 @@ void FixRigidLSDEM::init()
 
   // Populate local arrays
   double **grid = atom->darray[index_ls_grid];
-  double **gridx = atom->darray[index_ls_gridx];
-  double **gridy = atom->darray[index_ls_gridy];
-  double **gridz = atom->darray[index_ls_gridz];
   double **grid_min_local = atom->darray[index_ls_local_gridmin];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
   double *ls_val = grid_ls_val[0];
+  int ngrid_global = ngrid[0][0] * ngrid[0][1] * ngrid[0][2];
 
   int ncol = ngrid[0][0];
   int nrow = ngrid[0][1];
@@ -898,22 +893,14 @@ void FixRigidLSDEM::init()
     delx = x[i][0] - grain_com[i][0];
     dely = x[i][1] - grain_com[i][1];
     delz = x[i][2] - grain_com[i][2];
-    if (atom->tag[i] == 1)
-    printf("Atom %d at X %g %g %g\n", atom->tag[i], x[i][0], x[i][1], x[i][2]);
 
     // Account for PBCs
     domain->minimum_image(delx, dely, delz);
-
-    if (atom->tag[i] == 1)
-    printf("Relative to CoM (%g %g %g) -> %g %g %g\n", grain_com[i][0], grain_com[i][1], grain_com[i][2], delx, dely, delz);
 
     // location of atom/node relative to global grid minimum
     delx -= grid_min[ibody][0];
     dely -= grid_min[ibody][1];
     delz -= grid_min[ibody][2];
-
-    if (atom->tag[i] == 1)
-    printf("Relative to global grid (%g %g %g) -> %g %g %g\n", grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], delx, dely, delz);
 
     // index of atom/node in global grid
     ix_node = delx / spac;
@@ -925,16 +912,10 @@ void FixRigidLSDEM::init()
     index_grid_min_local[1] = iy_node - rcell;
     index_grid_min_local[2] = iz_node - rcell;
 
-    if (atom->tag[i] == 1)
-    printf("Local grid index value %d %d %d\n", index_grid_min_local[0], index_grid_min_local[1], index_grid_min_local[2]);
-
     // location of local grid minimum relative to CoM
     grid_min_local[i][0] = index_grid_min_local[0] * spac + grid_min[ibody][0];
     grid_min_local[i][1] = index_grid_min_local[1] * spac + grid_min[ibody][1];
     grid_min_local[i][2] = index_grid_min_local[2] * spac + grid_min[ibody][2];
-
-    if (atom->tag[i] == 1)
-    printf("Local grid min value %g %g %g\n", grid_min_local[i][0], grid_min_local[i][1], grid_min_local[i][2]);
 
     for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
       for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
@@ -947,13 +928,9 @@ void FixRigidLSDEM::init()
           index_global = ix_global + iy_global * ncol + iz_global * ncol * nrow;
           index_local = ix_local + iy_local * ngrid_local[0]; // + iz_local * ngrid_local[0] * ngrid_local[1];
 
+          if (index_global > ngrid_global)
+            error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
           grid[i][index_local] = ls_val[index_global];
-          gridx[i][index_local] = grid_min_local[i][0] + ix_local * spac;
-          gridy[i][index_local] = grid_min_local[i][1] + iy_local * spac;
-          gridz[i][index_local] = grid_min_local[i][2] + iz_local * spac;
-
-          if (atom->tag[i] == 1 && iz_local == 4 && iy_local == 4)
-            printf(" ixlocal %d %d %d (local index %d ngrid local %d %d %d), ls_val %g (global index %d, %d %d %d, ngrid %d %d %d)\n", ix_local, iy_local, iz_local, index_local, ngrid_local[0], ngrid_local[1], ngrid_local[2], ls_val[index_global], index_global, ix_global, iy_global, iz_global, nrow, ncol, nslice);
         }
       }
     }
