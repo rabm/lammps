@@ -53,7 +53,7 @@ void NPairBin<HALF, NEWTON, TRI, SIZE, ATOMONLY>::build(NeighList *list)
 {
   int i, j, jh, k, n, itype, jtype, ibin, bin_start, which, imol, iatom, moltemplate;
   tagint itag, jtag, tagprev;
-  double xtmp, ytmp, ztmp, delx, dely, delz, rsq, radsum,cut,cutsq;
+  double xtmp, ytmp, ztmp, delx, dely, delz, rsq, radsum, cut, cutsq;
   int *neighptr;
 
   const double delta = 0.01 * force->angstrom;

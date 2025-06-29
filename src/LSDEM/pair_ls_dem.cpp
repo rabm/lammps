@@ -60,7 +60,7 @@ PairLSDEM::~PairLSDEM()
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
-  int i, j, ii, jj, key, inum, jnum, itype, jtype, ibody, jbody;
+  int i, j, ii, jj, key, allnum, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
   double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol;
@@ -97,12 +97,13 @@ void PairLSDEM::compute(int eflag, int vflag)
   int nbody = fix_rigid->get_nbody();
 
   inum = list->inum;
+  allnum = inum + list->gnum;
   ilist = list->ilist;
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
-  // Loop to find closest neighbors
-  for (ii = 0; ii < inum; ii++) {
+  // Loop over local+ghost atoms to find closest neighbors
+  for (ii = 0; ii < allnum; ii++) {
     // Loop through local nodes
     i = ilist[ii];
     xtmp = x[i][0];
@@ -149,9 +150,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         min_distances[key] = std::make_pair(jtag, r);
       } else {
         // Overwrite if i and j are closer
-        if (r < min_distances[key].second) {
+        if (r < min_distances[key].second)
           min_distances[key] = std::make_pair(jtag, r);
-        }
       }
 
       // Do the same for node j
@@ -160,15 +160,13 @@ void PairLSDEM::compute(int eflag, int vflag)
         min_distances[key] = std::make_pair(itag, r);
       } else {
         // Overwrite if i and j are closer
-        if (r < min_distances[key].second) {
+        if (r < min_distances[key].second)
           min_distances[key] = std::make_pair(itag, r);
-        }
       }
     }
   }
 
-  // loop to calculate forces
-
+  // only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
     xtmp = x[i][0];
@@ -489,7 +487,7 @@ void PairLSDEM::init_style()
   if (comm->ghost_velocity == 0)
     error->all(FLERR, "Pair LS/DEM requires ghost atoms store velocity");
 
-  neighbor->add_request(this);
+  neighbor->add_request(this, NeighConst::REQ_GHOST);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -675,6 +673,7 @@ double PairLSDEM::get_ls_value(int i, int j, double *normal)
   double grain_quat_conj[4];
   MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
+
   // see comments above functions in math_extra.h/cpp for details
 
   //
