@@ -50,14 +50,10 @@ class PairLSDEM : public Pair {
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
-  int index_ls_local_gridmin;
-  int ngrid, rbin, nrow, ncol, nslice;
-  double spac;
 
   class FixRigidLSDEM *fix_rigid;
 
   void allocate();
-  double get_ls_value(int, int, double *);
   double smearedHeavisideStep(double);
 };
 

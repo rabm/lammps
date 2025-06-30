@@ -45,6 +45,10 @@ using namespace FixConst;
 using namespace MathConst;
 using namespace RigidLSDEMConst;
 
+//TODO: Should we have a flag (or child classes) for different memory distribution strategies?
+//      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
+//      then benchmark across different limits? Few large grains, lots of small grains, jamming vs. flow...
+
 /* ---------------------------------------------------------------------- */
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
@@ -3178,7 +3182,7 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
       while (nread < nlines) {
         nchunk = MIN(nlines-nread,CHUNK);
         eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
-        if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+        if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
 
         buf = buffer;
         next = strchr(buf,'\n');
@@ -3212,4 +3216,165 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
     }
     if (comm->me == 0) fclose(fp);
   }
+}
+
+/* ----------------------------------------------------------------------
+   Find the value of node (atom) i in j's LS grid.
+------------------------------------------------------------------------- */
+
+double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
+{
+  double **x = atom->x;
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_grid = atom->darray[index_ls_grid];
+  double **local_grid_min = atom->darray[index_ls_local_gridmin];
+
+  int ncol = ngrid_local[0];
+  int nrow = ngrid_local[1];
+  int nslice = ngrid_local[2];
+
+  //int nrow_offset = local_grid_min[j][0]; // Offsets for local subgrid
+  //int ncol_offset = local_grid_min[j][1];
+  //int nslice_offset = local_grid_min[j][2];
+
+  // Calculate position of i in j's grid using:
+  //   x[i][0-2] = location of i
+  //   x[j][0-2] = location of j
+  //   grain_com[j][0-2] = CoM of j's grain
+  //   grain_quat[j][0-3] = quat of j's grain
+
+  //
+  //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
+  //
+
+  // location of atom/node relative to CoM
+  double delx = x[i][0] - grain_com[j][0];
+  double dely = x[i][1] - grain_com[j][1];
+  double delz = 0; // x[i][2]-grain_com[j][2];
+
+  // Account for PBCs
+  domain->minimum_image(delx, dely, delz);
+
+  // Extract quaternion components
+  // Danny: How is grain_quat defined? Is it the rotation local -> global or global -> local?
+  // I will assume it is local -> global
+  // Remove minus signs if grain_quat is global -> local
+  //double q_w = grain_quat[j][0];
+  //double q_x = -grain_quat[j][1];
+  //double q_y = -grain_quat[j][2];
+  //double q_z = -grain_quat[j][3];
+
+  // Apply quaternion rotation to move into local reference frame of grain j grid
+  // x' = (q*x)*q^-1 // Joel: this code might have a typo so I replaced it with the method below
+  //double x_local = (1 - 2 * (q_y * q_y + q_z * q_z)) * delx + 2 * (q_x * q_y - q_w * q_z) * dely + 2 * (q_x * q_z + q_w * q_y) * delz;
+  //double y_local = 2 * (q_x * q_y + q_w * q_z) * delx + (1 - 2 * (q_x * q_x + q_z * q_z)) * dely + 2 * (q_y * q_z - q_w * q_x) * delz;
+  //double z_local = 2 * (q_x * q_z - q_w * q_y) * delx + 2 * (q_y * q_z + q_w * q_x) * dely + (1 - 2 * (q_x * q_x + q_y * q_y)) * delz;
+
+  // sample code with math_extra, feel free to add MathExtra to namespace if helpful
+  double x_local[3];
+  double dx[3] = {delx, dely, delz};
+
+  // grain_quat is local->global I think
+  double grain_quat_conj[4];
+  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
+  MathExtra::quatrotvec(grain_quat_conj, dx, x_local); // I think it's global -> local, but if you need to take a conjugate there's a function qconjugate()
+
+  // see comments above functions in math_extra.h/cpp for details
+
+  //
+  //  COMPUTE THE LS GRID INDICES
+  //
+
+  x_local[0] -= local_grid_min[j][0];
+  x_local[1] -= local_grid_min[j][1];
+  x_local[2] -= local_grid_min[j][2];
+
+  // Calculate index from coordinate, need to be more careful with integer division
+  // Danny: We need to get grid_min, the lowest corner (in -1,-1,-1 direction) of the grid
+  //        and spac, the grid spacing. (If we want to keep this in normalised coords, we
+  //        will have to normalise.)
+
+  int ind_x = int(x_local[0] / spac); // Here, int() does the same as floor() + conversion
+  int ind_y = int(x_local[1] / spac);
+  int ind_z = int(x_local[2] / spac);
+
+  // Apply local offsets
+  //ind_x = ind_x - nrow_offset;
+  //ind_y = ind_y - ncol_offset;
+  //ind_z = ind_z - nslice_offset;
+
+  // We might need an extra check. If x_local is very close to grid_min, it may pass and give
+  // errors later.
+  // Joel: added +/- for interpolation
+
+  if ( (ind_x < 1) || (ind_y < 1) || (ind_z < 1) ) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || (ind_z >= nslice - 1) ) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  }
+
+  //
+  //  DO THE BILINEAR INTERPOLATION
+  //
+
+  // Level-set values on the grid points
+  double ls000 = grain_grid[j][ind_x   + ind_y     * ncol]; // + ind_z * nslice
+  double ls100 = grain_grid[j][ind_x+1 + ind_y     * ncol];
+  double ls010 = grain_grid[j][ind_x   + (ind_y+1) * ncol];
+  double ls110 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol];
+
+  // The reduced coordinates
+  // May be safe to cap them with math::max(math::min(x_red, 1.0), 0.0)
+  double x_red = x_local[0] / spac - static_cast<double>(ind_x);
+  double y_red = x_local[1] / spac - static_cast<double>(ind_y);
+  double z_red = x_local[2] / spac - static_cast<double>(ind_z);
+
+  // The bilinear interpolation
+  double term = y_red * (ls110 - ls100 - ls010 + ls000) + ls100 - ls000;
+  double dist = x_red * term + y_red * (ls010 - ls000) + ls000;
+
+  /*
+    FOR 3D
+
+    double ls001 = grain_grid[j][ind_x   + ind_y     * ncol + (ind_z+1) * nslice];
+    double ls101 = grain_grid[j][ind_x+1 + ind_y     * ncol + (ind_z+1) * nslice];
+    double ls011 = grain_grid[j][ind_x   + (ind_y+1) * ncol + (ind_z+1) * nslice];
+    double ls111 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol + (ind_z+1) * nslice];
+
+    // Exactly the same but for other z plane / face of the grid cell
+    double term = y_red * (ls111 - ls101 - ls011 + ls001) + ls101 - ls001;
+    double dist_xy1 = x_red / spac * term + y_red * (ls011 - ls001) + ls001;
+
+	  dist = z_red * (dist_xy1 - dist_xy0) + dist_xy0;
+  */
+
+  // Normal
+  double nx = 0;
+  double ny = 0;
+  double nz = 0;
+
+	// Computing normal as the gradient of trilinear interpolation
+	for (int a = 0; a < 2; a++) {
+		for (int b = 0; b < 2; b++) {
+			//for (int c = 0; c < 2; c++) { // Joel: I temporarily commented out the z stuff so it's easier to debug
+			double lsVal = grain_grid[j][(ind_x + a) + (ind_y + b) * ncol]; // + (ind_z + c)*nslice];
+			nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red); // * ((1 - c) * (1 - z_red) + c * z_red);
+			ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red); // * ((1 - c) * (1 - z_red) + c * z_red);
+			//nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
+			//}
+		}
+	}
+
+  // Assign normal
+  normal[0] = nx;
+  normal[1] = ny;
+  normal[2] = nz;
+
+  // Rotate normal back to global coordinates
+  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+
+  return dist;
 }
