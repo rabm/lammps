@@ -85,6 +85,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double **grid_min;
   double *grid_stride;   // the LS grid stride, assumed equal in all directions
                          // JTC: is there a reason this would vary across grains?
+                         // JBC: we could have highly-detailed and crude grains requiring different grid resolution
   double spac, maxcut;
   int rcell;
 
