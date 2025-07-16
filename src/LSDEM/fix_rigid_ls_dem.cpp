@@ -1327,12 +1327,8 @@ void FixRigidLSDEM::compute_forces_and_torques()
 
   // sum over atoms to get force and torque on rigid body
 
-  double **x = atom->x;
   double **f = atom->f;
   int nlocal = atom->nlocal;
-
-  double dx,dy,dz;
-  double unwrap[3];
 
   for (ibody = 0; ibody < nbody; ibody++)
     for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
@@ -1344,20 +1340,16 @@ void FixRigidLSDEM::compute_forces_and_torques()
     sum[ibody][0] += f[i][0];
     sum[ibody][1] += f[i][1];
     sum[ibody][2] += f[i][2];
-
-    domain->unmap(x[i],xcmimage[i],unwrap);
-    dx = unwrap[0] - xcm[ibody][0];
-    dy = unwrap[1] - xcm[ibody][1];
-    dz = unwrap[2] - xcm[ibody][2];
-
-    sum[ibody][3] += dy*f[i][2] - dz*f[i][1];
-    sum[ibody][4] += dz*f[i][0] - dx*f[i][2];
-    sum[ibody][5] += dx*f[i][1] - dy*f[i][0];
   }
 
-  // extended particles add their torque to torque of body
+  // Forces apply at the contact point between a surface atom and a level-set
+  // There is no LAMMPS structure for it so forces are applied on nearest atoms
+  // Torques computed with forces applied at the atom position would be off.
+  // To avoid this miscalculation:
+  //  1. exact torques are applied on (extended) atoms in pair_ls_dem
+  //  2. torques are not computed from force on atoms herein (unlike Fix Rigd)
 
-  if (extended) {
+  if (extended) { // TODO: check and error out of pair_ls_dem or rigid_ls_dem if particle not extended / no radius flag. Likely in the init() functions
     double **torque_one = atom->torque;
 
     for (i = 0; i < nlocal; i++) {
