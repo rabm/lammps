@@ -220,22 +220,22 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (calc_force_of_i_on_j) {
         // Level set is by definition negative inside the particle, 
         // so swap the sign to get the overlap distance.
-        u = fix_rigid->get_ls_value(i, j, normal); // Minus
+        u = - fix_rigid->get_ls_value(i, j, normal);
         // The normal is also swapped and points away from j, correct signs.
         MathExtra::negate3(normal);
       } else {
-        u = fix_rigid->get_ls_value(j, i, normal); // Minus
+        u = - fix_rigid->get_ls_value(j, i, normal);
         // The normal points towards j, no correction needed.
       }
 
       // Apply forces and torques
 
       // No adhesion, cohesion, or ranged forces.
-      if (u > 0) continue; // Swap
+      if (u < 0) continue;
 
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fpair_mag = k[itype][jtype] * u; // Minus
+      fpair_mag = - k[itype][jtype] * u;
 
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
