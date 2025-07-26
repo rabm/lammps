@@ -121,7 +121,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       if (factor_lj == 0) continue;
 
-      j &= NEIGHMASK;
+      j &= NEIGHMASK; // Danny: What does this do?
 
       jbody = body[j];
       jtag = tag[j];
@@ -134,12 +134,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       r = sqrt(rsq);
 
       if (r > maxcut) continue;
-
-      // Need an additional check such that only nodes of the smallest grain i
-      // are used in combination with the level set of grain j.
-      // If grain volumes are equal, always take the nodes of the grian with the lowest
-      // particle id number.
-      // Joel: added grain_vol[i] vs grain_vol[j], currently both are hard coded (and equal)
 
       // What does this code do exactly? Does this make both neighbour lists
       // min_distance(i) = j and min_distance(j) = i?
@@ -194,16 +188,16 @@ void PairLSDEM::compute(int eflag, int vflag)
       jvol = grain_vol[j];
       jtype = type[j];
 
-      // Figure out whether either force is calculated
-      //   Only calculate force of smaller grain on larger grain
-      //     in ties, go by grain ID
-      //   Only calculate force between closest set of nodes
-      // Danny: There is a similar note above, do we resolve this there or here?
-      //        If only one of the two is used, can we reduce the nieghbour search above?
+      // Figure out whether to use the nodes of grain i or j.
+      // We use the nodes on the smaller grain since this will
+      // be more accurate. If the volumes are tied, use the grain ID.
+      // Only calculate force between closest pair of node and grid.
+      // Danny: Can we reduce the above nieghbour search making use of this knowledge?
 
       calc_force_of_j_on_i = 0;
       calc_force_of_i_on_j = 0;
 
+      // Danny: I'm a bit confused here, it looks as if we use j nodes if i is smaller, which is the opposite of what we want.
       if (ivol < jvol || (ivol == jvol && ibody < jbody)) {
         // if node j is closest on its grain to i
         key = nbody * itag + jbody;
@@ -221,25 +215,27 @@ void PairLSDEM::compute(int eflag, int vflag)
       // If no forces are calculated
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
 
-      // Evaluate the level set, and assign the interaction direction based on
+      // Evaluate the level set, and assign the interaction direction based on the
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
-        // Note: level set is by definition negative inside the particle, so swap the sign.
-        u = fix_rigid->get_ls_value(i, j, normal);
-        // The normal points away from j, correct signs
+        // Level set is by definition negative inside the particle, 
+        // so swap the sign to get the overlap distance.
+        u = fix_rigid->get_ls_value(i, j, normal); // Minus
+        // The normal is also swapped and points away from j, correct signs.
         MathExtra::negate3(normal);
       } else {
-        u = fix_rigid->get_ls_value(j, i, normal);
+        u = fix_rigid->get_ls_value(j, i, normal); // Minus
+        // The normal points towards j, no correction needed.
       }
 
       // Apply forces and torques
 
       // No adhesion, cohesion, or ranged forces.
-      if (u > 0) continue;
+      if (u > 0) continue; // Swap
 
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fpair_mag = k[itype][jtype] * u;
+      fpair_mag = k[itype][jtype] * u; // Minus
 
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
@@ -619,3 +615,5 @@ double PairLSDEM::smearedHeavisideStep(double x)
   // this function. See Kawamoto et al. (2016).
   return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
 }
+
+// End of file
