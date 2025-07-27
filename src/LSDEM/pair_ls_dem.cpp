@@ -102,6 +102,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
+  // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
   // Loop over local+ghost atoms to find closest neighbors
   for (ii = 0; ii < allnum; ii++) {
     // Loop through local nodes
@@ -121,7 +122,8 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       if (factor_lj == 0) continue;
 
-      j &= NEIGHMASK; // Danny: What does this do?
+      // Make the neighbour mask an integer again (discarding history flags etc.)
+      j &= NEIGHMASK;
 
       jbody = body[j];
       jtag = tag[j];
@@ -135,9 +137,8 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       if (r > maxcut) continue;
 
-      // What does this code do exactly? Does this make both neighbour lists
-      // min_distance(i) = j and min_distance(j) = i?
-
+      // Create a dictionary for each grain that holds the
+      // tag of the closest interacting node on the other grain.
       key = nbody * itag + jbody;
       // If first interation between i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
@@ -192,24 +193,23 @@ void PairLSDEM::compute(int eflag, int vflag)
       // We use the nodes on the smaller grain since this will
       // be more accurate. If the volumes are tied, use the grain ID.
       // Only calculate force between closest pair of node and grid.
-      // Danny: Can we reduce the above nieghbour search making use of this knowledge?
 
       calc_force_of_j_on_i = 0;
       calc_force_of_i_on_j = 0;
 
-      // Danny: I'm a bit confused here, it looks as if we use j nodes if i is smaller, which is the opposite of what we want.
+      // Use the nodes of the smallest grain.
       if (ivol < jvol || (ivol == jvol && ibody < jbody)) {
-        // if node j is closest on its grain to i
-        key = nbody * itag + jbody;
-        if (min_distances.find(key) != min_distances.end())
-          if (jtag == min_distances[key].first)
-            calc_force_of_j_on_i = 1;
-      } else {
-        // if node i is closest on its grain to j & j is owned
+        // Grain i is smaller, use nodes of i and level set of j.
         key = nbody * jtag + ibody;
         if (min_distances.find(key) != min_distances.end())
           if (itag == min_distances[key].first)
             calc_force_of_i_on_j = 1;
+      } else {
+        // Grain j is smaller, use nodes of j and level set of i.
+        key = nbody * itag + jbody;
+        if (min_distances.find(key) != min_distances.end())
+          if (jtag == min_distances[key].first)
+            calc_force_of_j_on_i = 1;
       }
 
       // If no forces are calculated
@@ -268,7 +268,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       torque[i][2] += torque_pair[2];
 
       // Mirror forces and torques on grain j
-      if (newton_pair || j < nlocal) {
+      if (newton_pair || j < nlocal) { // Need to check this again if we end up enabling newton_pair
         MathExtra::negate3(fpair); // Sign swap
         f[j][0] += fpair[0];
         f[j][1] += fpair[1];
