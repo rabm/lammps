@@ -67,55 +67,14 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigidLSDEM::~FixRigidLSDEM()
 {
+  // delete extra property/atom fixes
+
   if (id_fix && modify->nfix) modify->delete_fix(id_fix);
   delete[] id_fix;
   if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2);
   delete[] id_fix2;
 
-  // unregister callbacks to this fix from Atom class
-
-  if (modify->get_fix_by_id(id)) atom->delete_callback(id,Atom::GROW);
-
-  delete random;
-  delete[] inpfile;
-  delete[] id_dilate;
-  delete[] id_gravity;
-
-  memory->destroy(mol2body);
-  memory->destroy(body2mol);
-
-  // delete locally stored per-atom arrays
-
-  memory->destroy(body);
-  memory->destroy(xcmimage);
-  memory->destroy(displace);
-  memory->destroy(eflags);
-  memory->destroy(orient);
-  memory->destroy(dorient);
-
   // delete nbody-length arrays
-
-  memory->destroy(nrigid);
-  memory->destroy(masstotal);
-  memory->destroy(xcm);
-  memory->destroy(vcm);
-  memory->destroy(fcm);
-  memory->destroy(inertia);
-  memory->destroy(ex_space);
-  memory->destroy(ey_space);
-  memory->destroy(ez_space);
-  memory->destroy(angmom);
-  memory->destroy(omega);
-  memory->destroy(torque);
-  memory->destroy(quat);
-  memory->destroy(imagebody);
-  memory->destroy(fflag);
-  memory->destroy(tflag);
-  memory->destroy(langextra);
-
-  memory->destroy(sum);
-  memory->destroy(all);
-  memory->destroy(remapflag);
 
   memory->destroy(ngrid);
   memory->destroy(grid_ls_val);
@@ -1889,6 +1848,7 @@ void FixRigidLSDEM::setup_bodies_static()
 
     memory->destroy(ls_grid_files);
     memory->destroy(scale);
+    memory->destroy(ngrid_flat);
   }
 
   if (inpfile) memory->destroy(inbody);
