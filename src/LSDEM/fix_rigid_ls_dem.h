@@ -33,36 +33,18 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;
   void init() override;
-  void setup(int) override;
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
   void post_force(int) override;
   void final_integrate() override;
-  void initial_integrate_respa(int, int, int) override;
-  void final_integrate_respa(int, int) override;
   void write_restart_file(const char *) override;
-  double compute_scalar() override;
 
   double memory_usage() override;
-  void grow_arrays(int) override;
-  void copy_arrays(int, int, int) override;
-  void set_arrays(int) override;
-  int pack_exchange(int, double *) override;
-  int unpack_exchange(int, double *) override;
 
-  void setup_pre_neighbor() override;
   void pre_neighbor() override;
-  bigint dof(int) override;
-  void deform(int) override;
-  void reset_dt() override;
   void zero_momentum() override;
   void zero_rotation() override;
-  int modify_param(int, char **) override;
-  void *extract(const char *, int &) override;
-  double extract_ke();
-  double extract_erotational();
-  double compute_array(int, int) override;
 
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
@@ -89,14 +71,11 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double spac, maxcut;
   int rcell;
 
-  void image_shift();
   void set_xv();
   void set_v();
   void setup_bodies_static();
   void setup_bodies_dynamic();
-  void apply_langevin_thermostat();
   virtual void compute_forces_and_torques();
-  void enforce2d();
   void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
   void read_gridfile(int, char**, double *);
 };
