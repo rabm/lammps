@@ -37,14 +37,11 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void initial_integrate(int) override;
   void pre_force(int) override;
   void post_force(int) override;
-  void final_integrate() override;
   void write_restart_file(const char *) override;
 
   double memory_usage() override;
 
   void pre_neighbor() override;
-  void zero_momentum() override;
-  void zero_rotation() override;
 
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
@@ -72,10 +69,8 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int rcell;
 
   void set_xv();
-  void set_v();
   void setup_bodies_static();
   void setup_bodies_dynamic();
-  virtual void compute_forces_and_torques();
   void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
   void read_gridfile(int, char**, double *);
 };
