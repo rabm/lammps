@@ -36,12 +36,9 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
-  void post_force(int) override;
   void write_restart_file(const char *) override;
 
   double memory_usage() override;
-
-  void pre_neighbor() override;
 
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
@@ -68,9 +65,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double spac, maxcut;
   int rcell;
 
-  void set_xv();
   void setup_bodies_static();
-  void setup_bodies_dynamic();
   void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
   void read_gridfile(int, char**, double *);
 };

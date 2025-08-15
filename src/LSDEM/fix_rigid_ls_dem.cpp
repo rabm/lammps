@@ -325,6 +325,7 @@ void FixRigidLSDEM::init()
     ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
   }
 }
+
 /* ---------------------------------------------------------------------- */
 
 void FixRigidLSDEM::setup_pre_force(int vflag)
@@ -343,267 +344,13 @@ void FixRigidLSDEM::pre_force(int vflag)
 
 void FixRigidLSDEM::initial_integrate(int vflag)
 {
-  double dtfm;
-
-  for (int ibody = 0; ibody < nbody; ibody++) {
-
-    // update vcm by 1/2 step
-
-    dtfm = dtf / masstotal[ibody];
-    vcm[ibody][0] += dtfm * fcm[ibody][0] * fflag[ibody][0];
-    vcm[ibody][1] += dtfm * fcm[ibody][1] * fflag[ibody][1];
-    vcm[ibody][2] += dtfm * fcm[ibody][2] * fflag[ibody][2];
-
-    // update xcm by full step
-
-    xcm[ibody][0] += dtv * vcm[ibody][0];
-    xcm[ibody][1] += dtv * vcm[ibody][1];
-    xcm[ibody][2] += dtv * vcm[ibody][2];
-
-    // update angular momentum by 1/2 step
-
-    angmom[ibody][0] += dtf * torque[ibody][0] * tflag[ibody][0];
-    angmom[ibody][1] += dtf * torque[ibody][1] * tflag[ibody][1];
-    angmom[ibody][2] += dtf * torque[ibody][2] * tflag[ibody][2];
-
-    // compute omega at 1/2 step from angmom at 1/2 step and current q
-    // update quaternion a full step via Richardson iteration
-    // returns new normalized quaternion, also updated omega at 1/2 step
-    // update ex,ey,ez to reflect new quaternion
-
-    MathExtra::angmom_to_omega(angmom[ibody],ex_space[ibody],ey_space[ibody],
-                               ez_space[ibody],inertia[ibody],omega[ibody]);
-    MathExtra::richardson(quat[ibody],angmom[ibody],omega[ibody],
-                          inertia[ibody],dtq);
-    MathExtra::q_to_exyz(quat[ibody],
-                         ex_space[ibody],ey_space[ibody],ez_space[ibody]);
-  }
-
-  // virial setup before call to set_xv
-
-  v_init(vflag);
-
-  // set coords/orient and velocity/rotation of atoms in rigid bodies
-  // from quarternion and omega
-
-  set_xv();
-}
-
-/* ----------------------------------------------------------------------
-   remap xcm of each rigid body back into periodic simulation box
-   done during pre_neighbor so will be after call to pbc()
-     and after fix_deform::pre_exchange() may have flipped box
-   use domain->remap() in case xcm is far away from box
-     due to first-time definition of rigid body in setup_bodies_static()
-     or due to box flip
-   also adjust imagebody = rigid body image flags, due to xcm remap
-   also reset body xcmimage flags of all atoms in bodies
-   xcmimage flags are relative to xcm so that body can be unwrapped
-   if don't do this, would need xcm to move with true image flags
-     then a body could end up very far away from box
-     set_xv() will then compute huge displacements every step to
-       reset coords of all body atoms to be back inside the box,
-       ditto for triclinic box flip, which causes numeric problems
-------------------------------------------------------------------------- */
-
-void FixRigidLSDEM::pre_neighbor()
-{
-  for (int ibody = 0; ibody < nbody; ibody++)
-    domain->remap(xcm[ibody],imagebody[ibody]);
-  image_shift();
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixRigidLSDEM::post_force(int /*vflag*/)
-{
-  if (langflag) apply_langevin_thermostat();
-  if (earlyflag) compute_forces_and_torques();
-}
-
-/* ----------------------------------------------------------------------
-   set space-frame coords and velocity of each atom in each rigid body
-   set orientation and rotation of extended particles
-   x = Q displace + Xcm, mapped back to periodic box
-   v = Vcm + (W cross (x - Xcm))
-------------------------------------------------------------------------- */
-
-void FixRigidLSDEM::set_xv()
-{
-  int ibody;
-  int xbox,ybox,zbox;
-  double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
-  double xy,xz,yz;
-  double ione[3],exone[3],eyone[3],ezone[3],vr[6],p[3][3];
-
-  double **x = atom->x;
-  double **v = atom->v;
-  double **f = atom->f;
-  double *rmass = atom->rmass;
-  double *mass = atom->mass;
-  int *type = atom->type;
-  int nlocal = atom->nlocal;
-
-  double xprd = domain->xprd;
-  double yprd = domain->yprd;
-  double zprd = domain->zprd;
-
-  if (triclinic) {
-    xy = domain->xy;
-    xz = domain->xz;
-    yz = domain->yz;
-  }
-
-  // set x and v of each atom
-
-  for (int i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-
-    // save old positions and velocities for virial
-
-    if (evflag) {
-      if (triclinic == 0) {
-        x0 = x[i][0] + xbox*xprd;
-        x1 = x[i][1] + ybox*yprd;
-        x2 = x[i][2] + zbox*zprd;
-      } else {
-        x0 = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
-        x1 = x[i][1] + ybox*yprd + zbox*yz;
-        x2 = x[i][2] + zbox*zprd;
-      }
-      v0 = v[i][0];
-      v1 = v[i][1];
-      v2 = v[i][2];
-    }
-
-    // x = displacement from center-of-mass, based on body orientation
-    // v = vcm + omega around center-of-mass
-    // enforce 2d x and v
-
-    MathExtra::matvec(ex_space[ibody],ey_space[ibody],
-                      ez_space[ibody],displace[i],x[i]);
-
-    v[i][0] = omega[ibody][1]*x[i][2] - omega[ibody][2]*x[i][1] + vcm[ibody][0];
-    v[i][1] = omega[ibody][2]*x[i][0] - omega[ibody][0]*x[i][2] + vcm[ibody][1];
-    v[i][2] = omega[ibody][0]*x[i][1] - omega[ibody][1]*x[i][0] + vcm[ibody][2];
-
-    if (domain->dimension == 2) {
-      x[i][2] = 0.0;
-      v[i][2] = 0.0;
-    }
-
-    // add center of mass to displacement
-    // map back into periodic box via xbox,ybox,zbox
-    // for triclinic, add in box tilt factors as well
-
-    if (triclinic == 0) {
-      x[i][0] += xcm[ibody][0] - xbox*xprd;
-      x[i][1] += xcm[ibody][1] - ybox*yprd;
-      x[i][2] += xcm[ibody][2] - zbox*zprd;
-    } else {
-      x[i][0] += xcm[ibody][0] - xbox*xprd - ybox*xy - zbox*xz;
-      x[i][1] += xcm[ibody][1] - ybox*yprd - zbox*yz;
-      x[i][2] += xcm[ibody][2] - zbox*zprd;
-    }
-
-    // virial = unwrapped coords dotted into body constraint force
-    // body constraint force = implied force due to v change minus f external
-    // assume f does not include forces internal to body
-    // 1/2 factor b/c final_integrate contributes other half
-    // assume per-atom contribution is due to constraint force on that atom
-
-    if (evflag) {
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
-      fc0 = massone*(v[i][0] - v0)/dtf - f[i][0];
-      fc1 = massone*(v[i][1] - v1)/dtf - f[i][1];
-      fc2 = massone*(v[i][2] - v2)/dtf - f[i][2];
-
-      vr[0] = 0.5*x0*fc0;
-      vr[1] = 0.5*x1*fc1;
-      vr[2] = 0.5*x2*fc2;
-      vr[3] = 0.5*x0*fc1;
-      vr[4] = 0.5*x0*fc2;
-      vr[5] = 0.5*x1*fc2;
-
-      v_tally(1,&i,1.0,vr);
-    }
-  }
-
-  // set orientation, omega, angmom of each extended particle
-
-  if (extended) {
-    double theta_body,theta;
-    double *shape,*quatatom,*inertiaatom;
-
-    AtomVecEllipsoid::Bonus *ebonus = nullptr;
-    if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-    AtomVecLine::Bonus *lbonus = nullptr;
-    if (avec_line) lbonus = avec_line->bonus;
-    AtomVecTri::Bonus *tbonus = nullptr;
-    if (avec_tri) tbonus = avec_tri->bonus;
-    double **omega_one = atom->omega;
-    double **angmom_one = atom->angmom;
-    double **mu = atom->mu;
-    int *ellipsoid = atom->ellipsoid;
-    int *line = atom->line;
-    int *tri = atom->tri;
-
-    for (int i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-
-      if (eflags[i] & SPHERE) {
-        omega_one[i][0] = omega[ibody][0];
-        omega_one[i][1] = omega[ibody][1];
-        omega_one[i][2] = omega[ibody][2];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        quatatom = ebonus[ellipsoid[i]].quat;
-        MathExtra::quatquat(quat[ibody],orient[i],quatatom);
-        MathExtra::qnormalize(quatatom);
-        ione[0] = EINERTIA*rmass[i] * (shape[1]*shape[1] + shape[2]*shape[2]);
-        ione[1] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[2]*shape[2]);
-        ione[2] = EINERTIA*rmass[i] * (shape[0]*shape[0] + shape[1]*shape[1]);
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(omega[ibody],exone,eyone,ezone,ione,
-                                   angmom_one[i]);
-      } else if (eflags[i] & LINE) {
-        if (quat[ibody][3] >= 0.0) theta_body = 2.0*acos(quat[ibody][0]);
-        else theta_body = -2.0*acos(quat[ibody][0]);
-        theta = orient[i][0] + theta_body;
-        while (theta <= -MY_PI) theta += MY_2PI;
-        while (theta > MY_PI) theta -= MY_2PI;
-        lbonus[line[i]].theta = theta;
-        omega_one[i][0] = omega[ibody][0];
-        omega_one[i][1] = omega[ibody][1];
-        omega_one[i][2] = omega[ibody][2];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::quatquat(quat[ibody],orient[i],quatatom);
-        MathExtra::qnormalize(quatatom);
-        MathExtra::q_to_exyz(quatatom,exone,eyone,ezone);
-        MathExtra::omega_to_angmom(omega[ibody],exone,eyone,ezone,
-                                   inertiaatom,angmom_one[i]);
-      }
-      if (eflags[i] & DIPOLE) {
-        MathExtra::quat_to_mat(quat[ibody],p);
-        MathExtra::matvec(p,dorient[i],mu[i]);
-        MathExtra::snormalize3(mu[i][3],mu[i],mu[i]);
-      }
-    }
-  }
+  FixRigid::initial_integrate(vflag);
 
   double **x_lsdem = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
 
-  for (int i = 0; i < nlocal; i++) {
+  int ibody;
+  for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
     x_lsdem[i][0] = xcm[ibody][0];
     x_lsdem[i][1] = xcm[ibody][1];
@@ -615,7 +362,6 @@ void FixRigidLSDEM::set_xv()
     quat_lsdem[i][3] = quat[ibody][3];
   }
 }
-
 
 /* ---------------------------------------------------------------------- */
 
@@ -1240,101 +986,6 @@ void FixRigidLSDEM::setup_bodies_static()
 }
 
 /* ----------------------------------------------------------------------
-   one-time initialization of dynamic rigid body attributes
-   set vcm and angmom, computed explicitly from constituent particles
-   not done if body properties read from file, e.g. for overlapping particles
-------------------------------------------------------------------------- */
-
-void FixRigidLSDEM::setup_bodies_dynamic()
-{
-  int i,ibody;
-  double massone,radone;
-
-  // vcm = velocity of center-of-mass of each rigid body
-  // angmom = angular momentum of each rigid body
-
-  double **x = atom->x;
-  double **v = atom->v;
-  double *rmass = atom->rmass;
-  double *mass = atom->mass;
-  int *type = atom->type;
-  int nlocal = atom->nlocal;
-
-  double dx,dy,dz;
-  double unwrap[3];
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    sum[ibody][0] += v[i][0] * massone;
-    sum[ibody][1] += v[i][1] * massone;
-    sum[ibody][2] += v[i][2] * massone;
-
-    domain->unmap(x[i],xcmimage[i],unwrap);
-    dx = unwrap[0] - xcm[ibody][0];
-    dy = unwrap[1] - xcm[ibody][1];
-    dz = unwrap[2] - xcm[ibody][2];
-
-    sum[ibody][3] += dy * massone*v[i][2] - dz * massone*v[i][1];
-    sum[ibody][4] += dz * massone*v[i][0] - dx * massone*v[i][2];
-    sum[ibody][5] += dx * massone*v[i][1] - dy * massone*v[i][0];
-  }
-
-  // extended particles add their rotation to angmom of body
-
-  if (extended) {
-    AtomVecLine::Bonus *lbonus;
-    if (avec_line) lbonus = avec_line->bonus;
-    double **omega_one = atom->omega;
-    double **angmom_one = atom->angmom;
-    double *radius = atom->radius;
-    int *line = atom->line;
-
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-
-      if (eflags[i] & OMEGA) {
-        if (eflags[i] & SPHERE) {
-          radone = radius[i];
-          sum[ibody][3] += SINERTIA*rmass[i] * radone*radone * omega_one[i][0];
-          sum[ibody][4] += SINERTIA*rmass[i] * radone*radone * omega_one[i][1];
-          sum[ibody][5] += SINERTIA*rmass[i] * radone*radone * omega_one[i][2];
-        } else if (eflags[i] & LINE) {
-          radone = lbonus[line[i]].length;
-          sum[ibody][5] += LINERTIA*rmass[i] * radone*radone * omega_one[i][2];
-        }
-      }
-      if (eflags[i] & ANGMOM) {
-        sum[ibody][3] += angmom_one[i][0];
-        sum[ibody][4] += angmom_one[i][1];
-        sum[ibody][5] += angmom_one[i][2];
-      }
-    }
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  // normalize velocity of COM
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    vcm[ibody][0] = all[ibody][0]/masstotal[ibody];
-    vcm[ibody][1] = all[ibody][1]/masstotal[ibody];
-    vcm[ibody][2] = all[ibody][2]/masstotal[ibody];
-    angmom[ibody][0] = all[ibody][3];
-    angmom[ibody][1] = all[ibody][4];
-    angmom[ibody][2] = all[ibody][5];
-  }
-}
-
-/* ----------------------------------------------------------------------
    read per rigid body info from user-provided file
    which = 0 to read everything except 6 moments of inertia
    which = 1 to read 6 moments of inertia
@@ -1447,9 +1098,9 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
           array1[id][4] = values.next_double();
           array1[id][3] = values.next_double();
         } else if (which == 2) {
-            values.skip(19);
-            vec[id] = values.next_double();
-            strcpy(gridfiles[id], values.next_string().data()); // TODO: I'm not up to date on C-string vs std::string in LAMMPS. Possible important refactor here with std::vector<string> instead of char**
+          values.skip(19);
+          vec[id] = values.next_double();
+          strcpy(gridfiles[id], values.next_string().data()); // TODO: I'm not up to date on C-string vs std::string in LAMMPS. Possible important refactor here with std::vector<string> instead of char**
         }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
@@ -1473,42 +1124,7 @@ void FixRigidLSDEM::write_restart_file(const char *file)
 {
   if (comm->me) return;
 
-  auto outfile = std::string(file) + ".rigid";
-  FILE *fp = fopen(outfile.c_str(),"w");
-  if (fp == nullptr)
-    error->one(FLERR,"Cannot open fix rigid restart file {}: {}",outfile,utils::getsyserror());
-
-  fmt::print(fp,"# fix rigid mass, COM, inertia tensor info for {} bodies on timestep {}\n\n",nbody,update->ntimestep);
-  fmt::print(fp,"{}\n",nbody);
-
-  // compute I tensor against xyz axes from diagonalized I and current quat
-  // Ispace = P Idiag P_transpose
-  // P is stored column-wise in exyz_space
-
-  int xbox,ybox,zbox;
-  double p[3][3],pdiag[3][3],ispace[3][3];
-
-  int id;
-  for (int i = 0; i < nbody; i++) {
-    if (rstyle == SINGLE || rstyle == GROUP) id = i+1;
-    else id = body2mol[i];
-
-    MathExtra::col2mat(ex_space[i],ey_space[i],ez_space[i],p);
-    MathExtra::times3_diag(p,inertia[i],pdiag);
-    MathExtra::times3_transpose(pdiag,p,ispace);
-
-    xbox = (imagebody[i] & IMGMASK) - IMGMAX;
-    ybox = (imagebody[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (imagebody[i] >> IMG2BITS) - IMGMAX;
-
-    fprintf(fp,"%d %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
-            "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d\n",
-            id,masstotal[i],xcm[i][0],xcm[i][1],xcm[i][2],ispace[0][0],ispace[1][1],ispace[2][2],
-            ispace[0][1],ispace[0][2],ispace[1][2],vcm[i][0],vcm[i][1],vcm[i][2],
-            angmom[i][0],angmom[i][1],angmom[i][2],xbox,ybox,zbox); // TODO: restart should contain LS data ?
-  }
-
-  fclose(fp);
+  FixRigid::write_restart_file(file); // Todo, save LS DEM data
 }
 
 /* ----------------------------------------------------------------------
