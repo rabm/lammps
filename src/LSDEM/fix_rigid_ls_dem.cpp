@@ -754,5 +754,3 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   return dist;
 }
-
-// End of file
