@@ -30,9 +30,8 @@
 #include "modify.h"
 #include "pair.h"
 #include "pair_ls_dem.h"
-#include "random_mars.h"
 #include "respa.h"
-#include "rigid_ls_dem_const.h"
+#include "rigid_const.h"
 #include "tokenizer.h"
 #include "update.h"
 #include "variable.h"
@@ -43,7 +42,9 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
-using namespace RigidLSDEMConst;
+using namespace RigidConst;
+
+static constexpr int LS_ATTRIBUTE_PERBODY = 22;
 
 //TODO: Should we have a flag (or child classes) for different memory distribution strategies?
 //      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
@@ -470,50 +471,49 @@ void FixRigidLSDEM::setup_bodies_static()
 
 void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
 {
-  int nchunk,id,eofflag;
-  int nlines;
+  int nchunk, id, eofflag, nlines;
   FILE *fp;
-  char *eof,*start,*next,*buf;
+  char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
 
   // open file and read and parse first non-empty, non-comment line containing the number of bodies
   if (comm->me == 0) {
     fp = fopen(inpfile,"r");
     if (fp == nullptr)
-      error->one(FLERR,"Cannot open fix rigid/ls/dem infile {}: {}", inpfile, utils::getsyserror());
+      error->one(FLERR, "Cannot open fix rigid/ls/dem infile {}: {}", inpfile, utils::getsyserror());
     while (true) {
-      eof = fgets(line,MAXLINE,fp);
+      eof = fgets(line, MAXLINE, fp);
       if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem infile");
-      start = &line[strspn(line," \t\n\v\f\r")];
+      start = &line[strspn(line, " \t\n\v\f\r")];
       if (*start != '\0' && *start != '#') break;
     }
     nlines = utils::inumeric(FLERR, utils::trim(line), true, lmp);
     if (nlines == 0) fclose(fp);
   }
-  MPI_Bcast(&nlines,1,MPI_INT,0,world);
+  MPI_Bcast(&nlines, 1, MPI_INT, 0, world);
 
   // empty file with 0 lines is needed to trigger initial restart file
   // generation when no infile was previously used.
 
   if (nlines == 0) return;
-  else if (nlines < 0) error->all(FLERR,"Fix rigid infile has incorrect format");
+  else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
 
-  auto buffer = new char[CHUNK*MAXLINE];
+  auto buffer = new char[CHUNK * MAXLINE];
   int nread = 0;
   int me = comm->me;
   while (nread < nlines) {
-    nchunk = MIN(nlines-nread,CHUNK);
-    eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
+    nchunk = MIN(nlines - nread, CHUNK);
+    eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
     if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/ls/dem infile");
 
     buf = buffer;
-    next = strchr(buf,'\n');
+    next = strchr(buf, '\n');
     *next = '\0';
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != ATTRIBUTE_PERBODY)
-      error->all(FLERR,"Incorrect rigid body format in fix rigid/ls/dem file");
+    if (nwords != LS_ATTRIBUTE_PERBODY)
+      error->all(FLERR, "Incorrect rigid body format in fix rigid/ls/dem file");
 
     // loop over lines of rigid body attributes
     // tokenize the line into values
@@ -534,7 +534,7 @@ void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
         } else id--;
 
         if (id < 0 || id >= nbody)
-          throw TokenizerException("invalid_rigid body ID ", std::to_string(id+1));
+          throw TokenizerException("invalid_rigid body ID ", std::to_string(id + 1));
 
         inbody[id] = 1;
 
