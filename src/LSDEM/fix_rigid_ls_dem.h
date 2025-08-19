@@ -66,7 +66,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int rcell;
 
   void setup_bodies_static();
-  void readfile(int, double *, double **, double **, double **, imageint *, int *, char **);
+  void readfile_lsdem(double *, int *, char **);
   void read_gridfile(int, char**, double *);
 };
 

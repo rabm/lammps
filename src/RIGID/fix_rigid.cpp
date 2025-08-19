@@ -2353,7 +2353,9 @@ void FixRigid::readfile(int which, double *vec, double **array1, double **array2
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != ATTRIBUTE_PERBODY)
+    // Must have at exactly ATTRIBUTE_PERBODY unless it's a child class
+    if ((utils::strmatch(style, "^rigid&") && nwords != ATTRIBUTE_PERBODY) ||
+         nwords < ATTRIBUTE_PERBODY)
       error->all(FLERR,"Incorrect rigid body format in fix rigid file");
 
     // loop over lines of rigid body attributes

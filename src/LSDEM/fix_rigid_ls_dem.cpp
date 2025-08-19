@@ -417,592 +417,60 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 
 /* ----------------------------------------------------------------------
    one-time initialization of static rigid body attributes
-   sets extended flags, masstotal, center-of-mass
-   sets Cartesian and diagonalized inertia tensor
-   sets body image flags
-   may read some properties from inpfile
+   runs default parent method, then grabs & processes file names for LS grid
 ------------------------------------------------------------------------- */
-// TODO: there is so much stuff we don't need in here for LS-DEM
-// I started removing it in the first dump commit but we should do that again
-// For now, I kept everything as is, and added a new `which`=2 mode in readfile()
-// to read the level-set data and call that readfile(2, ...)
+
 void FixRigidLSDEM::setup_bodies_static()
 {
-  int i,ibody;
-
-  // extended = 1 if any particle in a rigid body is finite size or has a dipole moment
-
-  extended = orientflag = dorientflag = 0;
-
-  AtomVecEllipsoid::Bonus *ebonus;
-  if (avec_ellipsoid) ebonus = avec_ellipsoid->bonus;
-  AtomVecLine::Bonus *lbonus;
-  if (avec_line) lbonus = avec_line->bonus;
-  AtomVecTri::Bonus *tbonus;
-  if (avec_tri) tbonus = avec_tri->bonus;
-  double **mu = atom->mu;
-  double *radius = atom->radius;
-  double *rmass = atom->rmass;
-  double *mass = atom->mass;
-  int *ellipsoid = atom->ellipsoid;
-  int *line = atom->line;
-  int *tri = atom->tri;
-  int *type = atom->type;
-  int nlocal = atom->nlocal;
-
-  if (atom->radius_flag || atom->ellipsoid_flag || atom->line_flag ||
-      atom->tri_flag || atom->mu_flag) {
-    int flag = 0;
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      if (radius && radius[i] > 0.0) flag = 1;
-      if (ellipsoid && ellipsoid[i] >= 0) flag = 1;
-      if (line && line[i] >= 0) flag = 1;
-      if (tri && tri[i] >= 0) flag = 1;
-      if (mu && mu[i][3] > 0.0) flag = 1;
-    }
-
-    MPI_Allreduce(&flag,&extended,1,MPI_INT,MPI_MAX,world);
-  }
-
-  // grow extended arrays and set extended flags for each particle
-  // orientflag = 4 if any particle stores ellipsoid or tri orientation
-  // orientflag = 1 if any particle stores line orientation
-  // dorientflag = 1 if any particle stores dipole orientation
-
-  if (extended) {
-    if (atom->ellipsoid_flag) orientflag = 4;
-    if (atom->line_flag) orientflag = 1;
-    if (atom->tri_flag) orientflag = 4;
-    if (atom->mu_flag) dorientflag = 1;
-    grow_arrays(atom->nmax);
-
-    for (i = 0; i < nlocal; i++) {
-      eflags[i] = 0;
-      if (body[i] < 0) continue;
-
-      // set to POINT or SPHERE or ELLIPSOID or LINE
-
-      if (radius && radius[i] > 0.0) {
-        eflags[i] |= SPHERE;
-        eflags[i] |= OMEGA;
-        eflags[i] |= TORQUE;
-      } else if (ellipsoid && ellipsoid[i] >= 0) {
-        eflags[i] |= ELLIPSOID;
-        eflags[i] |= ANGMOM;
-        eflags[i] |= TORQUE;
-      } else if (line && line[i] >= 0) {
-        eflags[i] |= LINE;
-        eflags[i] |= OMEGA;
-        eflags[i] |= TORQUE;
-      } else if (tri && tri[i] >= 0) {
-        eflags[i] |= TRIANGLE;
-        eflags[i] |= ANGMOM;
-        eflags[i] |= TORQUE;
-      } else eflags[i] |= POINT;
-
-      // set DIPOLE if atom->mu and mu[3] > 0.0
-
-      if (atom->mu_flag && mu[i][3] > 0.0)
-        eflags[i] |= DIPOLE;
-    }
-  }
-
-  // set body xcmimage flags = true image flags
-
-  imageint *image = atom->image;
-  for (i = 0; i < nlocal; i++)
-    if (body[i] >= 0) xcmimage[i] = image[i];
-    else xcmimage[i] = 0;
-
-  // compute masstotal & center-of-mass of each rigid body
-  // error if image flag is not 0 in a non-periodic dim
-
-  double **x = atom->x;
-
-  int *periodicity = domain->periodicity;
-  double xprd = domain->xprd;
-  double yprd = domain->yprd;
-  double zprd = domain->zprd;
-  double xy = domain->xy;
-  double xz = domain->xz;
-  double yz = domain->yz;
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-  int xbox,ybox,zbox;
-  double massone,xunwrap,yunwrap,zunwrap;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    if ((xbox && !periodicity[0]) || (ybox && !periodicity[1]) ||
-        (zbox && !periodicity[2]))
-      error->one(FLERR,"Fix rigid atom has non-zero image flag in a non-periodic dimension");
-
-    if (triclinic == 0) {
-      xunwrap = x[i][0] + xbox*xprd;
-      yunwrap = x[i][1] + ybox*yprd;
-      zunwrap = x[i][2] + zbox*zprd;
-    } else {
-      xunwrap = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
-      yunwrap = x[i][1] + ybox*yprd + zbox*yz;
-      zunwrap = x[i][2] + zbox*zprd;
-    }
-
-    sum[ibody][0] += xunwrap * massone;
-    sum[ibody][1] += yunwrap * massone;
-    sum[ibody][2] += zunwrap * massone;
-    sum[ibody][3] += massone;
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    masstotal[ibody] = all[ibody][3];
-    xcm[ibody][0] = all[ibody][0]/masstotal[ibody];
-    xcm[ibody][1] = all[ibody][1]/masstotal[ibody];
-    xcm[ibody][2] = all[ibody][2]/masstotal[ibody];
-  }
-
-  // set vcm, angmom = 0.0 in case inpfile is used
-  // and doesn't overwrite all body's values
-  // since setup_bodies_dynamic() will not be called
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    vcm[ibody][0] = vcm[ibody][1] = vcm[ibody][2] = 0.0;
-    angmom[ibody][0] = angmom[ibody][1] = angmom[ibody][2] = 0.0;
-  }
-
-  // set rigid body image flags to default values
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    imagebody[ibody] = ((imageint) IMGMAX << IMG2BITS) |
-      ((imageint) IMGMAX << IMGBITS) | IMGMAX;
-
-  // overwrite masstotal, center-of-mass, image flags with file values
-  // inbody[i] = 0/1 if Ith rigid body is initialized by file
+  FixRigid::setup_bodies_static();
 
   int *inbody;
-  if (inpfile) {
-    // must call it here so it doesn't override read in data but
-    // initialize bodies whose dynamic settings not set in inpfile
-
-    setup_bodies_dynamic();
-
-    memory->create(inbody,nbody,"rigid:inbody");
-    for (ibody = 0; ibody < nbody; ibody++) inbody[ibody] = 0;
-    readfile(0,masstotal,xcm,vcm,angmom,imagebody,inbody,nullptr);
-  }
-
-  // remap the xcm of each body back into simulation box
-  //   and reset body and atom xcmimage flags via pre_neighbor()
-
-  pre_neighbor();
-
-  // compute 6 moments of inertia of each body in Cartesian reference frame
-  // dx,dy,dz = coords relative to center-of-mass
-  // symmetric 3x3 inertia tensor stored in Voigt notation as 6-vector
-
-  double dx,dy,dz;
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-
-    if (triclinic == 0) {
-      xunwrap = x[i][0] + xbox*xprd;
-      yunwrap = x[i][1] + ybox*yprd;
-      zunwrap = x[i][2] + zbox*zprd;
-    } else {
-      xunwrap = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
-      yunwrap = x[i][1] + ybox*yprd + zbox*yz;
-      zunwrap = x[i][2] + zbox*zprd;
-    }
-
-    dx = xunwrap - xcm[ibody][0];
-    dy = yunwrap - xcm[ibody][1];
-    dz = zunwrap - xcm[ibody][2];
-
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    sum[ibody][0] += massone * (dy*dy + dz*dz);
-    sum[ibody][1] += massone * (dx*dx + dz*dz);
-    sum[ibody][2] += massone * (dx*dx + dy*dy);
-    sum[ibody][3] -= massone * dy*dz;
-    sum[ibody][4] -= massone * dx*dz;
-    sum[ibody][5] -= massone * dx*dy;
-  }
-
-  // extended particles may contribute extra terms to moments of inertia
-
-  if (extended) {
-    double ivec[6];
-    double *shape,*quatatom,*inertiaatom;
-    double length,theta;
-
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
-
-      if (eflags[i] & SPHERE) {
-        sum[ibody][0] += SINERTIA*massone * radius[i]*radius[i];
-        sum[ibody][1] += SINERTIA*massone * radius[i]*radius[i];
-        sum[ibody][2] += SINERTIA*massone * radius[i]*radius[i];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        quatatom = ebonus[ellipsoid[i]].quat;
-        MathExtra::inertia_ellipsoid(shape,quatatom,massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      } else if (eflags[i] & LINE) {
-        length = lbonus[line[i]].length;
-        theta = lbonus[line[i]].theta;
-        MathExtra::inertia_line(length,theta,massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::inertia_triangle(inertiaatom,quatatom,massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      }
-    }
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  // overwrite Cartesian inertia tensor with file values
-
-  if (inpfile) readfile(1,nullptr,all,nullptr,nullptr,nullptr,inbody,nullptr);
-
-  // diagonalize inertia tensor for each body via Jacobi rotations
-  // inertia = 3 eigenvalues = principal moments of inertia
-  //   request that jacobi3() return them in ascending order,
-  ///  so that in 2d last evector is z-axis
-  // evectors and exzy_space = 3 evectors = principal axes of rigid body
-
-  int ierror;
-  double cross[3];
-  double tensor[3][3],evectors[3][3];
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    tensor[0][0] = all[ibody][0];
-    tensor[1][1] = all[ibody][1];
-    tensor[2][2] = all[ibody][2];
-    tensor[1][2] = tensor[2][1] = all[ibody][3];
-    tensor[0][2] = tensor[2][0] = all[ibody][4];
-    tensor[0][1] = tensor[1][0] = all[ibody][5];
-
-    ierror = MathEigen::jacobi3(tensor,inertia[ibody],evectors,1);
-    if (ierror) error->all(FLERR,
-                           "Insufficient Jacobi rotations for rigid body");
-
-    ex_space[ibody][0] = evectors[0][0];
-    ex_space[ibody][1] = evectors[1][0];
-    ex_space[ibody][2] = evectors[2][0];
-    ey_space[ibody][0] = evectors[0][1];
-    ey_space[ibody][1] = evectors[1][1];
-    ey_space[ibody][2] = evectors[2][1];
-    ez_space[ibody][0] = evectors[0][2];
-    ez_space[ibody][1] = evectors[1][2];
-    ez_space[ibody][2] = evectors[2][2];
-
-    // for 2d, ensure that evector along z axis is last
-    // necessary so that quaternion is a simple rotation around +z axis
-    //   or a 180 degree rotation for a -z axis
-    // otherwise richardson() method for a body with a tiny evalue (near-linear)
-    //  may not preserve the correct z-aligned quat and associated evectors
-    //  over time due to round-off accumulation
-
-    if (domain->dimension == 2) {
-      if (fabs(ez_space[ibody][0]) > EPSILON || fabs(ez_space[ibody][1]) > EPSILON) {
-        std::swap(inertia[ibody][1],inertia[ibody][2]);
-        std::swap(ey_space[ibody][0],ez_space[ibody][0]);
-        std::swap(ey_space[ibody][1],ez_space[ibody][1]);
-        std::swap(ey_space[ibody][2],ez_space[ibody][2]);
-      }
-    }
-
-    // if any principal moment < scaled EPSILON, set to 0.0
-
-    double max;
-    max = MAX(inertia[ibody][0],inertia[ibody][1]);
-    max = MAX(max,inertia[ibody][2]);
-
-    if (inertia[ibody][0] < EPSILON*max) inertia[ibody][0] = 0.0;
-    if (inertia[ibody][1] < EPSILON*max) inertia[ibody][1] = 0.0;
-    if (inertia[ibody][2] < EPSILON*max) inertia[ibody][2] = 0.0;
-
-    // enforce 3 evectors as a right-handed coordinate system
-    // flip 3rd vector if needed
-
-    MathExtra::cross3(ex_space[ibody],ey_space[ibody],cross);
-    if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
-      MathExtra::negate3(ez_space[ibody]);
-
-    // create initial quaternion
-
-    MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
-                         quat[ibody]);
-  }
-
-  // displace = initial atom coords in basis of principal axes
-  // set displace = 0.0 for atoms not in any rigid body
-  // for extended particles, set their orientation wrt to rigid body
-
-  double qc[4],delta[3];
-  double *quatatom;
-  double theta_body;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) {
-      displace[i][0] = displace[i][1] = displace[i][2] = 0.0;
-      continue;
-    }
-
-    ibody = body[i];
-
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
-
-    if (triclinic == 0) {
-      xunwrap = x[i][0] + xbox*xprd;
-      yunwrap = x[i][1] + ybox*yprd;
-      zunwrap = x[i][2] + zbox*zprd;
-    } else {
-      xunwrap = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
-      yunwrap = x[i][1] + ybox*yprd + zbox*yz;
-      zunwrap = x[i][2] + zbox*zprd;
-    }
-
-    delta[0] = xunwrap - xcm[ibody][0];
-    delta[1] = yunwrap - xcm[ibody][1];
-    delta[2] = zunwrap - xcm[ibody][2];
-    MathExtra::transpose_matvec(ex_space[ibody],ey_space[ibody],
-                                ez_space[ibody],delta,displace[i]);
-
-    if (extended) {
-      if (eflags[i] & ELLIPSOID) {
-        quatatom = ebonus[ellipsoid[i]].quat;
-        MathExtra::qconjugate(quat[ibody],qc);
-        MathExtra::quatquat(qc,quatatom,orient[i]);
-        MathExtra::qnormalize(orient[i]);
-      } else if (eflags[i] & LINE) {
-        if (quat[ibody][3] >= 0.0) theta_body = 2.0*acos(quat[ibody][0]);
-        else theta_body = -2.0*acos(quat[ibody][0]);
-        orient[i][0] = lbonus[line[i]].theta - theta_body;
-        while (orient[i][0] <= -MY_PI) orient[i][0] += MY_2PI;
-        while (orient[i][0] > MY_PI) orient[i][0] -= MY_2PI;
-        if (orientflag == 4) orient[i][1] = orient[i][2] = orient[i][3] = 0.0;
-      } else if (eflags[i] & TRIANGLE) {
-        quatatom = tbonus[tri[i]].quat;
-        MathExtra::qconjugate(quat[ibody],qc);
-        MathExtra::quatquat(qc,quatatom,orient[i]);
-        MathExtra::qnormalize(orient[i]);
-      } else if (orientflag == 4) {
-        orient[i][0] = orient[i][1] = orient[i][2] = orient[i][3] = 0.0;
-      } else if (orientflag == 1)
-        orient[i][0] = 0.0;
-
-      if (eflags[i] & DIPOLE) {
-        MathExtra::transpose_matvec(ex_space[ibody],ey_space[ibody],
-                                    ez_space[ibody],mu[i],dorient[i]);
-        MathExtra::snormalize3(mu[i][3],dorient[i],dorient[i]);
-      } else if (dorientflag)
-        dorient[i][0] = dorient[i][1] = dorient[i][2] = 0.0;
-    }
-  }
-
-  // test for valid principal moments & axes
-  // recompute moments of inertia around new axes
-  // 3 diagonal moments should equal principal moments
-  // 3 off-diagonal moments should be 0.0
-  // extended particles may contribute extra terms to moments of inertia
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-    if (rmass) massone = rmass[i];
-    else massone = mass[type[i]];
-
-    sum[ibody][0] += massone *
-      (displace[i][1]*displace[i][1] + displace[i][2]*displace[i][2]);
-    sum[ibody][1] += massone *
-      (displace[i][0]*displace[i][0] + displace[i][2]*displace[i][2]);
-    sum[ibody][2] += massone *
-      (displace[i][0]*displace[i][0] + displace[i][1]*displace[i][1]);
-    sum[ibody][3] -= massone * displace[i][1]*displace[i][2];
-    sum[ibody][4] -= massone * displace[i][0]*displace[i][2];
-    sum[ibody][5] -= massone * displace[i][0]*displace[i][1];
-  }
-
-  if (extended) {
-    double ivec[6];
-    double *shape,*inertiaatom;
-    double length;
-
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
-
-      if (eflags[i] & SPHERE) {
-        sum[ibody][0] += SINERTIA*massone * radius[i]*radius[i];
-        sum[ibody][1] += SINERTIA*massone * radius[i]*radius[i];
-        sum[ibody][2] += SINERTIA*massone * radius[i]*radius[i];
-      } else if (eflags[i] & ELLIPSOID) {
-        shape = ebonus[ellipsoid[i]].shape;
-        MathExtra::inertia_ellipsoid(shape,orient[i],massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      } else if (eflags[i] & LINE) {
-        length = lbonus[line[i]].length;
-        MathExtra::inertia_line(length,orient[i][0],massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      } else if (eflags[i] & TRIANGLE) {
-        inertiaatom = tbonus[tri[i]].inertia;
-        MathExtra::inertia_triangle(inertiaatom,orient[i],massone,ivec);
-        sum[ibody][0] += ivec[0];
-        sum[ibody][1] += ivec[1];
-        sum[ibody][2] += ivec[2];
-        sum[ibody][3] += ivec[3];
-        sum[ibody][4] += ivec[4];
-        sum[ibody][5] += ivec[5];
-      }
-    }
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  // error check that re-computed moments of inertia match diagonalized ones
-  // do not do test for bodies with params read from inpfile
-
-  double norm;
-  for (ibody = 0; ibody < nbody; ibody++) {
-    if (inpfile && inbody[ibody]) continue;
-    if (inertia[ibody][0] == 0.0) {
-      if (fabs(all[ibody][0]) > TOLERANCE)
-        error->all(FLERR,"Fix rigid: Bad principal moments");
-    } else {
-      if (fabs((all[ibody][0]-inertia[ibody][0])/inertia[ibody][0]) >
-          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
-    }
-    if (inertia[ibody][1] == 0.0) {
-      if (fabs(all[ibody][1]) > TOLERANCE)
-        error->all(FLERR,"Fix rigid: Bad principal moments");
-    } else {
-      if (fabs((all[ibody][1]-inertia[ibody][1])/inertia[ibody][1]) >
-          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
-    }
-    if (inertia[ibody][2] == 0.0) {
-      if (fabs(all[ibody][2]) > TOLERANCE)
-        error->all(FLERR,"Fix rigid: Bad principal moments");
-    } else {
-      if (fabs((all[ibody][2]-inertia[ibody][2])/inertia[ibody][2]) >
-          TOLERANCE) error->all(FLERR,"Fix rigid: Bad principal moments");
-    }
-    norm = (inertia[ibody][0] + inertia[ibody][1] + inertia[ibody][2]) / 3.0;
-    if (fabs(all[ibody][3]/norm) > TOLERANCE ||
-        fabs(all[ibody][4]/norm) > TOLERANCE ||
-        fabs(all[ibody][5]/norm) > TOLERANCE)
-      error->all(FLERR,"Fix rigid: Bad principal moments");
-  }
+  memory->create(inbody,nbody,"rigid:inbody");
+  for (int ibody = 0; ibody < nbody; ibody++) inbody[ibody] = 0;
 
   // Read the level-set information from gridfiles
-  if (inpfile) {
-    char **ls_grid_files;
-    double *scale;
-    memory->create(scale,nbody,"rigid/ls/dem:scale"); // TODO: I copied this pattern from inbody, not sure why we cannot do double scale[nbody] ?
-    memory->create(ls_grid_files,nbody,MAXLINE,"rigid/ls/dem:ls_grid_files");
+  char **ls_grid_files;
+  double *scale;
+  memory->create(scale, nbody, "rigid/ls/dem:scale");
+  memory->create(ls_grid_files, nbody, MAXLINE, "rigid/ls/dem:ls_grid_files");
 
-    // Read scaling factors and gridfiles names
-    readfile(2,scale,nullptr,nullptr,nullptr,nullptr,inbody,ls_grid_files);
+  // Read scaling factors and gridfiles names
+  readfile_lsdem(scale, inbody, ls_grid_files);
 
-    // Read grid dimensions for all bodies
-    read_gridfile(0,ls_grid_files,scale);
-    int *ngrid_flat;
-    memory->create(ngrid_flat,nbody,"rigid/ls/dem:ngrid_flat");
-    for (int ibody = 0; ibody < nbody ; ibody++) {
-      ngrid_flat[ibody] = 1;
-      for (int idim = 0 ; idim < domain->dimension ; idim++)
-        ngrid_flat[ibody] *= ngrid[ibody][idim];
-    }
-
-    // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
-    // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
-    memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
-
-    // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
-    read_gridfile(1,ls_grid_files,scale);
-
-    memory->destroy(ls_grid_files);
-    memory->destroy(scale);
-    memory->destroy(ngrid_flat);
+  // Read grid dimensions for all bodies
+  read_gridfile(0, ls_grid_files, scale);
+  int *ngrid_flat;
+  memory->create(ngrid_flat, nbody, "rigid/ls/dem:ngrid_flat");
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    ngrid_flat[ibody] = 1;
+    for (int idim = 0; idim < domain->dimension; idim++)
+      ngrid_flat[ibody] *= ngrid[ibody][idim];
   }
 
-  if (inpfile) memory->destroy(inbody);
+  // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
+  // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
+  memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
+
+  // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
+  read_gridfile(1, ls_grid_files, scale);
+
+  memory->destroy(ls_grid_files);
+  memory->destroy(scale);
+  memory->destroy(ngrid_flat);
+  memory->destroy(inbody);
 }
 
 /* ----------------------------------------------------------------------
-   read per rigid body info from user-provided file
-   which = 0 to read everything except 6 moments of inertia
-   which = 1 to read 6 moments of inertia
-   which = 2 to read LSDEM scaling and gridfile
+   read per rigid body info from user-provided file to read LSDEM scaling and gridfile
    flag inbody = 0 for bodies whose info is read from file
    nlines = # of lines of rigid body info
    one line = rigid-ID mass xcm ycm zcm ixx iyy izz ixy ixz iyz
-              vxcm vycm vzcm lx ly lz ix iy iz
+              vxcm vycm vzcm lx ly lz ix iy iz ls-scale ls-filename
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **array2, double **array3,
-                        imageint *ivec, int *inbody, char** gridfiles)
+void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
 {
-  int nchunk,id,eofflag,xbox,ybox,zbox;
+  int nchunk,id,eofflag;
   int nlines;
   FILE *fp;
   char *eof,*start,*next,*buf;
@@ -1012,16 +480,14 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
   if (comm->me == 0) {
     fp = fopen(inpfile,"r");
     if (fp == nullptr)
-      error->one(FLERR,"Cannot open fix rigid infile {}: {}", inpfile, utils::getsyserror());
+      error->one(FLERR,"Cannot open fix rigid/ls/dem infile {}: {}", inpfile, utils::getsyserror());
     while (true) {
       eof = fgets(line,MAXLINE,fp);
-      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid infile");
+      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem infile");
       start = &line[strspn(line," \t\n\v\f\r")];
       if (*start != '\0' && *start != '#') break;
     }
     nlines = utils::inumeric(FLERR, utils::trim(line), true, lmp);
-    if (which == 0)
-      utils::logmesg(lmp, "Reading rigid body data for {} bodies from file {}\n", nlines, inpfile);
     if (nlines == 0) fclose(fp);
   }
   MPI_Bcast(&nlines,1,MPI_INT,0,world);
@@ -1038,7 +504,7 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
   while (nread < nlines) {
     nchunk = MIN(nlines-nread,CHUNK);
     eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
-    if (eofflag) error->all(FLERR,"Unexpected end of fix rigid infile");
+    if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/ls/dem infile");
 
     buf = buffer;
     next = strchr(buf,'\n');
@@ -1047,14 +513,12 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
     *next = '\n';
 
     if (nwords != ATTRIBUTE_PERBODY)
-      error->all(FLERR,"Incorrect rigid body format in fix rigid file");
+      error->all(FLERR,"Incorrect rigid body format in fix rigid/ls/dem file");
 
     // loop over lines of rigid body attributes
     // tokenize the line into values
     // id = rigid body ID
     // use ID as-is for SINGLE, as mol-ID for MOLECULE, as-is for GROUP
-    // for which = 0, store all but inertia in vecs and arrays
-    // for which = 1, store inertia tensor array, invert 3,4,5 values to Voigt
 
     for (int i = 0; i < nchunk; i++) {
       next = strchr(buf,'\n');
@@ -1074,37 +538,9 @@ void FixRigidLSDEM::readfile(int which, double *vec, double **array1, double **a
 
         inbody[id] = 1;
 
-        if (which == 0) {
-          vec[id] = values.next_double();
-          array1[id][0] = values.next_double();
-          array1[id][1] = values.next_double();
-          array1[id][2] = values.next_double();
-          values.skip(6);
-          array2[id][0] = values.next_double();
-          array2[id][1] = values.next_double();
-          array2[id][2] = values.next_double();
-          array3[id][0] = values.next_double();
-          array3[id][1] = values.next_double();
-          array3[id][2] = values.next_double();
-          xbox = values.next_int();
-          ybox = values.next_int();
-          zbox = values.next_int();
-          ivec[id] = ((imageint) (xbox + IMGMAX) & IMGMASK) |
-            (((imageint) (ybox + IMGMAX) & IMGMASK) << IMGBITS) |
-            (((imageint) (zbox + IMGMAX) & IMGMASK) << IMG2BITS);
-        } else if (which == 1) {
-          values.skip(4);
-          array1[id][0] = values.next_double();
-          array1[id][1] = values.next_double();
-          array1[id][2] = values.next_double();
-          array1[id][5] = values.next_double();
-          array1[id][4] = values.next_double();
-          array1[id][3] = values.next_double();
-        } else if (which == 2) {
-          values.skip(19);
-          vec[id] = values.next_double();
-          strcpy(gridfiles[id], values.next_string().data()); // TODO: I'm not up to date on C-string vs std::string in LAMMPS. Possible important refactor here with std::vector<string> instead of char**
-        }
+        values.skip(19);
+        scale[id] = values.next_double();
+        strcpy(gridfiles[id], values.next_string().data());
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
       }
@@ -1151,9 +587,8 @@ double FixRigidLSDEM::memory_usage()
    which = 1, read the values of the level-set grid
    TODO: User responsible for knowing what the LS values in their file are
    scaled to, and pick the correct scaling factor
-   TODO: left my editor with 4-space tab, LAMMPS style is 2-space tab
    TODO: this assumes all rigid bodies are LSDEM grains. Otherwise, we should pass and read *inbody.
-        Not sure if there is a use for this: why would fix rigid lsdem have tigid bodies not be LSDEM ?
+        Not sure if there is a use for this: why would fix rigid lsdem have rigid bodies not be LSDEM ?
         Refactor readfile() accordingly if this is the route we take
 ------------------------------------------------------------------------- */
 
@@ -1162,79 +597,79 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
   int dim = domain->dimension;
   int grid_shape_buf[dim];
   double grid_size_buf[dim + 1];
-  int nchunk,eofflag;
+  int nchunk, eofflag;
   FILE *fp;
-  char *eof,*start,*next,*buf;
+  char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
 
   // open file and read and parse first non-empty, non-comment line containing the 2 or 3 grid dimensions
   // Broadcast to other procs
   // TODO: there must be a better way to read the first 2,3 lines
-  for (int ibody = 0 ; ibody < nbody ; ibody++) {
+  for (int ibody = 0; ibody < nbody; ibody++) {
     int nlines = 1;
     char* gridfile = ls_grid_files[ibody];
     if (comm->me == 0) {
-      fp = fopen(gridfile,"r");
+      fp = fopen(gridfile, "r");
       if (fp == nullptr)
-        error->one(FLERR,"Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
+        error->one(FLERR, "Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
       while (true) {
-        eof = fgets(line,MAXLINE,fp);
+        eof = fgets(line, MAXLINE, fp);
         if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-        start = &line[strspn(line," \t\n\v\f\r")];
+        start = &line[strspn(line, " \t\n\v\f\r")];
         if (*start != '\0' && *start != '#') break;
       }
       auto grid_shape = utils::split_words(line);
       if (grid_shape.size() != dim)
-        error->one(FLERR,"Fix rigid/ls/dem gridfile {} has {} dimensions but simulation is {}D",
+        error->one(FLERR, "Fix rigid/ls/dem gridfile {} has {} dimensions but simulation is {}D",
                             gridfile, grid_shape.size(), dim);
-      for (int idim = 0 ; idim < dim ; idim++)
+      for (int idim = 0; idim < dim; idim++)
         grid_shape_buf[idim] = utils::inumeric(FLERR, grid_shape[idim], false, lmp);
 
-      eof = fgets(line,MAXLINE,fp);
-      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
       grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
       if (grid_size_buf[0] <= 0.0)
-        error->one(FLERR,"Grid stride for rigid/ls/dem gridfile {} must be positive",gridfile);
+        error->one(FLERR, "Grid stride for rigid/ls/dem gridfile {} must be positive", gridfile);
 
-      eof = fgets(line,MAXLINE,fp);
-      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/demgridfile");
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
       auto grid_corner = utils::split_words(line);
       if (grid_corner.size() != dim)
-        error->one(FLERR,"Fix rigid/ls/dem gridfile {} specifies {} grid corner cooridnates but simulation is {}D",
+        error->one(FLERR, "Fix rigid/ls/dem gridfile {} specifies {} grid corner cooridnates but simulation is {}D",
                             gridfile, grid_corner.size(), dim);
-      for (int idim = 0 ; idim < dim ; idim++)
+      for (int idim = 0; idim < dim; idim++)
         grid_size_buf[idim + 1] = utils::numeric(FLERR, grid_corner[idim], false, lmp);
       utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
     }
     MPI_Bcast(grid_shape_buf, dim, MPI_INT, 0, world);
     MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
 
-    for (int idim = 0 ; idim < dim ; idim++)
+    for (int idim = 0; idim < dim; idim++)
       nlines *= grid_shape_buf[idim];
 
     // TODO: I left the 2 lines below from original rigid::readline() not sure if needed
     // empty file with 0 lines is needed to trigger initial restart file
     // generation when no infile was previously used.
     if (nlines == 0) return;
-    else if (nlines < 0) error->all(FLERR,"Fix rigid/ls/dem gridfile has incorrect format");
+    else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile has incorrect format");
 
     if (which == 0) {
       grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
-      for (int idim = 0 ; idim < dim ; idim++) {
+      for (int idim = 0; idim < dim; idim++) {
         grid_min[ibody][idim] = grid_size_buf[idim + 1] * scale[ibody];
         ngrid[ibody][idim] = grid_shape_buf[idim];
       }
     } else {
-      auto buffer = new char[CHUNK*MAXLINE];
+      auto buffer = new char[CHUNK * MAXLINE];
       int nread = 0;
       int me = comm->me;
       while (nread < nlines) {
-        nchunk = MIN(nlines-nread,CHUNK);
-        eofflag = utils::read_lines_from_file(fp,nchunk,MAXLINE,buffer,me,world);
-        if (eofflag) error->all(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+        nchunk = MIN(nlines-nread, CHUNK);
+        eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
+        if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
 
         buf = buffer;
-        next = strchr(buf,'\n');
+        next = strchr(buf, '\n');
         *next = '\0';
         int nwords = utils::count_words(utils::trim_comment(buf));
         *next = '\n';
@@ -1244,16 +679,16 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
         // Maybe in the future we want to have multiple value per line,
         // In which case it will be useful to have that architecture
         if (nwords != 1)
-          error->all(FLERR,"LSDEM gridfile format requires one entry per line");
+          error->all(FLERR, "LSDEM gridfile format requires one entry per line");
 
         // loop over lines of level set grid and tokenize level set values
         for (int i = 0; i < nchunk; i++) {
-          next = strchr(buf,'\n');
+          next = strchr(buf, '\n');
           *next = '\0';
 
           try {
             ValueTokenizer values(buf);
-            grid_ls_val[ibody][nread+i] = values.next_double() * scale[ibody];
+            grid_ls_val[ibody][nread + i] = values.next_double() * scale[ibody];
           } catch (TokenizerException &e) {
             error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
           }
