@@ -14,9 +14,6 @@
 #include "fix_rigid_ls_dem.h"
 
 #include "atom.h"
-#include "atom_vec_ellipsoid.h"
-#include "atom_vec_line.h"
-#include "atom_vec_tri.h"
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
@@ -30,11 +27,8 @@
 #include "modify.h"
 #include "pair.h"
 #include "pair_ls_dem.h"
-#include "respa.h"
 #include "rigid_const.h"
 #include "tokenizer.h"
-#include "update.h"
-#include "variable.h"
 
 #include <cmath>
 #include <cstring>
@@ -113,98 +107,7 @@ void FixRigidLSDEM::post_constructor()
 
 void FixRigidLSDEM::init()
 {
-  triclinic = domain->triclinic;
-
-  // atom style pointers to particles that store extra info
-
-  avec_ellipsoid = dynamic_cast<AtomVecEllipsoid *>(atom->style_match("ellipsoid"));
-  avec_line = dynamic_cast<AtomVecLine *>(atom->style_match("line"));
-  avec_tri = dynamic_cast<AtomVecTri *>(atom->style_match("tri"));
-
-  // warn if more than one rigid fix
-  // if earlyflag, warn if any post-force fixes come after a rigid fix
-
-  int count = 0;
-  for (auto &ifix : modify->get_fix_list())
-    if (ifix->rigid_flag) count++;
-  if (count > 1 && comm->me == 0)
-    error->warning(FLERR,"More than one fix rigid");
-
-  if (earlyflag) {
-    bool rflag = false;
-    for (auto &ifix : modify->get_fix_list()) {
-      if (ifix->rigid_flag) rflag = true;
-      if ((comm->me == 0) && rflag && (ifix->setmask() & POST_FORCE) && !ifix->rigid_flag)
-        error->warning(FLERR, "Fix {} with ID {} alters forces after fix rigid",
-                       ifix->style, ifix->id);
-    }
-  }
-
-  // warn if body properties are read from inpfile
-  //   and the gravity keyword is not set and a gravity fix exists
-  // this could mean body particles are overlapped
-  //   and gravity is not applied correctly
-
-  if (inpfile && !id_gravity) {
-    if (modify->get_fix_by_style("^gravity").size() > 0)
-      if (comm->me == 0)
-        error->warning(FLERR,"Gravity may not be correctly applied to rigid "
-                       "bodies if they consist of overlapped particles");
-  }
-
-  //  error if a fix changing the box comes before rigid fix
-
-  bool boxflag = false;
-  for (auto &ifix : modify->get_fix_list()) {
-    if (boxflag && utils::strmatch(ifix->style,"^rigid"))
-        error->all(FLERR,"Rigid fixes must come before any box changing fix");
-    if (ifix->box_change) boxflag = true;
-  }
-
-  // add gravity forces based on gravity vector from fix
-
-  if (id_gravity) {
-    auto ifix = modify->get_fix_by_id(id_gravity);
-    if (!ifix) error->all(FLERR,"Fix rigid cannot find fix gravity ID {}", id_gravity);
-    if (!utils::strmatch(ifix->style,"^gravity"))
-      error->all(FLERR,"Fix rigid gravity fix ID {} is not a gravity fix style", id_gravity);
-    int tmp;
-    gvec = (double *) ifix->extract("gvec", tmp);
-  }
-
-  // timestep info
-
-  dtv = update->dt;
-  dtf = 0.5 * update->dt * force->ftm2v;
-  dtq = 0.5 * update->dt;
-
-  if (utils::strmatch(update->integrate_style,"^respa"))
-    step_respa = (dynamic_cast<Respa *>(update->integrate))->step;
-
-  // setup rigid bodies, using current atom info. if reinitflag is not set,
-  // do the initialization only once, b/c properties may not be re-computable
-  // especially if overlapping particles.
-  //   do not do dynamic init if read body properties from inpfile.
-  // this is b/c the inpfile defines the static and dynamic properties and may
-  // not be computable if contain overlapping particles.
-  //   setup_bodies_static() reads inpfile itself
-
-  if (reinitflag || !setupflag) {
-    setup_bodies_static();
-    if (!inpfile) setup_bodies_dynamic();
-    setupflag = 1;
-  }
-
-  // temperature scale factor
-
-  double ndof = 0.0;
-  for (int ibody = 0; ibody < nbody; ibody++) {
-    ndof += fflag[ibody][0] + fflag[ibody][1] + fflag[ibody][2];
-    ndof += tflag[ibody][0] + tflag[ibody][1] + tflag[ibody][2];
-  }
-  ndof -= nlinear;
-  if (ndof > 0.0) tfactor = force->mvv2e / (ndof * force->boltz);
-  else tfactor = 0.0;
+  FixRigid::init(); // Calls setup_bodies_static()
 
   // Copy maximum
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
