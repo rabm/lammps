@@ -58,6 +58,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   comm_forward = 8;
   maxcut = -1;
 
+  if (!inpfile)
+    error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
+
   memory->create(ngrid, nbody, domain->dimension, "rigid/ls/dem:ngrid");
   memory->create(grid_min, nbody, domain->dimension, "rigid/ls/dem:grid_min");
   memory->create(grid_stride, nbody, "rigid/ls/dem:grid_stride");
@@ -1311,7 +1314,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   //  COMPUTE THE LS GRID INDICES
   //
 
-  // Translate local coordinates such that they are relative 
+  // Translate local coordinates such that they are relative
   // to the lower corner of the level set grid.
   x_local[0] -= local_grid_min[j][0];
   x_local[1] -= local_grid_min[j][1];
