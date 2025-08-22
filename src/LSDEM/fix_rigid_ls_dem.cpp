@@ -32,6 +32,8 @@
 
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -50,6 +52,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 {
   comm_forward = 8;
   maxcut = -1;
+  stored_flag = 0;
 
   n_extra_attributes = 2;
 
@@ -78,6 +81,9 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_ls_val);
   memory->destroy(grid_min);
   memory->destroy(grid_stride);
+
+  memory->destroy(ls_grid_files);
+  memory->destroy(scale);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -107,33 +113,65 @@ void FixRigidLSDEM::post_constructor()
 
 void FixRigidLSDEM::init()
 {
-  FixRigid::init(); // Calls setup_bodies_static()
+  FixRigid::init();
 
-  // Copy maximum
+  // Initialize peratom arrays once
+  if (stored_flag) return;
+  stored_flag = 1;
+
+  memory->create(scale, nbody, "rigid/ls/dem:scale");
+  memory->create(ls_grid_files, nbody, MAXLINE, "rigid/ls/dem:ls_grid_files");
+  read_gridfile_names();
+
+  // Read grid dimensions for all bodies
+  std::unordered_map <std::string, std::unordered_set<int>> file_map;
+  std::string filename;
+  int dim = domain->dimension;
+  int max_ngrid[3] = {1, 1, 1};
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    filename.assign(ls_grid_files[ibody]);
+    read_gridfile(ibody, 0, filename, scale);
+    file_map[filename].insert(ibody);
+    for (int a = 0; a < dim; a++)
+      if (ngrid[ibody][a] > max_ngrid[a]) max_ngrid[a] = ngrid[ibody][a];
+  }
+
+  // -------------- will use ragged array for global ------------
+  //int *ngrid_flat;
+  //memory->create(ngrid_flat, nbody, "rigid/ls/dem:ngrid_flat");
+  //for (int ibody = 0; ibody < nbody; ibody++) {
+  //  ngrid_flat[ibody] = 1;
+  //  for (int idim = 0; idim < domain->dimension; idim++)
+  //    ngrid_flat[ibody] *= ngrid[ibody][idim];
+  //}
+
+  // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
+  // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
+  //memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
+  // memory->destroy(ngrid_flat);
+
+  // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
+
+
+  // Copy maximum cutoff
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
     error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
-  // Initialize peratom arrays once
-  if (id_fix2) return;
-
   // Create per-atom properties necessary for current implementation of LS-DEM
-  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
-  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
-  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
+  // TODO: fix property/atom group or bonus for mixed memory
+  //       custom spac variables for each body
   id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-  spac = 0.5; // TODO make a user specified input. TODO: manage different spacing for different rigid bodies
+  spac = 0.5;
   rcell = maxcut / spac + 2; // +1 for interpolation +1 for safety
   // JBC: Can size of rcell, or ngrid_local always be the smallest for interpolation, i.e. 3 ?
   //      and if atom is outside of local grid of its neighbor, then we just pass? Or is that check expensive? and that's why we make sure it's always inside cutoff?
-  for (int a = 0; a < 3; a++) ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (is this needed?)
-  if (domain->dimension == 2) ngrid_local[2] = 1;
+  for (int a = 0; a < 3; a++) ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
+  if (dim == 2) ngrid_local[2] = 1;
   if (!modify->get_fix_by_id(id_fix2)) {
     int n = ngrid_local[0] * ngrid_local[1] * ngrid_local[2];
-
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_local_gridmin {} writedata no ghost yes",
-                                id_fix2, n, 3));
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_local_gridmin {} writedata no ghost yes", id_fix2, n, 3));
   }
 
   int tmp1, tmp2;
@@ -157,80 +195,91 @@ void FixRigidLSDEM::init()
     quat_lsdem[i][3] = quat[ibody][3];
   }
 
-  // Populate local arrays
-  // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
-  //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
+  int ntotal = max_ngrid[0] * max_ngrid[1] * max_ngrid[2];
+  memory->create(grid_ls_val, ntotal, "rigid/ls/dem:grid_ls_val");
+
   double **grid = atom->darray[index_ls_grid];
   double **grid_min_local = atom->darray[index_ls_local_gridmin];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
-  double *ls_val = grid_ls_val[0]; // TODO: Using [0] only works for identical grains
-  int ncol = ngrid[0][0]; // TODO: rename nx, ny, nz
-  int nrow = ngrid[0][1];
-  int nslice = (domain->dimension == 3) ? ngrid[0][2] : 1;
-  int ngrid_global = ncol * nrow * nslice;
 
+
+  // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
+  //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
+  //       Calculate estimate of grain volume or have user input
+
+  double *ls_val;
+  int nx, ny, nz;
   double delx, dely, delz;
   double **x = atom->x;
   int ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
   int ix_global, iy_global, iz_global;
   int index_global, index_local, index_grid_min_local[3];
-  for (int i = 0; i < atom->nlocal; i++) {
-    ibody = body[i];
+  for (const auto& pair : file_map) {
+    read_gridfile(-1, 1, pair.first, scale);
+    for (int i = 0; i < atom->nlocal; i++) {
+      ibody = body[i];
 
-    // location of atom/node relative to CoM
-    delx = x[i][0] - grain_com[i][0];
-    dely = x[i][1] - grain_com[i][1];
-    delz = x[i][2] - grain_com[i][2];
+      if (pair.second.find(ibody) == pair.second.end())
+        continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
-    // Account for PBCs
-    domain->minimum_image(delx, dely, delz);
+      nx = ngrid[ibody][0];
+      ny = ngrid[ibody][1];
+      nz = (dim == 3) ? ngrid[ibody][2] : 1;
+      ntotal = nx * ny * nz;
 
-    // location of atom/node relative to global grid minimum
-    delx -= grid_min[ibody][0];
-    dely -= grid_min[ibody][1];
-    if (domain->dimension == 3) delz -= grid_min[ibody][2];
+      // location of atom/node relative to CoM
+      delx = x[i][0] - grain_com[i][0];
+      dely = x[i][1] - grain_com[i][1];
+      delz = x[i][2] - grain_com[i][2];
 
+      // Account for PBCs
+      domain->minimum_image(delx, dely, delz);
 
-    // index of atom/node in global grid
-    // TODO: explicit conversion ? int(delx / spac) ?
-    ix_node = delx / spac;
-    iy_node = dely / spac;
-    iz_node = delz / spac; // delz should always be zero in 2D.
-                           // If negative due to roundoff, must integer cast to zero: pick int() vs floor() wisely
+      // location of atom/node relative to global grid minimum
+      delx -= grid_min[ibody][0];
+      dely -= grid_min[ibody][1];
+      if (domain->dimension == 3) delz -= grid_min[ibody][2];
 
-    // index of local grid minimum in global grid.
-    // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
-    index_grid_min_local[0] = ix_node - rcell;
-    index_grid_min_local[1] = iy_node - rcell;
-    index_grid_min_local[2] = iz_node - rcell * (domain->dimension == 3); // local cell has zero z-dimension in 2D. Could also be (ngrid_local[1]-1)/2 to work for all dims without check, but probably uglier
+      // index of atom/node in global grid
+      ix_node = int(delx / spac);
+      iy_node = int(dely / spac);
+      iz_node = (dim == 3) ? int(delz / spac) : 0;
 
-    // location of local grid minimum relative to CoM
-    grid_min_local[i][0] = index_grid_min_local[0] * spac + grid_min[ibody][0];
-    grid_min_local[i][1] = index_grid_min_local[1] * spac + grid_min[ibody][1];
-    grid_min_local[i][2] = index_grid_min_local[2] * spac; // should always be zero in 2D
-    if (domain->dimension == 3) grid_min_local[i][2] += grid_min[ibody][2];
+      // index of local grid minimum in global grid.
+      // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
+      index_grid_min_local[0] = ix_node - rcell;
+      index_grid_min_local[1] = iy_node - rcell;
+      index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
 
-    for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
-      for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
-        for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
-          // shift local cell to global cell
-          // JBC, is `ix_node` above already the global index ?
-          ix_global = ix_local + index_grid_min_local[0];
-          iy_global = iy_local + index_grid_min_local[1];
-          iz_global = iz_local + index_grid_min_local[2]; // should always be zero in 2D
+      // location of local grid minimum relative to CoM
+      grid_min_local[i][0] = index_grid_min_local[0] * spac + grid_min[ibody][0];
+      grid_min_local[i][1] = index_grid_min_local[1] * spac + grid_min[ibody][1];
+      grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * spac + grid_min[ibody][2] : 0.0;
 
-          index_global = ix_global + iy_global * ncol + iz_global * ncol * nrow;
-          index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
+      for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
+        for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
+          for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
+            // shift local cell to global cell
+            ix_global = ix_local + index_grid_min_local[0];
+            iy_global = iy_local + index_grid_min_local[1];
+            iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0.0;
 
-          if (index_global > ngrid_global || index_global < 0)
-            error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
-          grid[i][index_local] = ls_val[index_global];
+            index_global = ix_global + iy_global * nx + iz_global * nx * ny;
+            index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] *   ngrid_local[1];
+
+            if (index_global > ntotal || index_global < 0)
+              error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
+            grid[i][index_local] = grid_ls_val[index_global] * scale[ibody];
+          }
         }
       }
+      ls_dem_vol[i] = MY_PI * pow(5.0, 2); // Todo: update
     }
-    // TODO: pass volume through I/O, or compute some heuristic based on counting negative LS grid cells ?
-    ls_dem_vol[i] = MY_PI * pow(5.0, 2); //vol
   }
+
+  memory->destroy(ls_grid_files);
+  memory->destroy(scale);
+  memory->destroy(grid_ls_val);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -320,59 +369,10 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 }
 
 /* ----------------------------------------------------------------------
-   one-time initialization of static rigid body attributes
-   runs default parent method, then grabs & processes file names for LS grid
+   one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::setup_bodies_static()
-{
-  FixRigid::setup_bodies_static();
-
-  int *inbody;
-  memory->create(inbody,nbody,"rigid:inbody");
-  for (int ibody = 0; ibody < nbody; ibody++) inbody[ibody] = 0;
-
-  // Read the level-set information from gridfiles
-  char **ls_grid_files;
-  double *scale;
-  memory->create(scale, nbody, "rigid/ls/dem:scale");
-  memory->create(ls_grid_files, nbody, MAXLINE, "rigid/ls/dem:ls_grid_files");
-
-  // Read scaling factors and gridfiles names
-  readfile_lsdem(scale, inbody, ls_grid_files);
-
-  // Read grid dimensions for all bodies
-  read_gridfile(0, ls_grid_files, scale);
-  int *ngrid_flat;
-  memory->create(ngrid_flat, nbody, "rigid/ls/dem:ngrid_flat");
-  for (int ibody = 0; ibody < nbody; ibody++) {
-    ngrid_flat[ibody] = 1;
-    for (int idim = 0; idim < domain->dimension; idim++)
-      ngrid_flat[ibody] *= ngrid[ibody][idim];
-  }
-
-  // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
-  // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
-  memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
-
-  // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
-  read_gridfile(1, ls_grid_files, scale);
-
-  memory->destroy(ls_grid_files);
-  memory->destroy(scale);
-  memory->destroy(ngrid_flat);
-  memory->destroy(inbody);
-}
-
-/* ----------------------------------------------------------------------
-   read per rigid body info from user-provided file to read LSDEM scaling and gridfile
-   flag inbody = 0 for bodies whose info is read from file
-   nlines = # of lines of rigid body info
-   one line = rigid-ID mass xcm ycm zcm ixx iyy izz ixy ixz iyz
-              vxcm vycm vzcm lx ly lz ix iy iz ls-scale ls-filename
-------------------------------------------------------------------------- */
-
-void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
+void FixRigidLSDEM::read_gridfile_names()
 {
   int nchunk, id, eofflag, nlines;
   FILE *fp;
@@ -439,11 +439,9 @@ void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
         if (id < 0 || id >= nbody)
           throw TokenizerException("invalid_rigid body ID ", std::to_string(id + 1));
 
-        inbody[id] = 1;
-
         values.skip(19);
         scale[id] = values.next_double();
-        strcpy(gridfiles[id], values.next_string().data());
+        strcpy(ls_grid_files[id], values.next_string().data());
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
       }
@@ -488,14 +486,9 @@ double FixRigidLSDEM::memory_usage()
    followed by ngridx * ngridy * ngridz lines of level set values at the grid points
    which = 0, read only the size of the level-set grid
    which = 1, read the values of the level-set grid
-   TODO: User responsible for knowing what the LS values in their file are
-   scaled to, and pick the correct scaling factor
-   TODO: this assumes all rigid bodies are LSDEM grains. Otherwise, we should pass and read *inbody.
-        Not sure if there is a use for this: why would fix rigid lsdem have rigid bodies not be LSDEM ?
-        Refactor readfile() accordingly if this is the route we take
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale)
+void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, double* scale)
 {
   int dim = domain->dimension;
   int grid_shape_buf[dim];
@@ -508,101 +501,99 @@ void FixRigidLSDEM::read_gridfile(int which, char **ls_grid_files, double* scale
   // open file and read and parse first non-empty, non-comment line containing the 2 or 3 grid dimensions
   // Broadcast to other procs
   // TODO: there must be a better way to read the first 2,3 lines
-  for (int ibody = 0; ibody < nbody; ibody++) {
-    int nlines = 1;
-    char* gridfile = ls_grid_files[ibody];
-    if (comm->me == 0) {
-      fp = fopen(gridfile, "r");
-      if (fp == nullptr)
-        error->one(FLERR, "Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
-      while (true) {
-        eof = fgets(line, MAXLINE, fp);
-        if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
-        start = &line[strspn(line, " \t\n\v\f\r")];
-        if (*start != '\0' && *start != '#') break;
-      }
-      auto grid_shape = utils::split_words(line);
-      if (grid_shape.size() != dim)
-        error->one(FLERR, "Fix rigid/ls/dem gridfile {} has {} dimensions but simulation is {}D",
-                            gridfile, grid_shape.size(), dim);
-      for (int idim = 0; idim < dim; idim++)
-        grid_shape_buf[idim] = utils::inumeric(FLERR, grid_shape[idim], false, lmp);
-
+  int nlines = 1;
+  const char* gridfile = filename.c_str();
+  if (comm->me == 0) {
+    fp = fopen(gridfile, "r");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
+    while (true) {
       eof = fgets(line, MAXLINE, fp);
-      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
-      grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
-      if (grid_size_buf[0] <= 0.0)
-        error->one(FLERR, "Grid stride for rigid/ls/dem gridfile {} must be positive", gridfile);
-
-      eof = fgets(line, MAXLINE, fp);
-      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
-      auto grid_corner = utils::split_words(line);
-      if (grid_corner.size() != dim)
-        error->one(FLERR, "Fix rigid/ls/dem gridfile {} specifies {} grid corner cooridnates but simulation is {}D",
-                            gridfile, grid_corner.size(), dim);
-      for (int idim = 0; idim < dim; idim++)
-        grid_size_buf[idim + 1] = utils::numeric(FLERR, grid_corner[idim], false, lmp);
-      utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
+      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/ls/dem gridfile");
+      start = &line[strspn(line, " \t\n\v\f\r")];
+      if (*start != '\0' && *start != '#') break;
     }
-    MPI_Bcast(grid_shape_buf, dim, MPI_INT, 0, world);
-    MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
-
+    auto grid_shape = utils::split_words(line);
+    if (grid_shape.size() != dim)
+      error->one(FLERR, "Fix rigid/ls/dem gridfile {} has {} dimensions but simulation is {}D",
+                          gridfile, grid_shape.size(), dim);
     for (int idim = 0; idim < dim; idim++)
-      nlines *= grid_shape_buf[idim];
+      grid_shape_buf[idim] = utils::inumeric(FLERR, grid_shape[idim], false, lmp);
 
-    // TODO: I left the 2 lines below from original rigid::readline() not sure if needed
-    // empty file with 0 lines is needed to trigger initial restart file
-    // generation when no infile was previously used.
-    if (nlines == 0) return;
-    else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile has incorrect format");
+    eof = fgets(line, MAXLINE, fp);
+    if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
+    grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+    if (grid_size_buf[0] <= 0.0)
+      error->one(FLERR, "Grid stride for rigid/ls/dem gridfile {} must be positive", gridfile);
 
-    if (which == 0) {
-      grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
-      for (int idim = 0; idim < dim; idim++) {
-        grid_min[ibody][idim] = grid_size_buf[idim + 1] * scale[ibody];
-        ngrid[ibody][idim] = grid_shape_buf[idim];
-      }
-    } else {
-      auto buffer = new char[CHUNK * MAXLINE];
-      int nread = 0;
-      int me = comm->me;
-      while (nread < nlines) {
-        nchunk = MIN(nlines-nread, CHUNK);
-        eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
-        if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
+    eof = fgets(line, MAXLINE, fp);
+    if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
+    auto grid_corner = utils::split_words(line);
+    if (grid_corner.size() != dim)
+      error->one(FLERR, "Fix rigid/ls/dem gridfile {} specifies {} grid corner cooridnates but simulation is {}D",
+                          gridfile, grid_corner.size(), dim);
+    for (int idim = 0; idim < dim; idim++)
+      grid_size_buf[idim + 1] = utils::numeric(FLERR, grid_corner[idim], false, lmp);
+    utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
+  }
+  MPI_Bcast(grid_shape_buf, dim, MPI_INT, 0, world);
+  MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
 
-        buf = buffer;
+  for (int idim = 0; idim < dim; idim++)
+    nlines *= grid_shape_buf[idim];
+
+  // TODO: I left the 2 lines below from original rigid::readline() notsure if needed
+  // empty file with 0 lines is needed to trigger initial restart file
+  // generation when no infile was previously used.
+  if (nlines == 0) return;
+  else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile hasincorrect format");
+
+  if (which == 0) {
+    grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
+    for (int idim = 0; idim < dim; idim++) {
+      grid_min[ibody][idim] = grid_size_buf[idim + 1] * scale[ibody];
+      ngrid[ibody][idim] = grid_shape_buf[idim];
+    }
+  } else {
+    auto buffer = new char[CHUNK * MAXLINE];
+    int nread = 0;
+    int me = comm->me;
+    while (nread < nlines) {
+      nchunk = MIN(nlines-nread, CHUNK);
+      eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
+      if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/ls/dem gridfile");
+
+      buf = buffer;
+      next = strchr(buf, '\n');
+      *next = '\0';
+      int nwords = utils::count_words(utils::trim_comment(buf));
+      *next = '\n';
+
+      // TODO: there must be a better way than tokenizing single value
+      // Kept as is for now to re-use existing rigid::readfile() code
+      // Maybe in the future we want to have multiple value per line,
+      // In which case it will be useful to have that architecture
+      if (nwords != 1)
+        error->all(FLERR, "LSDEM gridfile format requires one entry per line");
+
+      // loop over lines of level set grid and tokenize level set values
+      for (int i = 0; i < nchunk; i++) {
         next = strchr(buf, '\n');
         *next = '\0';
-        int nwords = utils::count_words(utils::trim_comment(buf));
-        *next = '\n';
 
-        // TODO: there must be a better way than tokenizing single value
-        // Kept as is for now to re-use existing rigid::readfile() code
-        // Maybe in the future we want to have multiple value per line,
-        // In which case it will be useful to have that architecture
-        if (nwords != 1)
-          error->all(FLERR, "LSDEM gridfile format requires one entry per line");
-
-        // loop over lines of level set grid and tokenize level set values
-        for (int i = 0; i < nchunk; i++) {
-          next = strchr(buf, '\n');
-          *next = '\0';
-
-          try {
-            ValueTokenizer values(buf);
-            grid_ls_val[ibody][nread + i] = values.next_double() * scale[ibody];
-          } catch (TokenizerException &e) {
-            error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
-          }
-          buf = next + 1;
+        try {
+          ValueTokenizer values(buf);
+          grid_ls_val[nread + i] = values.next_double();
+        } catch (TokenizerException &e) {
+          error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
         }
-        nread += nchunk;
+        buf = next + 1;
       }
-      delete[] buffer;
+      nread += nchunk;
     }
-    if (comm->me == 0) fclose(fp);
+    delete[] buffer;
   }
+  if (comm->me == 0) fclose(fp);
 }
 
 /* ----------------------------------------------------------------------

@@ -142,7 +142,7 @@ class FixRigid : public Fix {
   void image_shift();
   void set_xv();
   void set_v();
-  virtual void setup_bodies_static();
+  void setup_bodies_static();
   void setup_bodies_dynamic();
   void apply_langevin_thermostat();
   virtual void compute_forces_and_torques();
