@@ -66,6 +66,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
   create_attribute = 1;
   dof_flag = 1;
   centroidstressflag = CENTROID_NOTAVAIL;
+  n_extra_attributes = 0;
 
   // perform initial allocation of atom-based arrays
   // register with Atom class
@@ -2353,9 +2354,7 @@ void FixRigid::readfile(int which, double *vec, double **array1, double **array2
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    // Must have at exactly ATTRIBUTE_PERBODY unless it's a child class
-    if ((utils::strmatch(style, "^rigid&") && nwords != ATTRIBUTE_PERBODY) ||
-         nwords < ATTRIBUTE_PERBODY)
+    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
       error->all(FLERR,"Incorrect rigid body format in fix rigid file");
 
     // loop over lines of rigid body attributes

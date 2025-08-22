@@ -38,8 +38,6 @@ using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
 
-static constexpr int LS_ATTRIBUTE_PERBODY = 22;
-
 //TODO: Should we have a flag (or child classes) for different memory distribution strategies?
 //      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
 //      then benchmark across different limits? Few large grains, lots of small grains, jamming vs. flow...
@@ -52,6 +50,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 {
   comm_forward = 8;
   maxcut = -1;
+
+  n_extra_attributes = 2;
 
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
@@ -415,7 +415,7 @@ void FixRigidLSDEM::readfile_lsdem(double *scale, int *inbody, char** gridfiles)
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != LS_ATTRIBUTE_PERBODY)
+    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
       error->all(FLERR, "Incorrect rigid body format in fix rigid/ls/dem file");
 
     // loop over lines of rigid body attributes
