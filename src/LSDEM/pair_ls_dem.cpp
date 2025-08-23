@@ -62,11 +62,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, key, allnum, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
-  double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
-  double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
+  double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
+  // double normal_old[3];
 
   // Currently require:
   //   Newton pair off.
@@ -83,6 +84,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **v = atom->v;
   double **f = atom->f;
   double **torque = atom->torque;
+  // double **n_old = atom->n_old;
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -107,9 +109,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   for (ii = 0; ii < allnum; ii++) {
     // Loop through local nodes
     i = ilist[ii];
-    xtmp = x[i][0];
-    ytmp = x[i][1];
-    ztmp = x[i][2];
+    xitmp = x[i][0];
+    yitmp = x[i][1];
+    zitmp = x[i][2];
     ibody = body[i];
     itag = tag[i];
     jlist = firstneigh[i];
@@ -129,9 +131,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       jtag = tag[j];
 
       // Separation distance between the two nodes
-      delx = xtmp - x[j][0];
-      dely = ytmp - x[j][1];
-      delz = ztmp - x[j][2];
+      delx = xitmp - x[j][0];
+      dely = yitmp - x[j][1];
+      delz = zitmp - x[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
       r = sqrt(rsq);
 
@@ -164,12 +166,12 @@ void PairLSDEM::compute(int eflag, int vflag)
   // only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
-    xtmp = x[i][0];
-    ytmp = x[i][1];
-    ztmp = x[i][2];
-    vxtmp = v[i][0];
-    vytmp = v[i][1];
-    vztmp = v[i][2];
+    xitmp = x[i][0];
+    yitmp = x[i][1];
+    zitmp = x[i][2];
+    vxitmp = v[i][0];
+    vyitmp = v[i][1];
+    vzitmp = v[i][2];
     itype = type[i];
     ibody = body[i];
     ivol = grain_vol[i];
@@ -184,6 +186,12 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (factor_lj == 0) continue;
 
       j &= NEIGHMASK;
+      xjtmp = x[j][0];
+      yjtmp = x[j][1];
+      zjtmp = x[j][2];
+      vxjtmp = v[j][0];
+      vyjtmp = v[j][1];
+      vzjtmp = v[j][2];
       jbody = body[j];
       jtag = tag[j];
       jvol = grain_vol[j];
@@ -217,18 +225,71 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Evaluate the level set, and assign the interaction direction based on the
       // node-grain combination. Force magnitude and direction go i -> j by definition.
-      if (calc_force_of_i_on_j) {
+      if (calc_force_of_i_on_j) { // Use node of i.
         // Level set is by definition negative inside the particle, 
         // so swap the sign to get the overlap distance.
         u = - fix_rigid->get_ls_value(i, j, normal);
-        // The normal is also swapped and points away from j, correct signs.
+        // The normal is also swapped and points away from j, correct signs. Already in global coordinates.
         MathExtra::negate3(normal);
-      } else {
+
+        // Contact point
+        contact_point[0] = xitmp - 0.5 * u * normal[0];
+        contact_point[1] = yitmp - 0.5 * u * normal[1];
+        contact_point[2] = zitmp - 0.5 * u * normal[2];
+
+        // Tangent force! 
+        // Get old node normal
+        // normal_old[0] = n_old[i][0]
+        // normal_old[1] = n_old[i][1]
+        // normal_old[2] = n_old[i][2]
+
+        // if( norm(normal_old) > 0){
+        // Applying Rodrigues' rotation formula to get the new shear displacement
+        // Rotation axis
+        // k = MathExtra::cross3(normal_old, normal);
+        // sint = abs(k);
+        // cost = sqrt(1- sint*sint);
+        // k = k / (sint + eps);
+        // nodeFs = nodeFs * cost + MathExtra::cross3(k,nodeFs) * sint + k * MathExta::dot3(k,nodeFs) * (1-cost);
+        // }
+
+        // n_old = normal_old;
+        // v = vi + omegai x (xi - xi_grain) - vj - omegaj x (xj - xj_grain);  
+        // ds = (v - MathExtra::dot3(v,n)*n)*dt;
+
+        // Standard elastic-perfectly-plastic Coulomb friction model.
+        // nodeFs -= ds * kt;
+        // nodeFsMag = |nodeFs|;
+        // nodeContactGrain[i] = j; // ADD SANITY CHECK FOR CONTACT WITH 2 GRAINS?
+        // FsMag = min( mu*|Fn|, nodeFsMag)
+        
+        // if(FsMag > 0){
+        // Fs = FsMag * nodeFs/nodeFsMag;
+        // F += Fs;
+
+        //}
+
+      } else { // Use node of j.
         u = - fix_rigid->get_ls_value(j, i, normal);
-        // The normal points towards j, no correction needed.
+        // The normal points towards j, no correction needed. Already in global coordinates.
+
+        // Contact point
+        contact_point[0] = xjtmp - 0.5 * u * normal[0];
+        contact_point[1] = yjtmp - 0.5 * u * normal[1];
+        contact_point[2] = zjtmp - 0.5 * u * normal[2];
       }
 
       // Apply forces and torques
+
+      // Reset shear force if no contact
+      // if (u < 0) {
+      //   nodeFs[i] = 0; // or j
+      //   n_old[i][0] = 0;
+      //   n_old[i][1] = 0;
+      //   n_old[i][2] = 0;
+      //   nodeContactGrain[i] = inf;
+      //   continue;
+      // }
 
       // No adhesion, cohesion, or ranged forces.
       if (u < 0) continue;
@@ -241,11 +302,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       fpair[0] = fpair_mag * normal[0];
       fpair[1] = fpair_mag * normal[1];
       fpair[2] = fpair_mag * normal[2];
-
-      // Contact point
-      contact_point[0] = xtmp - 0.5 * u * normal[0];
-      contact_point[1] = ytmp - 0.5 * u * normal[1];
-      contact_point[2] = ztmp - 0.5 * u * normal[2];
 
       // Force on grain i
       f[i][0] += fpair[0];
