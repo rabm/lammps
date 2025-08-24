@@ -36,7 +36,7 @@ using namespace MathConst;
 
 /* ---------------------------------------------------------------------- */
 
-PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
+PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
 {
   writedata = 1;
   single_enable = 0;
@@ -285,10 +285,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Reset shear force if no contact
       // if (u < 0) {
-      //   nodeFs[i] = 0; // or j
-      //   n_old[i][0] = 0;
-      //   n_old[i][1] = 0;
-      //   n_old[i][2] = 0;
+      //   nodeFs[i][0] = 0.0; // or j
+      //   nodeFs[i][1] = 0.0; // or j
+      //   nodeFs[i][2] = 0.0; // or j
+      //   n_old[i][0] = 0.0;
+      //   n_old[i][1] = 0.0;
+      //   n_old[i][2] = 0.0;
       //   nodeContactGrain[i] = inf;
       //   continue;
       // }

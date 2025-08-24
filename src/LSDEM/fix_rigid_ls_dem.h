@@ -63,6 +63,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double *grid_stride;   // the LS grid stride, assumed equal in all directions
                          // JTC: is there a reason this would vary across grains?
                          // JBC: we could have highly-detailed and crude grains requiring different grid resolution
+                         // DvdH: Grid stride will also vary for smaller or larger grains. With the same nr of grid points, a smaller sphere has a smaller stride.
   double spac, maxcut;
   int rcell;
 

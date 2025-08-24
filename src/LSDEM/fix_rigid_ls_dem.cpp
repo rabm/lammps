@@ -163,7 +163,7 @@ void FixRigidLSDEM::init()
   // TODO: fix property/atom group or bonus for mixed memory
   //       custom spac variables for each body
   id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-  spac = 0.5;
+  spac = 0.5; // TODO: This hardcoded value should be the spac of the level set or some multiple thereof.
   rcell = maxcut / spac + 2; // +1 for interpolation +1 for safety
   // JBC: Can size of rcell, or ngrid_local always be the smallest for interpolation, i.e. 3 ?
   //      and if atom is outside of local grid of its neighbor, then we just pass? Or is that check expensive? and that's why we make sure it's always inside cutoff?
@@ -259,15 +259,22 @@ void FixRigidLSDEM::init()
       for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
         for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
           for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
-            // shift local cell to global cell
+            // Shift local cell to global cell
             ix_global = ix_local + index_grid_min_local[0];
             iy_global = iy_local + index_grid_min_local[1];
-            iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0.0;
+            iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0;
+
+            // Explicit bounds check per dimension (safer and clearer)
+            if (ix_global < 0 || ix_global >= nx ||
+                iy_global < 0 || iy_global >= ny ||
+                iz_global < 0 || iz_global >= nz)
+              error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
 
             index_global = ix_global + iy_global * nx + iz_global * nx * ny;
             index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] *   ngrid_local[1];
 
-            if (index_global > ntotal || index_global < 0)
+            // Final sanity check (defensive)
+            if (index_global < 0 || index_global >= ntotal)
               error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
             grid[i][index_local] = grid_ls_val[index_global] * scale[ibody];
           }
