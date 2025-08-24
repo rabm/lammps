@@ -50,7 +50,9 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(setflag);
     memory->destroy(cutsq);
 
-    memory->destroy(k);
+    memory->destroy(kn);
+    memory->destroy(kt);
+    memory->destroy(mu);
     memory->destroy(cut);
     memory->destroy(gamma);
   }
@@ -296,7 +298,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fpair_mag = - k[itype][jtype] * u;
+      fpair_mag = - kn[itype][jtype] * u;
 
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
@@ -365,7 +367,9 @@ void PairLSDEM::allocate()
 
   memory->create(cutsq, np1, np1, "pair:cutsq");
 
-  memory->create(k, np1, np1, "pair:k");
+  memory->create(kn, np1, np1, "pair:kn");
+  memory->create(kt, np1, np1, "pair:kt");
+  memory->create(mu, np1, np1, "pair:mu");
   memory->create(cut, np1, np1, "pair:cut");
   memory->create(gamma, np1, np1, "pair:gamma");
 }
@@ -501,7 +505,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 
 void PairLSDEM::coeff(int narg, char **arg)
 {
-  if (narg != 5)
+  if (narg != 7)
     error->all(FLERR, "Incorrect args for pair coefficients");
   if (!allocated) allocate();
 
@@ -509,16 +513,20 @@ void PairLSDEM::coeff(int narg, char **arg)
   utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
   utils::bounds(FLERR, arg[1], 1, atom->ntypes, jlo, jhi, error);
 
-  double k_one = utils::numeric(FLERR, arg[2], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[3], false, lmp);
-  double gamma_one = utils::numeric(FLERR, arg[4], false, lmp);
+  double kn_one = utils::numeric(FLERR, arg[2], false, lmp);
+  double kt_one = utils::numeric(FLERR, arg[3], false, lmp);
+  double mu_one = utils::numeric(FLERR, arg[4], false, lmp);
+  double cut_one = utils::numeric(FLERR, arg[5], false, lmp);
+  double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
 
   if (cut_one <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
     for (int j = MAX(jlo, i); j <= jhi; j++) {
-      k[i][j] = k_one;
+      kn[i][j] = kn_one;
+      kt[i][j] = kt_one;
+      mu[i][j] = mu_one;
       cut[i][j] = cut_one;
       gamma[i][j] = gamma_one;
 
@@ -579,12 +587,17 @@ double PairLSDEM::init_one(int i, int j)
 {
   if (setflag[i][j] == 0) {
     cut[i][j] = mix_distance(cut[i][i], cut[j][j]);
-    k[i][j] = mix_energy(k[i][i], k[j][j], cut[i][i], cut[j][j]);
+    kn[i][j] = mix_energy(kn[i][i], kn[j][j], cut[i][i], cut[j][j]);
+    kt[i][j] = mix_energy(kt[i][i], kt[j][j], cut[i][i], cut[j][j]);
+    mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
     gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
+  // Enforces symmetry
   cut[j][i] = cut[i][j];
-  k[j][i] = k[i][j];
+  kn[j][i] = kn[i][j];
+  kt[j][i] = kt[i][j];
+  mu[j][i] = mu[i][j];
   gamma[j][i] = gamma[i][j];
 
   return cut[i][j];
@@ -603,7 +616,9 @@ void PairLSDEM::write_restart(FILE *fp)
     for (j = i; j <= atom->ntypes; j++) {
       fwrite(&setflag[i][j], sizeof(int), 1, fp);
       if (setflag[i][j]) {
-        fwrite(&k[i][j], sizeof(double), 1, fp);
+        fwrite(&kn[i][j], sizeof(double), 1, fp);
+        fwrite(&kt[i][j], sizeof(double), 1, fp);
+        fwrite(&mu[i][j], sizeof(double), 1, fp);
         fwrite(&cut[i][j], sizeof(double), 1, fp);
         fwrite(&gamma[i][j], sizeof(double), 1, fp);
       }
@@ -627,11 +642,15 @@ void PairLSDEM::read_restart(FILE *fp)
       MPI_Bcast(&setflag[i][j], 1, MPI_INT, 0, world);
       if (setflag[i][j]) {
         if (me == 0) {
-          utils::sfread(FLERR, &k[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &kn[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &kt[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &mu[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
         }
-        MPI_Bcast(&k[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&kn[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&kt[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&mu[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
@@ -645,7 +664,7 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g\n", i, k[i][i], cut[i][i], gamma[i][i]);
+    fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
 }
 
 /* ----------------------------------------------------------------------
@@ -656,7 +675,7 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %d %g %g %g\n", i, j, k[i][j], cut[i][j], gamma[i][j]);
+      fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
 }
 
 /* ----------------------------------------------------------------------
