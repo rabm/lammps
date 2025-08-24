@@ -163,10 +163,13 @@ void FixRigidLSDEM::init()
   // TODO: fix property/atom group or bonus for mixed memory
   //       custom spac variables for each body
   id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-  spac = 0.5; // TODO: This hardcoded value should be the spac of the level set or some multiple thereof.
+  spac = 0.5; // DvdH: This hardcoded value should probably be the spac of the level set from the input file, is this doable?
   rcell = maxcut / spac + 2; // +1 for interpolation +1 for safety
   // JBC: Can size of rcell, or ngrid_local always be the smallest for interpolation, i.e. 3 ?
   //      and if atom is outside of local grid of its neighbor, then we just pass? Or is that check expensive? and that's why we make sure it's always inside cutoff?
+  // DvdH: We need to guarantee that all of the level set values near the surface are captured by the nodes +/- rcell. If the nodes are sufficiently dense,
+  // such as when the greates distance between neighbouring nodes is less than 2*spac, we should be able to assign only a 3x3x3 level set region to each node.
+  // This would make for small-memory nodes that work great on GPU! Also would make watershed excessive.
   for (int a = 0; a < 3; a++) ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
   if (dim == 2) ngrid_local[2] = 1;
   if (!modify->get_fix_by_id(id_fix2)) {
