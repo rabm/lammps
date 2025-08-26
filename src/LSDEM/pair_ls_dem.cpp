@@ -218,7 +218,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Evaluate the level set, and assign the interaction direction based on the
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) {
-        // Level set is by definition negative inside the particle, 
+        // Level set is by definition negative inside the particle,
         // so swap the sign to get the overlap distance.
         u = - fix_rigid->get_ls_value(i, j, normal);
         // The normal is also swapped and points away from j, correct signs.
@@ -327,6 +327,8 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
+
+// Copied code below to fix rigid/ls/dem, delete after it works
 
 //   nrow = 20;
 //   ncol = 20;
@@ -615,5 +617,3 @@ double PairLSDEM::smearedHeavisideStep(double x)
   // this function. See Kawamoto et al. (2016).
   return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
 }
-
-// End of file

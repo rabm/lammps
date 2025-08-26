@@ -40,6 +40,16 @@ using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
 
+static constexpr double EPSILON_INERTIA = 1e-7;
+
+inline double FixRigidLSDEM::smeared_heaviside_step(double x)
+{
+  // A function that smoothly transition from 0 to 1 when x goes from -1 to 1.
+  // For x < -1, the function should be 0. For x > 1, the function should be 1.
+  // This is not implemented here, and up to the user. See Kawamoto et al. (2016).
+  return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
+}
+
 //TODO: Should we have a flag (or child classes) for different memory distribution strategies?
 //      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
 //      then benchmark across different limits? Few large grains, lots of small grains, jamming vs. flow...
@@ -48,7 +58,7 @@ using namespace RigidConst;
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr),
-    ngrid(nullptr), grid_ls_val(nullptr), grid_min(nullptr), grid_stride(nullptr)
+    grid_min(nullptr), grid_stride(nullptr)
 {
   comm_forward = 8;
   maxcut = -1;
@@ -59,7 +69,6 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
 
-  memory->create(ngrid, nbody, domain->dimension, "rigid/ls/dem:ngrid");
   memory->create(grid_min, nbody, domain->dimension, "rigid/ls/dem:grid_min");
   memory->create(grid_stride, nbody, "rigid/ls/dem:grid_stride");
 }
@@ -77,13 +86,8 @@ FixRigidLSDEM::~FixRigidLSDEM()
 
   // delete nbody-length arrays
 
-  memory->destroy(ngrid);
-  memory->destroy(grid_ls_val);
   memory->destroy(grid_min);
   memory->destroy(grid_stride);
-
-  memory->destroy(ls_grid_files);
-  memory->destroy(scale);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -119,20 +123,25 @@ void FixRigidLSDEM::init()
   if (stored_flag) return;
   stored_flag = 1;
 
+  double *scale;
+  int **ngrid;
+  char **gridfiles;
   memory->create(scale, nbody, "rigid/ls/dem:scale");
-  memory->create(ls_grid_files, nbody, MAXLINE, "rigid/ls/dem:ls_grid_files");
-  read_gridfile_names();
+  memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
+  memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
+  read_gridfile_names(gridfiles, scale);
 
   // Read grid dimensions for all bodies
   std::unordered_map <std::string, std::unordered_set<int>> file_map;
   std::string filename;
   int dim = domain->dimension;
-  int max_ngrid[3] = {1, 1, 1};
+  int max_ngrid[3];
   for (int ibody = 0; ibody < nbody; ibody++) {
-    filename.assign(ls_grid_files[ibody]);
-    read_gridfile(ibody, 0, filename, scale);
+    filename.assign(gridfiles[ibody]);
+    read_gridfile(ibody, 0, filename, scale, ngrid, nullptr);
     file_map[filename].insert(ibody);
-    for (int a = 0; a < dim; a++)
+    if (dim == 2) ngrid[ibody][2] = 1;
+    for (int a = 0; a < 3; a++)
       if (ngrid[ibody][a] > max_ngrid[a]) max_ngrid[a] = ngrid[ibody][a];
   }
 
@@ -145,13 +154,12 @@ void FixRigidLSDEM::init()
   //    ngrid_flat[ibody] *= ngrid[ibody][idim];
   //}
 
-  // Create grid_ls_val from dimensions read into ngrid by read_gridfile()
+  // Create ls_values from dimensions read into ngrid by read_gridfile()
   // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
-  //memory->create_ragged(grid_ls_val, nbody, ngrid_flat, "rigid/ls/dem:grid_ls_val");
+  //memory->create_ragged(ls_values, nbody, ngrid_flat, "rigid/ls/dem:ls_values");
   // memory->destroy(ngrid_flat);
 
-  // Read and scale level-set values for all bodies (requires grid_ls_val to be sized correctly)
-
+  // Read and scale level-set values for all bodies (requires ls_values to be sized correctly)
 
   // Copy maximum cutoff
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
@@ -171,11 +179,11 @@ void FixRigidLSDEM::init()
   if (dim == 2) ngrid_local[2] = 1;
   if (!modify->get_fix_by_id(id_fix2)) {
     int n = ngrid_local[0] * ngrid_local[1] * ngrid_local[2];
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_grid {} d2_ls_local_gridmin {} writedata no ghost yes", id_fix2, n, 3));
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_values {} d2_ls_local_gridmin {} writedata no ghost yes", id_fix2, n, 3));
   }
 
   int tmp1, tmp2;
-  index_ls_grid = atom->find_custom("ls_grid", tmp1, tmp2);
+  index_ls_values = atom->find_custom("ls_values", tmp1, tmp2);
   index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
   // Update center of mass
@@ -196,12 +204,12 @@ void FixRigidLSDEM::init()
   }
 
   int ntotal = max_ngrid[0] * max_ngrid[1] * max_ngrid[2];
-  memory->create(grid_ls_val, ntotal, "rigid/ls/dem:grid_ls_val");
+  double *ls_values;
+  memory->create(ls_values, ntotal, "rigid/ls/dem:ls_values");
 
-  double **grid = atom->darray[index_ls_grid];
+  double **grid = atom->darray[index_ls_values];
   double **grid_min_local = atom->darray[index_ls_local_gridmin];
   double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
-
 
   // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
   //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
@@ -209,13 +217,14 @@ void FixRigidLSDEM::init()
 
   double *ls_val;
   int nx, ny, nz;
-  double delx, dely, delz;
+  double delx, dely, delz, inertia_ls[6];
   double **x = atom->x;
   int ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
   int ix_global, iy_global, iz_global;
   int index_global, index_local, index_grid_min_local[3];
   for (const auto& pair : file_map) {
-    read_gridfile(-1, 1, pair.first, scale);
+    filename = pair.first;
+    read_gridfile(-1, 1, filename, nullptr, nullptr, ls_values);
     for (int i = 0; i < atom->nlocal; i++) {
       ibody = body[i];
 
@@ -265,21 +274,24 @@ void FixRigidLSDEM::init()
             iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0.0;
 
             index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-            index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] *   ngrid_local[1];
+            index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
 
             if (index_global > ntotal || index_global < 0)
               error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
-            grid[i][index_local] = grid_ls_val[index_global] * scale[ibody];
+            grid[i][index_local] = ls_values[index_global] * scale[ibody];
           }
         }
       }
-      ls_dem_vol[i] = MY_PI * pow(5.0, 2); // Todo: update
+      ls_dem_vol[i] = process_ls_grid(ngrid[ibody], ls_values, inertia_ls, filename);
+
+      // compare/replace inertia with inertia_ls
     }
   }
 
-  memory->destroy(ls_grid_files);
+  memory->destroy(gridfiles);
   memory->destroy(scale);
-  memory->destroy(grid_ls_val);
+  memory->destroy(ngrid);
+  memory->destroy(ls_values);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -372,7 +384,7 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
    one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile_names()
+void FixRigidLSDEM::read_gridfile_names(char **gridfiles, double *scale)
 {
   int nchunk, id, eofflag, nlines;
   FILE *fp;
@@ -441,7 +453,7 @@ void FixRigidLSDEM::read_gridfile_names()
 
         values.skip(19);
         scale[id] = values.next_double();
-        strcpy(ls_grid_files[id], values.next_string().data());
+        strcpy(gridfiles[id], values.next_string().data());
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
       }
@@ -481,14 +493,14 @@ double FixRigidLSDEM::memory_usage()
 
 /* ----------------------------------------------------------------------
    read per rigid body level-set grid values from user-provided file
-   files ls_grid_files to read from stored previously by readfile() function
+   files gridfiles to read from stored previously by readfile() function
    first line = ngridx ngridy ngridz
    followed by ngridx * ngridy * ngridz lines of level set values at the grid points
    which = 0, read only the size of the level-set grid
    which = 1, read the values of the level-set grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, double* scale)
+void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, double* scale, int **ngrid, double *ls_values)
 {
   int dim = domain->dimension;
   int grid_shape_buf[dim];
@@ -546,13 +558,13 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, do
   // empty file with 0 lines is needed to trigger initial restart file
   // generation when no infile was previously used.
   if (nlines == 0) return;
-  else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile hasincorrect format");
+  else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile has incorrect format");
 
   if (which == 0) {
     grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
     for (int idim = 0; idim < dim; idim++) {
       grid_min[ibody][idim] = grid_size_buf[idim + 1] * scale[ibody];
-      ngrid[ibody][idim] = grid_shape_buf[idim];
+      ngrid[ibody][idim] = (int) grid_shape_buf[idim];
     }
   } else {
     auto buffer = new char[CHUNK * MAXLINE];
@@ -583,7 +595,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, do
 
         try {
           ValueTokenizer values(buf);
-          grid_ls_val[nread + i] = values.next_double();
+          ls_values[nread + i] = values.next_double();
         } catch (TokenizerException &e) {
           error->all(FLERR, "Invalid fix rigid/ls/dem gridfile: {}", e.what());
         }
@@ -605,7 +617,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double **x = atom->x;
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_grid = atom->darray[index_ls_grid]; // Danny: This is per atom/node, so I would call it node_grid.
+  double **node_local_grid = atom->darray[index_ls_values];
   double **local_grid_min = atom->darray[index_ls_local_gridmin];
 
   int ncol = ngrid_local[0]; // Danny: this should be for the node's grid as well
@@ -684,10 +696,10 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
 
   // Level-set values on the grid points in the lower z plane (ind_z)
-  double ls000 = grain_grid[j][ind_x   + ind_y     * ncol + ind_z * ncol * nrow];
-  double ls100 = grain_grid[j][ind_x+1 + ind_y     * ncol + ind_z * ncol * nrow];
-  double ls010 = grain_grid[j][ind_x   + (ind_y+1) * ncol + ind_z * ncol * nrow];
-  double ls110 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol + ind_z * ncol * nrow];
+  double ls000 = node_local_grid[j][ind_x   + ind_y     * ncol + ind_z * ncol * nrow];
+  double ls100 = node_local_grid[j][ind_x+1 + ind_y     * ncol + ind_z * ncol * nrow];
+  double ls010 = node_local_grid[j][ind_x   + (ind_y+1) * ncol + ind_z * ncol * nrow];
+  double ls110 = node_local_grid[j][ind_x+1 + (ind_y+1) * ncol + ind_z * ncol * nrow];
 
   // Bi-linear interpolation in the lower z plane (ind_z)
   double lsxy0 = ls000 + y_red * (ls010 - ls000) +
@@ -696,10 +708,10 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   if (domain->dimension == 3) { // 3D
     // Level-set values on the grid points in the upper z plane (ind_z+1)
-    double ls001 = grain_grid[j][ind_x   + ind_y     * ncol + (ind_z+1) * ncol * nrow];
-    double ls101 = grain_grid[j][ind_x+1 + ind_y     * ncol + (ind_z+1) * ncol * nrow];
-    double ls011 = grain_grid[j][ind_x   + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
-    double ls111 = grain_grid[j][ind_x+1 + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
+    double ls001 = node_local_grid[j][ind_x   + ind_y     * ncol + (ind_z+1) * ncol * nrow];
+    double ls101 = node_local_grid[j][ind_x+1 + ind_y     * ncol + (ind_z+1) * ncol * nrow];
+    double ls011 = node_local_grid[j][ind_x   + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
+    double ls111 = node_local_grid[j][ind_x+1 + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
 
     // Bi-linear interpolation in the upper z plane (ind_z+1)
     double lsxy1 = ls001 + y_red * (ls011 - ls001) +
@@ -709,12 +721,12 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
     dist = z_red * (lsxy1 - lsxy0) + lsxy0;
 
-	  // Computing normal as the gradient of trilinear interpolation
+    // Computing normal as the gradient of trilinear interpolation
     // TODO: maybe hardcode without loops ? Danny: Compiler should optimise this automatically, don't think it changes anything?
     for (int a = 0; a < 2; a++) {
       for (int b = 0; b < 2; b++) {
         for (int c = 0; c < 2; c++) {
-          double lsVal = grain_grid[j][(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
+          double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
           nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
           ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
           nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
@@ -727,7 +739,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     // Computing normal as the gradient of bilinear interpolation
     for (int a = 0; a < 2; a++) {
       for (int b = 0; b < 2; b++) {
-        double lsVal = grain_grid[j][(ind_x + a) + (ind_y + b) * ncol];
+        double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol];
         nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
         ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
       }
@@ -744,4 +756,96 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
+}
+
+/* ----------------------------------------------------------------------
+   Find the value of node (atom) i in j's LS grid.
+------------------------------------------------------------------------- */
+
+double FixRigidLSDEM::process_ls_grid(int *ngrid, double *ls_values, double *inertia_ls, std::string filename)
+{
+  // Volume integration
+
+  // This is the reference distance values that determines the smearing with of
+  // the Heaviside step function. Current expression is the half-diagional of the
+  // grid cell divided by a smearing constant.
+  double smearCoeff = 1.5;
+  double ls_ref = 0.0;
+  if (smearCoeff != 0)
+    ls_ref = sqrt(0.75) * spac / smearCoeff;
+
+  // Initialise volume and centre of mass
+  double volume = 0.0, x_com = 0.0, y_com = 0.0, z_com = 0.0;
+  // Cell volume, temporary grid points, integration volume.
+  double volume_cell = spac * spac;
+  if (domain->dimension == 3) volume_cell *= spac;
+
+  // Integration
+  double dV, ls_val;
+  for (int ind_x = 0; ind_x < ngrid[0]; ind_x++) {
+    for (int ind_y = 0; ind_y < ngrid[1]; ind_y++) {
+      for (int ind_z = 0; ind_z < ngrid[2]; ind_z++) {
+        ls_val = ls_values[ind_x + ind_y * ngrid[0] + ind_z * ngrid[0] * ngrid[1]];
+        if (abs(ls_val) < ls_ref) {
+          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
+          dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
+        } else if (ls_val < 0) {
+          // Inside and far away from boundary
+          dV = volume_cell;
+        } else if (ls_val > 0) {
+          // Outside and far away from boundary
+          dV = 0.0;
+        }
+        if (dV > 0.0) {
+          volume += dV;
+          x_com += ind_x * spac * dV;
+          y_com += ind_y * spac * dV;
+          z_com += ind_z * spac * dV;
+        }
+      }
+    }
+  }
+  x_com /= volume;
+  y_com /= volume;
+  z_com /= volume;
+
+  // Computing the inertia tensor (a double loop is unavoidable)
+  double delx, dely, delz;
+  for (int a = 0; a < 6; a++) inertia_ls[a] = 0.0;
+  for (int ind_x = 0; ind_x < ngrid[0]; ind_x++) {
+    for (int ind_y = 0; ind_y < ngrid[1]; ind_y++) {
+      for (int ind_z = 0; ind_z < ngrid[2]; ind_z++) {
+        ls_val = ls_values[ind_x + ind_y * ngrid[0] + ind_z * ngrid[0] * ngrid[1]];
+        if (abs(ls_val) < ls_ref) {
+          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
+          dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
+        } else if (ls_val < 0) {
+          // Inside and far away from boundary
+          dV = volume_cell;
+        } else if (ls_val > 0) {
+          // Outside and far away from boundary
+          dV = 0.0;
+        }
+        if (dV > 0.0) {
+          delx = ind_x * spac - x_com;
+          dely = ind_y * spac - y_com;
+          delz = ind_z * spac - z_com;
+          inertia_ls[0] += (dely * dely + delz * delz) * dV;
+          inertia_ls[1] += (delx * delx + delz * delz) * dV;
+          inertia_ls[2] += (delx * delx + dely * dely) * dV;
+          inertia_ls[3] -= delx * dely * dV;
+          inertia_ls[4] -= delx * delz * dV;
+          inertia_ls[5] -= dely * delz * dV;
+        }
+      }
+    }
+  }
+
+  // Check to see if level set has a non-inertial reference frame
+  double I_diag_norm = sqrt(inertia_ls[0] * inertia_ls[0] + inertia_ls[1] * inertia_ls[1] + inertia_ls[2] * inertia_ls[2]);
+  double I_off_diag_norm = sqrt(2.0 * (inertia_ls[3] * inertia_ls[3] + inertia_ls[4] * inertia_ls[4] + inertia_ls[5] * inertia_ls[5]));
+  if (I_off_diag_norm / I_diag_norm > EPSILON_INERTIA)
+    error->all(FLERR, "None-inertial reference frame detected for level set in {}", filename);
+
+  return volume;
 }

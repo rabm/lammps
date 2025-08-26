@@ -53,24 +53,19 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_quat;
   int index_ls_dem_size;
 
-  int index_ls_grid;
+  int index_ls_values;
   int index_ls_local_gridmin;
 
-  int **ngrid;           // number of grid points in each dimension [nbody, (nx, ny, nz)]
   int ngrid_local[3];    // number of local grid points in each dimension
-  double *grid_ls_val;  // Level set value at grid point [nbody, (nx*ny*nz-vector in physics convention)]
-  double **grid_min;
+  double **grid_min;     // minimum xyz coordinates of LS grid
   double *grid_stride;   // the LS grid stride, assumed equal in all directions
-                         // JTC: is there a reason this would vary across grains?
-                         // JBC: we could have highly-detailed and crude grains requiring different grid resolution
   double spac, maxcut;
   int rcell;
 
-  char **ls_grid_files;  // LS file names from rigid file
-  double *scale;         // LS scale factors from rigid file
-
-  void read_gridfile_names();
-  void read_gridfile(int, int, std::string, double *);
+  void read_gridfile_names(char **, double *);
+  void read_gridfile(int, int, std::string, double *, int **, double *);
+  double process_ls_grid(int *, double *, double *, std::string);
+  inline double smeared_heaviside_step(double);
 };
 
 }    // namespace LAMMPS_NS
