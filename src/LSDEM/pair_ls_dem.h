@@ -44,7 +44,7 @@ class PairLSDEM : public Pair {
   double maxcut;
 
  protected:
-  double **k, **cut, **gamma;
+  double **kn, **kt, **mu, **cut, **gamma;
 
   int index_ls_grid;
   int index_ls_dem_com;

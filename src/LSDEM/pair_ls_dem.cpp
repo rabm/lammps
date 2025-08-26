@@ -36,7 +36,7 @@ using namespace MathConst;
 
 /* ---------------------------------------------------------------------- */
 
-PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), k(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
+PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
 {
   writedata = 1;
   single_enable = 0;
@@ -50,7 +50,9 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(setflag);
     memory->destroy(cutsq);
 
-    memory->destroy(k);
+    memory->destroy(kn);
+    memory->destroy(kt);
+    memory->destroy(mu);
     memory->destroy(cut);
     memory->destroy(gamma);
   }
@@ -62,11 +64,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, key, allnum, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
-  double xtmp, ytmp, ztmp, delx, dely, delz, dr, evdwl;
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
-  double vxtmp, vytmp, vztmp, delvx, delvy, delvz, dot, smooth;
+  double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fpair_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
+  // double normal_old[3];
 
   // Currently require:
   //   Newton pair off.
@@ -83,6 +86,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **v = atom->v;
   double **f = atom->f;
   double **torque = atom->torque;
+  // double **n_old = atom->n_old;
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -107,9 +111,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   for (ii = 0; ii < allnum; ii++) {
     // Loop through local nodes
     i = ilist[ii];
-    xtmp = x[i][0];
-    ytmp = x[i][1];
-    ztmp = x[i][2];
+    xitmp = x[i][0];
+    yitmp = x[i][1];
+    zitmp = x[i][2];
     ibody = body[i];
     itag = tag[i];
     jlist = firstneigh[i];
@@ -129,9 +133,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       jtag = tag[j];
 
       // Separation distance between the two nodes
-      delx = xtmp - x[j][0];
-      dely = ytmp - x[j][1];
-      delz = ztmp - x[j][2];
+      delx = xitmp - x[j][0];
+      dely = yitmp - x[j][1];
+      delz = zitmp - x[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
       r = sqrt(rsq);
 
@@ -164,12 +168,12 @@ void PairLSDEM::compute(int eflag, int vflag)
   // only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
-    xtmp = x[i][0];
-    ytmp = x[i][1];
-    ztmp = x[i][2];
-    vxtmp = v[i][0];
-    vytmp = v[i][1];
-    vztmp = v[i][2];
+    xitmp = x[i][0];
+    yitmp = x[i][1];
+    zitmp = x[i][2];
+    vxitmp = v[i][0];
+    vyitmp = v[i][1];
+    vzitmp = v[i][2];
     itype = type[i];
     ibody = body[i];
     ivol = grain_vol[i];
@@ -184,6 +188,12 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (factor_lj == 0) continue;
 
       j &= NEIGHMASK;
+      xjtmp = x[j][0];
+      yjtmp = x[j][1];
+      zjtmp = x[j][2];
+      vxjtmp = v[j][0];
+      vyjtmp = v[j][1];
+      vzjtmp = v[j][2];
       jbody = body[j];
       jtag = tag[j];
       jvol = grain_vol[j];
@@ -217,35 +227,85 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Evaluate the level set, and assign the interaction direction based on the
       // node-grain combination. Force magnitude and direction go i -> j by definition.
-      if (calc_force_of_i_on_j) {
+      if (calc_force_of_i_on_j) { // Use node of i.
         // Level set is by definition negative inside the particle,
         // so swap the sign to get the overlap distance.
         u = - fix_rigid->get_ls_value(i, j, normal);
-        // The normal is also swapped and points away from j, correct signs.
+        // The normal is also swapped and points away from j, correct signs. Already in global coordinates.
         MathExtra::negate3(normal);
-      } else {
+
+        // Contact point
+        contact_point[0] = xitmp - 0.5 * u * normal[0];
+        contact_point[1] = yitmp - 0.5 * u * normal[1];
+        contact_point[2] = zitmp - 0.5 * u * normal[2];
+
+        // Tangent force!
+        // Get old node normal
+        // normal_old[0] = n_old[i][0]
+        // normal_old[1] = n_old[i][1]
+        // normal_old[2] = n_old[i][2]
+
+        // if( norm(normal_old) > 0){
+        // Applying Rodrigues' rotation formula to get the new shear displacement
+        // Rotation axis
+        // k = MathExtra::cross3(normal_old, normal);
+        // sint = abs(k);
+        // cost = sqrt(1- sint*sint);
+        // k = k / (sint + eps);
+        // nodeFs = nodeFs * cost + MathExtra::cross3(k,nodeFs) * sint + k * MathExta::dot3(k,nodeFs) * (1-cost);
+        // }
+
+        // n_old = normal_old;
+        // v = vi + omegai x (xi - xi_grain) - vj - omegaj x (xj - xj_grain);
+        // ds = (v - MathExtra::dot3(v,n)*n)*dt;
+
+        // Standard elastic-perfectly-plastic Coulomb friction model.
+        // nodeFs -= ds * kt;
+        // nodeFsMag = |nodeFs|;
+        // nodeContactGrain[i] = j; // ADD SANITY CHECK FOR CONTACT WITH 2 GRAINS?
+        // FsMag = min( mu*|Fn|, nodeFsMag)
+
+        // if(FsMag > 0){
+        // Fs = FsMag * nodeFs/nodeFsMag;
+        // F += Fs;
+
+        //}
+
+      } else { // Use node of j.
         u = - fix_rigid->get_ls_value(j, i, normal);
-        // The normal points towards j, no correction needed.
+        // The normal points towards j, no correction needed. Already in global coordinates.
+
+        // Contact point
+        contact_point[0] = xjtmp - 0.5 * u * normal[0];
+        contact_point[1] = yjtmp - 0.5 * u * normal[1];
+        contact_point[2] = zjtmp - 0.5 * u * normal[2];
       }
 
       // Apply forces and torques
+
+      // Reset shear force if no contact
+      // if (u < 0) {
+      //   nodeFs[i][0] = 0.0; // or j
+      //   nodeFs[i][1] = 0.0; // or j
+      //   nodeFs[i][2] = 0.0; // or j
+      //   n_old[i][0] = 0.0;
+      //   n_old[i][1] = 0.0;
+      //   n_old[i][2] = 0.0;
+      //   nodeContactGrain[i] = inf;
+      //   continue;
+      // }
 
       // No adhesion, cohesion, or ranged forces.
       if (u < 0) continue;
 
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fpair_mag = - k[itype][jtype] * u;
+      fpair_mag = - kn[itype][jtype] * u;
 
       // The pair force vector
       fpair[0] = fpair_mag * normal[0];
       fpair[1] = fpair_mag * normal[1];
       fpair[2] = fpair_mag * normal[2];
-
-      // Contact point
-      contact_point[0] = xtmp - 0.5 * u * normal[0];
-      contact_point[1] = ytmp - 0.5 * u * normal[1];
-      contact_point[2] = ztmp - 0.5 * u * normal[2];
 
       // Force on grain i
       f[i][0] += fpair[0];
@@ -309,7 +369,9 @@ void PairLSDEM::allocate()
 
   memory->create(cutsq, np1, np1, "pair:cutsq");
 
-  memory->create(k, np1, np1, "pair:k");
+  memory->create(kn, np1, np1, "pair:kn");
+  memory->create(kt, np1, np1, "pair:kt");
+  memory->create(mu, np1, np1, "pair:mu");
   memory->create(cut, np1, np1, "pair:cut");
   memory->create(gamma, np1, np1, "pair:gamma");
 }
@@ -447,7 +509,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 
 void PairLSDEM::coeff(int narg, char **arg)
 {
-  if (narg != 5)
+  if (narg != 7)
     error->all(FLERR, "Incorrect args for pair coefficients");
   if (!allocated) allocate();
 
@@ -455,16 +517,20 @@ void PairLSDEM::coeff(int narg, char **arg)
   utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
   utils::bounds(FLERR, arg[1], 1, atom->ntypes, jlo, jhi, error);
 
-  double k_one = utils::numeric(FLERR, arg[2], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[3], false, lmp);
-  double gamma_one = utils::numeric(FLERR, arg[4], false, lmp);
+  double kn_one = utils::numeric(FLERR, arg[2], false, lmp);
+  double kt_one = utils::numeric(FLERR, arg[3], false, lmp);
+  double mu_one = utils::numeric(FLERR, arg[4], false, lmp);
+  double cut_one = utils::numeric(FLERR, arg[5], false, lmp);
+  double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
 
   if (cut_one <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
     for (int j = MAX(jlo, i); j <= jhi; j++) {
-      k[i][j] = k_one;
+      kn[i][j] = kn_one;
+      kt[i][j] = kt_one;
+      mu[i][j] = mu_one;
       cut[i][j] = cut_one;
       gamma[i][j] = gamma_one;
 
@@ -525,12 +591,17 @@ double PairLSDEM::init_one(int i, int j)
 {
   if (setflag[i][j] == 0) {
     cut[i][j] = mix_distance(cut[i][i], cut[j][j]);
-    k[i][j] = mix_energy(k[i][i], k[j][j], cut[i][i], cut[j][j]);
+    kn[i][j] = mix_energy(kn[i][i], kn[j][j], cut[i][i], cut[j][j]);
+    kt[i][j] = mix_energy(kt[i][i], kt[j][j], cut[i][i], cut[j][j]);
+    mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
     gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
+  // Enforces symmetry
   cut[j][i] = cut[i][j];
-  k[j][i] = k[i][j];
+  kn[j][i] = kn[i][j];
+  kt[j][i] = kt[i][j];
+  mu[j][i] = mu[i][j];
   gamma[j][i] = gamma[i][j];
 
   return cut[i][j];
@@ -549,7 +620,9 @@ void PairLSDEM::write_restart(FILE *fp)
     for (j = i; j <= atom->ntypes; j++) {
       fwrite(&setflag[i][j], sizeof(int), 1, fp);
       if (setflag[i][j]) {
-        fwrite(&k[i][j], sizeof(double), 1, fp);
+        fwrite(&kn[i][j], sizeof(double), 1, fp);
+        fwrite(&kt[i][j], sizeof(double), 1, fp);
+        fwrite(&mu[i][j], sizeof(double), 1, fp);
         fwrite(&cut[i][j], sizeof(double), 1, fp);
         fwrite(&gamma[i][j], sizeof(double), 1, fp);
       }
@@ -573,11 +646,15 @@ void PairLSDEM::read_restart(FILE *fp)
       MPI_Bcast(&setflag[i][j], 1, MPI_INT, 0, world);
       if (setflag[i][j]) {
         if (me == 0) {
-          utils::sfread(FLERR, &k[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &kn[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &kt[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &mu[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
         }
-        MPI_Bcast(&k[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&kn[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&kt[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&mu[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
@@ -591,7 +668,7 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g\n", i, k[i][i], cut[i][i], gamma[i][i]);
+    fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
 }
 
 /* ----------------------------------------------------------------------
@@ -602,7 +679,7 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %d %g %g %g\n", i, j, k[i][j], cut[i][j], gamma[i][j]);
+      fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
 }
 
 /* ----------------------------------------------------------------------
