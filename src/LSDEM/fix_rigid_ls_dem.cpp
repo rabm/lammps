@@ -104,13 +104,15 @@ int FixRigidLSDEM::setmask()
 void FixRigidLSDEM::post_constructor()
 {
   // Store positional information of grain on all atoms
-
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
-  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_quat 4 d2_ls_dem_com 3 d_ls_dem_vol ghost yes writedata no", id_fix));
+  modify->add_fix(fmt::format("{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d_ls_dem_vol d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id ghost yes writedata no", id_fix));
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
+  index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
+  index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
+  index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
 }
 
 /* ---------------------------------------------------------------------- */
