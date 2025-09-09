@@ -71,8 +71,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fn_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
   double normal_old[3], fs_mag, k[3], sintheta, costheta, term1[3], term2;
-  double shear_incr[3], surf_lever_i[3], surf_level_j[3], v_rot_i[3], v_rot_j[3], v_rel[3], v_rel_norm[3];
-  double fs_mag_trial;
+  double shear_incr[3], v_rel[3], v_rel_norm[3], fs_mag_trial;
 
   // Currently require:
   //   Newton pair off.
@@ -349,20 +348,12 @@ void PairLSDEM::compute(int eflag, int vflag)
           }
         }
 
-        // Compute arms to surface
-        surf_lever_i[0] = xitmp - icomx;
-        surf_lever_i[1] = yitmp - icomy;
-        surf_lever_i[2] = zitmp - icomz;
-        MathExtra::cross3(surf_level_i,surf_level_i,v_rot_i); // NEED OMEGA I IN FIRST SLOT!!
-        surf_lever_j[0] = xjtmp - jcomx;
-        surf_lever_j[1] = yjtmp - jcomy;
-        surf_lever_j[2] = zjtmp - jcomz;
-        MathExtra::cross3(surf_level_i,surf_level_j,v_rot_j); // NEED OMEGA J IN FIRST SLOT!!
-        
         // Relative velocity at the grain surface
-        v_rel[0] = vxitmp + v_rot_i[0] - vxjtmp - v_rot_j[0];
-        v_rel[1] = vyitmp + v_rot_i[1] - vyjtmp - v_rot_j[1];
-        v_rel[2] = vzitmp + v_rot_i[2] - vzjtmp - v_rot_j[2];
+        // Note: The velocity at the node due to an angular velocity fo the grain 
+        // around its centre of mass is already included, so this suffices.
+        v_rel[0] = vxitmp - vxjtmp;
+        v_rel[1] = vyitmp - vyjtmp;
+        v_rel[2] = vzitmp - vzjtmp;
         if (calc_force_of_j_on_i) { // Use node of j.
           // Need to swap to keep node i as reference point.
           v_rel[0] = -v_rel[0];
