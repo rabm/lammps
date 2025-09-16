@@ -46,7 +46,7 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   double get_ls_value(int, int, double*);
 
  protected:
-  int stored_flag;
+  int stored_flag, distributed_flag;
   char *id_fix, *id_fix2;
   int index_ls_dem_vol;
   int index_ls_dem_com;
@@ -57,14 +57,16 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_local_gridmin;
 
   int ngrid_local[3];    // number of local grid points in each dimension
+  int *grid_style;       // distributed vs. global memory
   double **grid_min;     // minimum xyz coordinates of LS grid
   double *grid_stride;   // the LS grid stride, assumed equal in all directions
-  double spac, maxcut;
-  int rcell;
+  double *grid_scale;
+  double maxcut;
+  int dim, rcell;
 
-  void read_gridfile_names(char **, double *);
-  void read_gridfile(int, int, std::string, double *, int **, double *);
-  double process_ls_grid(int *, double *, double *, std::string);
+  void read_gridfile_names(char **);
+  void read_gridfile(int, int, std::string, int **, double *);
+  double process_ls_grid(int *, double, double *, double *, std::string);
   inline double smeared_heaviside_step(double);
 };
 

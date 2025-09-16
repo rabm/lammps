@@ -40,6 +40,8 @@ using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
 
+enum {GLOBAL, DISTRIBUTED};
+
 static constexpr double EPSILON_INERTIA = 1e-7;
 
 inline double FixRigidLSDEM::smeared_heaviside_step(double x)
@@ -58,19 +60,22 @@ inline double FixRigidLSDEM::smeared_heaviside_step(double x)
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr),
-    grid_min(nullptr), grid_stride(nullptr)
+    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr)
 {
   comm_forward = 8;
   maxcut = -1;
   stored_flag = 0;
+  distributed_flag = 0;
 
-  n_extra_attributes = 2;
+  n_extra_attributes = 3;
 
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
 
+  memory->create(grid_style, nbody, "rigid/ls/dem:grid_style");
   memory->create(grid_min, nbody, domain->dimension, "rigid/ls/dem:grid_min");
   memory->create(grid_stride, nbody, "rigid/ls/dem:grid_stride");
+  memory->create(grid_scale, nbody, "rigid/ls/dem:grid_scale");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -88,6 +93,7 @@ FixRigidLSDEM::~FixRigidLSDEM()
 
   memory->destroy(grid_min);
   memory->destroy(grid_stride);
+  memory->destroy(grid_scale);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -119,76 +125,6 @@ void FixRigidLSDEM::init()
 {
   FixRigid::init();
 
-  // Initialize peratom arrays once
-  if (stored_flag) return;
-  stored_flag = 1;
-
-  double *scale;
-  int **ngrid;
-  char **gridfiles;
-  memory->create(scale, nbody, "rigid/ls/dem:scale");
-  memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
-  memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
-  read_gridfile_names(gridfiles, scale);
-
-  // Read grid dimensions for all bodies
-  std::unordered_map <std::string, std::unordered_set<int>> file_map;
-  std::string filename;
-  int dim = domain->dimension;
-  int max_ngrid[3];
-  for (int ibody = 0; ibody < nbody; ibody++) {
-    filename.assign(gridfiles[ibody]);
-    read_gridfile(ibody, 0, filename, scale, ngrid, nullptr);
-    file_map[filename].insert(ibody);
-    if (dim == 2) ngrid[ibody][2] = 1;
-    for (int a = 0; a < 3; a++)
-      if (ngrid[ibody][a] > max_ngrid[a]) max_ngrid[a] = ngrid[ibody][a];
-  }
-
-  // -------------- will use ragged array for global ------------
-  //int *ngrid_flat;
-  //memory->create(ngrid_flat, nbody, "rigid/ls/dem:ngrid_flat");
-  //for (int ibody = 0; ibody < nbody; ibody++) {
-  //  ngrid_flat[ibody] = 1;
-  //  for (int idim = 0; idim < domain->dimension; idim++)
-  //    ngrid_flat[ibody] *= ngrid[ibody][idim];
-  //}
-
-  // Create ls_values from dimensions read into ngrid by read_gridfile()
-  // This cannot be done before reading gridfiles, e.g., in the constructor where we create ngrid
-  //memory->create_ragged(ls_values, nbody, ngrid_flat, "rigid/ls/dem:ls_values");
-  // memory->destroy(ngrid_flat);
-
-  // Read and scale level-set values for all bodies (requires ls_values to be sized correctly)
-
-  // Copy maximum cutoff
-  if (!utils::strmatch(force->pair_style,"^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
-  maxcut = pair->maxcut;
-
-  // Create per-atom properties necessary for current implementation of LS-DEM
-  // TODO: fix property/atom group or bonus for mixed memory
-  //       custom spac variables for each body
-  id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-  spac = 0.5; // DvdH: This hardcoded value should probably be the spac of the level set from the input file, is this doable?
-  rcell = maxcut / spac + 2; // +1 for interpolation +1 for safety
-  // JBC: Can size of rcell, or ngrid_local always be the smallest for interpolation, i.e. 3 ?
-  //      and if atom is outside of local grid of its neighbor, then we just pass? Or is that check expensive? and that's why we make sure it's always inside cutoff?
-  // DvdH: We need to guarantee that all of the level set values near the surface are captured by the nodes +/- rcell. If the nodes are sufficiently dense,
-  // such as when the greates distance between neighbouring nodes is less than 2*spac, we should be able to assign only a 3x3x3 level set region to each node.
-  // This would make for small-memory nodes that work great on GPU! Also would make watershed excessive.
-  for (int a = 0; a < 3; a++) ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
-  if (dim == 2) ngrid_local[2] = 1;
-  if (!modify->get_fix_by_id(id_fix2)) {
-    int n = ngrid_local[0] * ngrid_local[1] * ngrid_local[2];
-    modify->add_fix(fmt::format("{} all property/atom d2_ls_values {} d2_ls_local_gridmin {} writedata no ghost yes", id_fix2, n, 3));
-  }
-
-  int tmp1, tmp2;
-  index_ls_values = atom->find_custom("ls_values", tmp1, tmp2);
-  index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
-
   // Update center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
@@ -206,102 +142,169 @@ void FixRigidLSDEM::init()
     quat_lsdem[i][3] = quat[ibody][3];
   }
 
-  int ntotal = max_ngrid[0] * max_ngrid[1] * max_ngrid[2];
-  double *ls_values;
-  memory->create(ls_values, ntotal, "rigid/ls/dem:ls_values");
+  // Copy maximum cutoff
+  if (!utils::strmatch(force->pair_style,"^ls/dem"))
+    error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
+  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  maxcut = pair->maxcut;
 
-  double **grid = atom->darray[index_ls_values];
-  double **grid_min_local = atom->darray[index_ls_local_gridmin];
-  double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
+  if (!stored_flag) {
+    // Set stored_flag later
 
-  // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
-  //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
-  //       Calculate estimate of grain volume or have user input
+    int **ngrid;
+    char **gridfiles;
+    memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
+    memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
+    read_gridfile_names(gridfiles);
 
-  double *ls_val;
-  int nx, ny, nz;
-  double delx, dely, delz, inertia_ls[6];
-  double **x = atom->x;
-  int ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
-  int ix_global, iy_global, iz_global;
-  int index_global, index_local, index_grid_min_local[3];
-  for (const auto& pair : file_map) {
-    filename = pair.first;
-    read_gridfile(-1, 1, filename, nullptr, nullptr, ls_values);
-    for (int i = 0; i < atom->nlocal; i++) {
-      ibody = body[i];
+    // Read grid dimensions for all bodies
+    std::unordered_map <std::string, std::unordered_set<int>> file_map;
+    std::string filename;
+    dim = domain->dimension;
+    int max_ngrid[3] = {0, 0, 0};
+    double max_stride = 0;
+    for (int ibody = 0; ibody < nbody; ibody++) {
+      filename.assign(gridfiles[ibody]);
+      read_gridfile(ibody, 0, filename, ngrid, nullptr);
+      file_map[filename].insert(ibody);
+      if (dim == 2) ngrid[ibody][2] = 1;
+      for (int a = 0; a < 3; a++)
+        if (ngrid[ibody][a] > max_ngrid[a]) max_ngrid[a] = ngrid[ibody][a];
+      max_stride = MAX(max_stride, grid_stride[ibody]);
+    }
+    rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
 
-      if (pair.second.find(ibody) == pair.second.end())
-        continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
+    for (int a = 0; a < 3; a++) ngrid_local[a] = 2 * rcell + 1;  // +1 for middle cell   (needed?)
+    if (dim == 2) ngrid_local[2] = 1;
+    id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+    int n = ngrid_local[0] * ngrid_local[1] * ngrid_local[2];
+    modify->add_fix(fmt::format("{} all property/atom d2_ls_values {} d2_ls_local_gridmin {} writedata no ghost yes", id_fix2, n, 3));
 
-      nx = ngrid[ibody][0];
-      ny = ngrid[ibody][1];
-      nz = (dim == 3) ? ngrid[ibody][2] : 1;
-      ntotal = nx * ny * nz;
+    int tmp1, tmp2;
+    index_ls_values = atom->find_custom("ls_values", tmp1, tmp2);
+    index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
 
-      // location of atom/node relative to CoM
-      delx = x[i][0] - grain_com[i][0];
-      dely = x[i][1] - grain_com[i][1];
-      delz = x[i][2] - grain_com[i][2];
+    stored_flag = 1;
 
-      // Account for PBCs
-      domain->minimum_image(delx, dely, delz);
+    int *ngrid_flat;
+    memory->create(ngrid_flat, nbody, "rigid/ls/dem:ngrid_flat");
+    for (int ibody = 0; ibody < nbody; ibody++) {
+      ngrid_flat[ibody] = 1;
+      for (int idim = 0; idim < domain->dimension; idim++)
+        ngrid_flat[ibody] *= ngrid[ibody][idim];
+    }
 
-      // location of atom/node relative to global grid minimum
-      delx -= grid_min[ibody][0];
-      dely -= grid_min[ibody][1];
-      if (domain->dimension == 3) delz -= grid_min[ibody][2];
+    // Create ls_values from dimensions read into ngrid by read_gridfile()
+    // This cannot be done before reading gridfiles, e.g., in the constructor where we create   ngrid
+    //memory->create_ragged(ls_values, nbody, ngrid_flat, "rigid/ls/dem:ls_values");
+    //memory->destroy(ngrid_flat);
 
-      // index of atom/node in global grid
-      ix_node = int(delx / spac);
-      iy_node = int(dely / spac);
-      iz_node = (dim == 3) ? int(delz / spac) : 0;
+    // ------------------------------ //
+    // Process distributed level sets //
+    // ------------------------------ //
 
-      // index of local grid minimum in global grid.
-      // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
-      index_grid_min_local[0] = ix_node - rcell;
-      index_grid_min_local[1] = iy_node - rcell;
-      index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
+    int ntotal = max_ngrid[0] * max_ngrid[1] * max_ngrid[2];
+    double *ls_values;
+    memory->create(ls_values, ntotal, "rigid/ls/dem:ls_values");
 
-      // location of local grid minimum relative to CoM
-      grid_min_local[i][0] = index_grid_min_local[0] * spac + grid_min[ibody][0];
-      grid_min_local[i][1] = index_grid_min_local[1] * spac + grid_min[ibody][1];
-      grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * spac + grid_min[ibody][2] : 0.0;
+    double **grid = atom->darray[index_ls_values];
+    double **grid_min_local = atom->darray[index_ls_local_gridmin];
+    double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
 
-      for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
-        for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
-          for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
-            // Shift local cell to global cell
-            ix_global = ix_local + index_grid_min_local[0];
-            iy_global = iy_local + index_grid_min_local[1];
-            iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0;
+    // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
+    //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
 
-            // Explicit bounds check per dimension (safer and clearer)
-            if (ix_global < 0 || ix_global >= nx ||
-                iy_global < 0 || iy_global >= ny ||
-                iz_global < 0 || iz_global >= nz)
-              error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
+    double *ls_val;
+    int nx, ny, nz;
+    double delx, dely, delz, inertia_ls[6];
+    double **x = atom->x;
+    int ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
+    int ix_global, iy_global, iz_global;
+    int index_global, index_local, index_grid_min_local[3];
+    for (const auto& pair : file_map) {
+      filename = pair.first;
+      read_gridfile(-1, 1, filename, nullptr, ls_values);
 
-            index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-            index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
+      for (int i = 0; i < atom->nlocal; i++) {
+        ibody = body[i];
 
-            // Final sanity check (defensive)
-            if (index_global < 0 || index_global >= ntotal)
-              error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
-            grid[i][index_local] = ls_values[index_global] * scale[ibody];
+        if (pair.second.find(ibody) == pair.second.end())
+          continue; // Ideally would have list of all atoms in a rigid body... not sure if   exists...
+
+        nx = ngrid[ibody][0];
+        ny = ngrid[ibody][1];
+        nz = (dim == 3) ? ngrid[ibody][2] : 1;
+        ntotal = nx * ny * nz;
+
+        // location of atom/node relative to CoM
+        delx = x[i][0] - grain_com[i][0];
+        dely = x[i][1] - grain_com[i][1];
+        delz = x[i][2] - grain_com[i][2];
+
+        // Account for PBCs
+        domain->minimum_image(delx, dely, delz);
+
+        // location of atom/node relative to global grid minimum
+        delx -= grid_min[ibody][0];
+        dely -= grid_min[ibody][1];
+        if (domain->dimension == 3) delz -= grid_min[ibody][2];
+
+        // index of atom/node in global grid
+        double stride = grid_stride[ibody];
+        ix_node = int(delx / stride);
+        iy_node = int(dely / stride);
+        iz_node = (dim == 3) ? int(delz / stride) : 0;
+
+        // index of local grid minimum in global grid.
+        // JBC: Can this be negative if not enough padding of the LS grid relative to grain   surface? i.e. ix < rcell ?
+        index_grid_min_local[0] = ix_node - rcell;
+        index_grid_min_local[1] = iy_node - rcell;
+        index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
+
+        // location of local grid minimum relative to CoM
+        grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
+        grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
+        grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * stride + grid_min[ibody]  [2] : 0.0;
+
+        for (int iz_local = 0; iz_local < ngrid_local[2]; iz_local++) {
+          for (int iy_local = 0; iy_local < ngrid_local[1]; iy_local++) {
+            for (int ix_local = 0; ix_local < ngrid_local[0]; ix_local++) {
+              // Shift local cell to global cell
+              ix_global = ix_local + index_grid_min_local[0];
+              iy_global = iy_local + index_grid_min_local[1];
+              iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0;
+
+              // Explicit bounds check per dimension (safer and clearer)
+              if (ix_global < 0 || ix_global >= nx ||
+                  iy_global < 0 || iy_global >= ny ||
+                  iz_global < 0 || iz_global >= nz)
+                error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
+
+              index_global = ix_global + iy_global * nx + iz_global * nx * ny;
+              index_local = ix_local + iy_local * ngrid_local[0] + iz_local * ngrid_local[0] * ngrid_local[1];
+
+              // Final sanity check (defensive)
+              if (index_global < 0 || index_global >= ntotal)
+                error->all(FLERR, "Level set does not include a large enough buffer for the cutoff");
+              grid[i][index_local] = ls_values[index_global] * grid_scale[ibody];
+            }
           }
         }
-      }
-      ls_dem_vol[i] = process_ls_grid(ngrid[ibody], ls_values, inertia_ls, filename);
+        ls_dem_vol[i] = process_ls_grid(ngrid[ibody], grid_stride[ibody], ls_values, inertia_ls, filename);
 
-      // compare/replace inertia with inertia_ls
+        // compare/replace inertia with inertia_ls
+      }
+    }
+    memory->destroy(gridfiles);
+    memory->destroy(ngrid);
+    memory->destroy(ls_values);
+  } else {
+    if (distributed_flag) {
+      int tmp1, tmp2;
+      index_ls_values = atom->find_custom("ls_values", tmp1, tmp2);
+      index_ls_local_gridmin = atom->find_custom("ls_local_gridmin", tmp1, tmp2);
     }
   }
-
-  memory->destroy(gridfiles);
-  memory->destroy(scale);
-  memory->destroy(ngrid);
-  memory->destroy(ls_values);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -394,7 +397,7 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
    one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile_names(char **gridfiles, double *scale)
+void FixRigidLSDEM::read_gridfile_names(char **gridfiles)
 {
   int nchunk, id, eofflag, nlines;
   FILE *fp;
@@ -462,7 +465,12 @@ void FixRigidLSDEM::read_gridfile_names(char **gridfiles, double *scale)
           throw TokenizerException("invalid_rigid body ID ", std::to_string(id + 1));
 
         values.skip(19);
-        scale[id] = values.next_double();
+        grid_style[id] = values.next_int();
+        if (grid_style[id] != 0 && grid_style[id] != 1)
+          throw TokenizerException("invalid_rigid memory model ", std::to_string(grid_style[id]));
+
+        grid_scale[id] = values.next_double();
+
         strcpy(gridfiles[id], values.next_string().data());
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
@@ -510,9 +518,8 @@ double FixRigidLSDEM::memory_usage()
    which = 1, read the values of the level-set grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, double* scale, int **ngrid, double *ls_values)
+void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, int **ngrid, double *ls_values)
 {
-  int dim = domain->dimension;
   int grid_shape_buf[dim];
   double grid_size_buf[dim + 1];
   int nchunk, eofflag;
@@ -571,9 +578,9 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, do
   else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile has incorrect format");
 
   if (which == 0) {
-    grid_stride[ibody] = grid_size_buf[0] * scale[ibody];
+    grid_stride[ibody] = grid_size_buf[0] * grid_scale[ibody];
     for (int idim = 0; idim < dim; idim++) {
-      grid_min[ibody][idim] = grid_size_buf[idim + 1] * scale[ibody];
+      grid_min[ibody][idim] = grid_size_buf[idim + 1] * grid_scale[ibody];
       ngrid[ibody][idim] = (int) grid_shape_buf[idim];
     }
   } else {
@@ -630,9 +637,11 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double **node_local_grid = atom->darray[index_ls_values];
   double **local_grid_min = atom->darray[index_ls_local_gridmin];
 
+  int ibody = body[i];
   int ncol = ngrid_local[0]; // Danny: this should be for the node's grid as well
   int nrow = ngrid_local[1];
   int nslice = ngrid_local[2];
+  double stride = grid_stride[ibody];
 
   // Calculate position of node i in node j's grid using:
   //   x[i][0-2] = location of i
@@ -673,9 +682,9 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: THIS local_grid_min NEEDS TO BE THE MINIMUM OF THE NODE'S GRID, NOT THE FULL GRID!
 
   // Normalise the coordinates to be in units of the number of grid cells.
-  double x_red = x_local[0] / spac;
-  double y_red = x_local[1] / spac;
-  double z_red = x_local[2] / spac;
+  double x_red = x_local[0] / stride;
+  double y_red = x_local[1] / stride;
+  double z_red = x_local[2] / stride;
 
   // Calculate index from relative coordinate, being careful with integer division.
   int ind_x = int(x_red); // Here, int() does the same as floor() + conversion.
@@ -683,7 +692,6 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   int ind_z = int(z_red); // Should always be zero in 2D.
   // JBC: There is some padding for detection / normal caculation that I don't understand clearly
   // Danny: Does the below clarify? Or is there something else that is missing?
-
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
   if ( (ind_x < 0) || (ind_y < 0) || ((domain->dimension == 3) && (ind_z < 0)) ) {
@@ -769,10 +777,10 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 }
 
 /* ----------------------------------------------------------------------
-   Find the value of node (atom) i in j's LS grid.
+  Process a grid file
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::process_ls_grid(int *ngrid, double *ls_values, double *inertia_ls, std::string filename)
+double FixRigidLSDEM::process_ls_grid(int *ngrid, double stride, double *ls_values, double *inertia_ls, std::string filename)
 {
   // Volume integration
 
@@ -782,13 +790,13 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double *ls_values, double *ine
   double smearCoeff = 1.5;
   double ls_ref = 0.0;
   if (smearCoeff != 0)
-    ls_ref = sqrt(0.75) * spac / smearCoeff;
+    ls_ref = sqrt(0.75) * stride / smearCoeff;
 
   // Initialise volume and centre of mass
   double volume = 0.0, x_com = 0.0, y_com = 0.0, z_com = 0.0;
   // Cell volume, temporary grid points, integration volume.
-  double volume_cell = spac * spac;
-  if (domain->dimension == 3) volume_cell *= spac;
+  double volume_cell = stride * stride;
+  if (domain->dimension == 3) volume_cell *= stride;
 
   // Integration
   double dV, ls_val;
@@ -808,9 +816,9 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double *ls_values, double *ine
         }
         if (dV > 0.0) {
           volume += dV;
-          x_com += ind_x * spac * dV;
-          y_com += ind_y * spac * dV;
-          z_com += ind_z * spac * dV;
+          x_com += ind_x * stride * dV;
+          y_com += ind_y * stride * dV;
+          z_com += ind_z * stride * dV;
         }
       }
     }
@@ -837,9 +845,9 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double *ls_values, double *ine
           dV = 0.0;
         }
         if (dV > 0.0) {
-          delx = ind_x * spac - x_com;
-          dely = ind_y * spac - y_com;
-          delz = ind_z * spac - z_com;
+          delx = ind_x * stride - x_com;
+          dely = ind_y * stride - y_com;
+          delz = ind_z * stride - z_com;
           inertia_ls[0] += (dely * dely + delz * delz) * dV;
           inertia_ls[1] += (delx * delx + delz * delz) * dV;
           inertia_ls[2] += (delx * delx + dely * dely) * dV;
