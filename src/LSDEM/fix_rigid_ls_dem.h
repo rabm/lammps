@@ -48,11 +48,14 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
  protected:
   int stored_flag, distributed_flag;
   char *id_fix, *id_fix2;
-  int index_ls_dem_vol;
   int index_ls_dem_com;
   int index_ls_dem_quat;
+  int index_ls_dem_vol;
+  int index_ls_dem_n;
+  int index_ls_dem_fs;
+  int index_ls_dem_touch_id;
   int index_ls_dem_size;
-
+  
   int index_ls_values;
   int index_ls_local_gridmin;
 

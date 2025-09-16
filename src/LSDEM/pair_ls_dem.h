@@ -50,6 +50,9 @@ class PairLSDEM : public Pair {
   int index_ls_dem_com;
   int index_ls_dem_quat;
   int index_ls_dem_vol;
+  int index_ls_dem_n;
+  int index_ls_dem_fs;
+  int index_ls_dem_touch_id;
 
   class FixRigidLSDEM *fix_rigid;
 
