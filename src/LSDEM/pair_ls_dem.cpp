@@ -71,7 +71,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
   double fs_tmp[3], normal_old[3], fs_mag, k[3], sintheta, costheta, term1[3], term2;
-  double shear_incr[3], v_rel[3], v_rel_mag, fs_mag_trial;
+  double shear_incr[3], v_rel[3], v_rel_n_mag, fs_mag_trial;
 
   // Currently require:
   //   Newton pair off.
@@ -172,7 +172,11 @@ void PairLSDEM::compute(int eflag, int vflag)
     }
   }
 
-  // only loop over local atoms to calculate forces
+  // NOTE: calc_force_of_j_on_i and calc_force_of_i_on_j now cuase branching.
+  // The contact model might do the same. May it be worth it to pre-sort the pairs
+  // such that it is always i_on_j and the contact models are sorted?
+
+  // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
     xitmp = x[i][0];
@@ -294,6 +298,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
       fn_mag = - kn[itype][jtype] * u;
 
+      // Compute v_rel_n_mag here
+      // Viscous damping (Kelvin style) should be here
+
       // The pair force vector (points j->i because repel)
       fpair[0] = fn_mag * normal[0];
       fpair[1] = fn_mag * normal[1];
@@ -370,11 +377,14 @@ void PairLSDEM::compute(int eflag, int vflag)
         v_rel[2] = vzitmp - vzjtmp;
 
         // Increment of the shear displacement
-        v_rel_mag = MathExtra::dot3(v_rel,normal);
-        shear_incr[0] = (v_rel[0] - v_rel_mag*normal[0])*dt;
-        shear_incr[1] = (v_rel[1] - v_rel_mag*normal[1])*dt;
-        shear_incr[2] = (v_rel[2] - v_rel_mag*normal[2])*dt;
+        v_rel_n_mag = MathExtra::dot3(v_rel,normal); // Can use this relative velocity for damping
+        shear_incr[0] = (v_rel[0] - v_rel_n_mag*normal[0])*dt; 
+        shear_incr[1] = (v_rel[1] - v_rel_n_mag*normal[1])*dt;
+        shear_incr[2] = (v_rel[2] - v_rel_n_mag*normal[2])*dt;
 
+        // Insert parallel viscous model below.
+        // Use v_t[0] = v_rel[0] - v_rel_n_mag*normal[0]; - eta_t*v_t
+          
         // Standard elastic-perfectly-plastic Coulomb friction model.
         fs_tmp[0] -= kt[itype][jtype] * shear_incr[0];
         fs_tmp[1] -= kt[itype][jtype] * shear_incr[1];
