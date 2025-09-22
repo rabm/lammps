@@ -266,7 +266,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Reset shear force if no contact
         // If i and j are not a shear-interacting pair, it will skip the reset
         if (calc_force_of_i_on_j){
-          if (touch_id[i] == j){
+          if (touch_id[i] == jbody){
             touch_id[i] = -1;
             fs[i][0] = 0.0;
             fs[i][1] = 0.0;
@@ -276,7 +276,7 @@ void PairLSDEM::compute(int eflag, int vflag)
             n[i][2] = 0.0;
           }
         }else{ // calc_force_of_j_on_i already guaranteed to be true (see line ~233)
-          if (touch_id[j] == i){
+          if (touch_id[j] == ibody){
             touch_id[j] = -1;
             fs[j][0] = 0.0;
             fs[j][1] = 0.0;
@@ -303,18 +303,25 @@ void PairLSDEM::compute(int eflag, int vflag)
       if ( (mu[itype][jtype] > 0) && (kt[itype][jtype] > 0) ){
 
         // Check if the pair is valid for shear history calculation
+        // Initialise if no contact
         if (calc_force_of_i_on_j){
-          if ( (touch_id[i] != j) && (touch_id[i] > -1) ){
+          if (touch_id[i] == -1){
+            touch_id[i] = jbody;
+          }
+          if (touch_id[i] != jbody){
             if (comm->me == 0) {
               utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
-                i, j, update->ntimestep);
+                ibody, jbody, update->ntimestep);
             }
           }
         }else{
-          if ( (touch_id[j] != i) && (touch_id[j] > -1) ){
+          if (touch_id[j] == -1){
+            touch_id[j] = ibody;
+          }
+          if (touch_id[j] != ibody){
             if (comm->me == 0) {
               utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
-                j, i, update->ntimestep);
+                jbody, ibody, update->ntimestep);
             }
           }
         }

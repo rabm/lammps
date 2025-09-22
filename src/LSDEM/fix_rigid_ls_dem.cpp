@@ -138,6 +138,7 @@ void FixRigidLSDEM::init()
   // Update center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
   double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody;
 
   for (int i = 0; i < atom->nlocal; i++) {
@@ -150,6 +151,8 @@ void FixRigidLSDEM::init()
     quat_lsdem[i][1] = quat[ibody][1];
     quat_lsdem[i][2] = quat[ibody][2];
     quat_lsdem[i][3] = quat[ibody][3];
+
+    touch_id[i] = -1;
   }
 
   // Copy maximum cutoff
