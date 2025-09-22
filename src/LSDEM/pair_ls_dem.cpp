@@ -294,7 +294,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
       fn_mag = - kn[itype][jtype] * u;
 
-      // The pair force vector
+      // The pair force vector (points j->i because repel)
       fpair[0] = fn_mag * normal[0];
       fpair[1] = fn_mag * normal[1];
       fpair[2] = fn_mag * normal[2];
@@ -328,15 +328,16 @@ void PairLSDEM::compute(int eflag, int vflag)
           normal_old[1] = n[i][1];
           normal_old[2] = n[i][2];
         }else{ // Use node of j.
-          fs_tmp[0] = fs[j][0];
-          fs_tmp[1] = fs[j][1];
-          fs_tmp[2] = fs[j][2];
-          normal_old[0] = n[i][0];
-          normal_old[1] = n[i][1];
-          normal_old[2] = n[i][2];
+          // Swap sign due to change of j->i to i->j reference frame.
+          fs_tmp[0] = -fs[j][0];
+          fs_tmp[1] = -fs[j][1];
+          fs_tmp[2] = -fs[j][2];
+          normal_old[0] = -n[j][0];
+          normal_old[1] = -n[j][1];
+          normal_old[2] = -n[j][2];
         }
 
-        // Accounting for rotation of contact plane
+        // Adjust fs_tmp to account for rotation of the contact plane.
         if( MathExtra::len3(normal_old) > 0 ){
           MathExtra::cross3(normal_old, normal, k); // Rotation vector
           sintheta = MathExtra::len3(k); // Rotation magnitude
@@ -355,17 +356,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
 
         // Relative velocity at the grain surface
-        // Note: The velocity at the node due to an angular velocity fo the grain 
-        // around its centre of mass is already included, so this suffices.
+        // Note: The velocity at the node due to an angular velocity of the grain around its 
+        // centre of mass is already included, so the difference of linear velocities suffices.
         v_rel[0] = vxitmp - vxjtmp;
         v_rel[1] = vyitmp - vyjtmp;
         v_rel[2] = vzitmp - vzjtmp;
-        if (calc_force_of_j_on_i) { // Use node of j.
-          // Need to swap to keep node i as reference point.
-          v_rel[0] = -v_rel[0];
-          v_rel[1] = -v_rel[1];
-          v_rel[2] = -v_rel[2];
-        }
 
         // Increment of the shear displacement
         v_rel_mag = MathExtra::dot3(v_rel,normal);
@@ -386,9 +381,9 @@ void PairLSDEM::compute(int eflag, int vflag)
           fs_tmp[1] = fs_mag * (fs_tmp[1]/fs_mag_trial);
           fs_tmp[2] = fs_mag * (fs_tmp[2]/fs_mag_trial);
           // Add shear force to the pair force vector
-          fpair[0] += fs[i][0];
-          fpair[1] += fs[i][1];
-          fpair[2] += fs[i][2];
+          fpair[0] += fs_tmp[0];
+          fpair[1] += fs_tmp[1];
+          fpair[2] += fs_tmp[2];
         }
 
         // Update saved shear force and normal
@@ -399,13 +394,14 @@ void PairLSDEM::compute(int eflag, int vflag)
           n[i][0] = normal[0];
           n[i][1] = normal[1];
           n[i][2] = normal[2];
-        }else{ // Node of j.
-          fs[j][0] = fs_tmp[0];
-          fs[j][1] = fs_tmp[1];
-          fs[j][2] = fs_tmp[2];
-          n[j][0] = normal[0];
-          n[j][1] = normal[1];
-          n[j][2] = normal[2];
+        }else{ // Node of j. 
+          // Swap sign due to change of i->j to j->i reference frame.
+          fs[j][0] = -fs_tmp[0];
+          fs[j][1] = -fs_tmp[1];
+          fs[j][2] = -fs_tmp[2];
+          n[j][0] = -normal[0];
+          n[j][1] = -normal[1];
+          n[j][2] = -normal[2];
         }
 
       }
