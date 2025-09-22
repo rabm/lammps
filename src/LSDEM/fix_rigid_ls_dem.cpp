@@ -59,8 +59,8 @@ inline double FixRigidLSDEM::smeared_heaviside_step(double x)
 /* ---------------------------------------------------------------------- */
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
-    FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr),
-    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr)
+    FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
+    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr)
 {
   comm_forward = 8;
   maxcut = -1;
@@ -73,10 +73,11 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
 
   memory->create(grid_style, nbody, "rigid/ls/dem:grid_style");
-  memory->create(grid_min, nbody, domain->dimension, "rigid/ls/dem:grid_min");
+  memory->create(grid_min, nbody, 3, "rigid/ls/dem:grid_min");
   memory->create(grid_stride, nbody, "rigid/ls/dem:grid_stride");
   memory->create(grid_scale, nbody, "rigid/ls/dem:grid_scale");
   memory->create(grid_index, nbody, "rigid/ls/dem:grid_index");
+  memory->create(grid_size, nbody, 3, "rigid/ls/dem:grid_size");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -92,9 +93,15 @@ FixRigidLSDEM::~FixRigidLSDEM()
 
   // delete nbody-length arrays
 
+  memory->destroy(grid_style);
   memory->destroy(grid_min);
   memory->destroy(grid_stride);
   memory->destroy(grid_scale);
+  memory->destroy(grid_scale);
+  memory->destroy(grid_index);
+  memory->destroy(grid_size);
+
+  memory->destroy(global_grids);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -155,9 +162,8 @@ void FixRigidLSDEM::init()
   if (!stored_flag) {
     stored_flag = 1;
 
-    int **ngrid, *ntotal_global;
+    int *ntotal_global;
     char **gridfiles;
-    memory->create(ngrid, nbody, 3, "rigid/ls/dem:ngrid");
     memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
     memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
     read_gridfile_names(gridfiles);
@@ -166,18 +172,18 @@ void FixRigidLSDEM::init()
     std::map <std::string, std::set<int>> file_map;
     std::string filename;
     dim = domain->dimension;
-    int max_ngrid[3] = {0, 0, 0};
+    int max_grid_size[3] = {0, 0, 0};
     double max_stride = 0;
     for (int ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]);
-      read_gridfile(ibody, 0, filename, ngrid, nullptr);
+      read_gridfile(ibody, 0, filename, grid_size, nullptr);
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
-      if (dim == 2) ngrid[ibody][2] = 1;
+      if (dim == 2) grid_size[ibody][2] = 1;
       for (int a = 0; a < 3; a++)
-        if (ngrid[ibody][a] > max_ngrid[a])
-          max_ngrid[a] = ngrid[ibody][a];
+        if (grid_size[ibody][a] > max_grid_size[a])
+          max_grid_size[a] = grid_size[ibody][a];
       max_stride = MAX(max_stride, grid_stride[ibody]);
 
       // Store global info
@@ -192,7 +198,7 @@ void FixRigidLSDEM::init()
         // If no global instances, add new index
         if (grid_index[ibody] == -1) {
           grid_index[ibody] = index_global;
-          ntotal_global[index_global] = ngrid[ibody][0] * ngrid[ibody][1] * ngrid[ibody][2];
+          ntotal_global[index_global] = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
           index_global += 1;
         }
       }
@@ -204,10 +210,10 @@ void FixRigidLSDEM::init()
 
     rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
 
-    for (int a = 0; a < 3; a++) ngrid_distributed[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
-    if (dim == 2) ngrid_distributed[2] = 1;
+    for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
+    if (dim == 2) subgrid_size[2] = 1;
     id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-    int ntotal = ngrid_distributed[0] * ngrid_distributed[1] * ngrid_distributed[2];
+    int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
     modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
 
     int tmp1, tmp2;
@@ -215,13 +221,12 @@ void FixRigidLSDEM::init()
     index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
 
     memory->create_ragged(global_grids, index_global, ntotal_global, "rigid/ls/dem:global_grids");
-    memory->destroy(ntotal_global);
 
     // ------------------------------ //
     // Read and store level sets      //
     // ------------------------------ //
 
-    ntotal = max_ngrid[0] * max_ngrid[1] * max_ngrid[2];
+    ntotal = max_grid_size[0] * max_grid_size[1] * max_grid_size[2];
     double *temp_grid_values;
     memory->create(temp_grid_values, ntotal, "rigid/ls/dem:temp_grid_values");
 
@@ -266,9 +271,9 @@ void FixRigidLSDEM::init()
           if (pair.second.find(ibody) == pair.second.end())
             continue; // Ideally would have list of all atoms in a rigid body... not sure if   exists...
 
-          nx = ngrid[ibody][0];
-          ny = ngrid[ibody][1];
-          nz = (dim == 3) ? ngrid[ibody][2] : 1;
+          nx = grid_size[ibody][0];
+          ny = grid_size[ibody][1];
+          nz = (dim == 3) ? grid_size[ibody][2] : 1;
           ntotal = nx * ny * nz;
 
           // location of atom/node relative to CoM
@@ -301,9 +306,9 @@ void FixRigidLSDEM::init()
           grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
           grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * stride + grid_min[ibody]    [2] : 0.0;
 
-          for (int iz_local = 0; iz_local < ngrid_distributed[2]; iz_local++) {
-            for (int iy_local = 0; iy_local < ngrid_distributed[1]; iy_local++) {
-              for (int ix_local = 0; ix_local < ngrid_distributed[0]; ix_local++) {
+          for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
+            for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
+              for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
                 // Shift local cell to global cell
                 ix_global = ix_local + index_grid_min_local[0];
                 iy_global = iy_local + index_grid_min_local[1];
@@ -316,7 +321,7 @@ void FixRigidLSDEM::init()
                   error->all(FLERR, "Level set does not include a large enough buffer for the   cutoff");
 
                 index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-                index_local = ix_local + iy_local * ngrid_distributed[0] + iz_local *   ngrid_distributed[0] * ngrid_distributed[1];
+                index_local = ix_local + iy_local * subgrid_size[0] + iz_local *   subgrid_size[0] * subgrid_size[1];
 
                 // Final sanity check (defensive)
                 if (index_global < 0 || index_global >= ntotal)
@@ -331,12 +336,14 @@ void FixRigidLSDEM::init()
 
       for (int i = 0; i < atom->nlocal; i++) {
         ibody = body[i];
-        ls_dem_vol[i] = process_ls_grid(ngrid[ibody], grid_stride[ibody], temp_grid_values,   inertia_ls, filename);
+        ls_dem_vol[i] = process_ls_grid(grid_size[ibody], grid_stride[ibody], temp_grid_values,   inertia_ls, filename);
       }
     }
+
     memory->destroy(gridfiles);
-    memory->destroy(ngrid);
     memory->destroy(temp_grid_values);
+    memory->destroy(ntotal_global);
+
   } else {
     if (distributed_flag) {
       int tmp1, tmp2;
@@ -551,13 +558,13 @@ double FixRigidLSDEM::memory_usage()
 /* ----------------------------------------------------------------------
    read per rigid body level-set grid values from user-provided file
    files gridfiles to read from stored previously by readfile() function
-   first line = ngridx ngridy ngridz
-   followed by ngridx * ngridy * ngridz lines of level set values at the grid points
+   first line = grid_sizex grid_sizey grid_sizez
+   followed by grid_sizex * grid_sizey * grid_sizez lines of level set values at the grid points
    which = 0, read only the size of the level-set grid
    which = 1, read the values of the level-set grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, int **ngrid, double *grid_values)
+void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, int **grid_size, double *grid_values)
 {
   int grid_shape_buf[dim];
   double grid_size_buf[dim + 1];
@@ -620,8 +627,14 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
     grid_stride[ibody] = grid_size_buf[0] * grid_scale[ibody];
     for (int idim = 0; idim < dim; idim++) {
       grid_min[ibody][idim] = grid_size_buf[idim + 1] * grid_scale[ibody];
-      ngrid[ibody][idim] = (int) grid_shape_buf[idim];
+      grid_size[ibody][idim] = (int) grid_shape_buf[idim];
     }
+
+    if (dim == 2) {
+      grid_min[ibody][2] = 0.0;
+      grid_size[ibody][2] = 1;
+    }
+
   } else {
     auto buffer = new char[CHUNK * MAXLINE];
     int nread = 0;
@@ -665,161 +678,10 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
 }
 
 /* ----------------------------------------------------------------------
-   Find the value of node (atom) i in j's LS grid.
-------------------------------------------------------------------------- */
-
-double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
-{
-  double **x = atom->x;
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **node_local_grid = atom->darray[index_grid_values];
-  double **local_grid_min = atom->darray[index_grid_min];
-
-  int ibody = body[i];
-  int ncol = ngrid_distributed[0]; // Danny: this should be for the node's grid as well
-  int nrow = ngrid_distributed[1];
-  int nslice = ngrid_distributed[2];
-  double stride = grid_stride[ibody];
-
-  // Calculate position of node i in node j's grid using:
-  //   x[i][0-2] = location of i
-  //   x[j][0-2] = location of j
-  //   grain_com[j][0-2] = CoM of j's grain
-  //   grain_quat[j][0-3] = quat of j's grain
-
-  //
-  //  GET NODE I IN LOCAL COORDINATES OF J GRAIN
-  //
-
-  // Location of the node (atom) of i relative to the centre of mass (CoM) of j.
-  double delx = x[i][0] - grain_com[j][0];
-  double dely = x[i][1] - grain_com[j][1];
-  double delz = x[i][2] - grain_com[j][2];
-
-  // Account for PBCs.
-  domain->minimum_image(delx, dely, delz);
-
-  // Apply quaternion rotation to move into local reference frame of grain j grid.
-  // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.
-  double x_local[3];
-  double dx[3] = {delx, dely, delz};
-  double grain_quat_conj[4];
-  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
-  MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
-  // See comments above functions in math_extra.h/cpp for details
-
-  //
-  //  COMPUTE THE LS GRID INDICES
-  //
-
-  // Translate local coordinates such that they are relative
-  // to the lower corner of the level set grid.
-  x_local[0] -= local_grid_min[j][0];
-  x_local[1] -= local_grid_min[j][1];
-  x_local[2] -= local_grid_min[j][2];
-  // Danny: THIS local_grid_min NEEDS TO BE THE MINIMUM OF THE NODE'S GRID, NOT THE FULL GRID!
-
-  // Normalise the coordinates to be in units of the number of grid cells.
-  double x_red = x_local[0] / stride;
-  double y_red = x_local[1] / stride;
-  double z_red = x_local[2] / stride;
-
-  // Calculate index from relative coordinate, being careful with integer division.
-  int ind_x = int(x_red); // Here, int() does the same as floor() + conversion.
-  int ind_y = int(y_red);
-  int ind_z = int(z_red); // Should always be zero in 2D.
-  // JBC: There is some padding for detection / normal caculation that I don't understand clearly
-  // Danny: Does the below clarify? Or is there something else that is missing?
-  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
-  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ( (ind_x < 0) || (ind_y < 0) || ((domain->dimension == 3) && (ind_z < 0)) ) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || ((domain->dimension == 3) && (ind_z >= nslice - 1)) ) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  }
-
-  //
-  //  DO THE INTERPOLATION
-  //
-  double dist, nx(0.0), ny(0.0), nz(0.0);
-
-  // The normalised coordinates within the current grid cell.
-  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  x_red = x_red - static_cast<double>(ind_x);
-  y_red = y_red - static_cast<double>(ind_y);
-  z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
-
-  // Level-set values on the grid points in the lower z plane (ind_z)
-  double ls000 = node_local_grid[j][ind_x   + ind_y     * ncol + ind_z * ncol * nrow];
-  double ls100 = node_local_grid[j][ind_x+1 + ind_y     * ncol + ind_z * ncol * nrow];
-  double ls010 = node_local_grid[j][ind_x   + (ind_y+1) * ncol + ind_z * ncol * nrow];
-  double ls110 = node_local_grid[j][ind_x+1 + (ind_y+1) * ncol + ind_z * ncol * nrow];
-
-  // Bi-linear interpolation in the lower z plane (ind_z)
-  double lsxy0 = ls000 + y_red * (ls010 - ls000) +
-                         x_red * (ls100 - ls000 +
-                                  y_red * (ls110 - ls100 - ls010 + ls000));
-
-  if (domain->dimension == 3) { // 3D
-    // Level-set values on the grid points in the upper z plane (ind_z+1)
-    double ls001 = node_local_grid[j][ind_x   + ind_y     * ncol + (ind_z+1) * ncol * nrow];
-    double ls101 = node_local_grid[j][ind_x+1 + ind_y     * ncol + (ind_z+1) * ncol * nrow];
-    double ls011 = node_local_grid[j][ind_x   + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
-    double ls111 = node_local_grid[j][ind_x+1 + (ind_y+1) * ncol + (ind_z+1) * ncol * nrow];
-
-    // Bi-linear interpolation in the upper z plane (ind_z+1)
-    double lsxy1 = ls001 + y_red * (ls011 - ls001) +
-                           x_red * (ls101 - ls001 +
-                                    y_red * (ls111 - ls101 - ls011 + ls001));
-
-    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-    dist = z_red * (lsxy1 - lsxy0) + lsxy0;
-
-    // Computing normal as the gradient of trilinear interpolation
-    // TODO: maybe hardcode without loops ? Danny: Compiler should optimise this automatically, don't think it changes anything?
-    for (int a = 0; a < 2; a++) {
-      for (int b = 0; b < 2; b++) {
-        for (int c = 0; c < 2; c++) {
-          double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
-          nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
-          ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
-          nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
-        }
-      }
-    }
-  } else { // 2D
-    // Bi-linear interpolation
-    dist = lsxy0;
-    // Computing normal as the gradient of bilinear interpolation
-    for (int a = 0; a < 2; a++) {
-      for (int b = 0; b < 2; b++) {
-        double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol];
-        nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
-        ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
-      }
-    }
-    nz = 0.0;
-  }
-
-  // Assign normal
-  normal[0] = nx;
-  normal[1] = ny;
-  normal[2] = nz;
-
-  // Rotate normal back to global coordinates
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
-
-  return dist;
-}
-
-/* ----------------------------------------------------------------------
   Process a grid file
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::process_ls_grid(int *ngrid, double stride, double *grid_values, double *inertia_ls, std::string filename)
+double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *grid_values, double *inertia_ls, std::string filename)
 {
   // Volume integration
 
@@ -839,10 +701,10 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double stride, double *grid_va
 
   // Integration
   double dV, ls_val;
-  for (int ind_x = 0; ind_x < ngrid[0]; ind_x++) {
-    for (int ind_y = 0; ind_y < ngrid[1]; ind_y++) {
-      for (int ind_z = 0; ind_z < ngrid[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * ngrid[0] + ind_z * ngrid[0] * ngrid[1]];
+  for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
+    for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
+      for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
+        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
         if (abs(ls_val) < ls_ref) {
           // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
           dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
@@ -869,10 +731,10 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double stride, double *grid_va
   // Computing the inertia tensor (a double loop is unavoidable)
   double delx, dely, delz;
   for (int a = 0; a < 6; a++) inertia_ls[a] = 0.0;
-  for (int ind_x = 0; ind_x < ngrid[0]; ind_x++) {
-    for (int ind_y = 0; ind_y < ngrid[1]; ind_y++) {
-      for (int ind_z = 0; ind_z < ngrid[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * ngrid[0] + ind_z * ngrid[0] * ngrid[1]];
+  for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
+    for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
+      for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
+        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
         if (abs(ls_val) < ls_ref) {
           // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
           dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
@@ -905,4 +767,211 @@ double FixRigidLSDEM::process_ls_grid(int *ngrid, double stride, double *grid_va
     error->all(FLERR, "None-inertial reference frame detected for level set in {}", filename);
 
   return volume;
+}
+
+/* ----------------------------------------------------------------------
+   Find the value of node (atom) i in j's LS grid.
+------------------------------------------------------------------------- */
+
+double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
+{
+  double **x = atom->x;
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+
+  int ibody = body[i];
+  int jbody = body[j];
+  double dist, nx(0.0), ny(0.0), nz(0.0);
+  double stride = grid_stride[ibody];
+
+  // Calculate position of node i in node j's grid using:
+  //   x[i][0-2] = location of i
+  //   x[j][0-2] = location of j
+  //   grain_com[j][0-2] = CoM of j's grain
+  //   grain_quat[j][0-3] = quat of j's grain
+
+  // Location of the node (atom) of i relative to the centre of mass (CoM) of j
+  double delx = x[i][0] - grain_com[j][0];
+  double dely = x[i][1] - grain_com[j][1];
+  double delz = x[i][2] - grain_com[j][2];
+
+  // Account for PBCs
+  domain->minimum_image(delx, dely, delz);
+
+  // Apply quaternion rotation to move into local reference frame of grain j grid.
+  // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.
+  double x_local[3];
+  double dx[3] = {delx, dely, delz};
+  double grain_quat_conj[4];
+  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
+  MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
+  // See comments above functions in math_extra.h/cpp for details
+
+  int ncol, nrow, nslice;
+  if (grid_style[ibody == DISTRIBUTED]) {
+    // Translate local coordinates such that they are relative
+    // to the lower corner of the level set grid.
+    double **local_grid_min = atom->darray[index_grid_min];
+    x_local[0] -= local_grid_min[j][0];
+    x_local[1] -= local_grid_min[j][1];
+    x_local[2] -= local_grid_min[j][2];
+    // Danny: THIS local_grid_min NEEDS TO BE THE MINIMUM OF THE NODE'S GRID, NOT THE FULL GRID!
+
+    ncol = subgrid_size[0]; // Danny: this should be for the node's grid as well
+    nrow = subgrid_size[1];
+    nslice = subgrid_size[2];
+  } else {
+    x_local[0] -= grid_min[jbody][0];
+    x_local[1] -= grid_min[jbody][1];
+    x_local[2] -= grid_min[jbody][2];
+
+    ncol = grid_size[ibody][0];
+    nrow = grid_size[ibody][1];
+    nslice = grid_size[ibody][2];
+  }
+
+  // Normalise the coordinates to be in units of the number of grid cells.
+  double x_red = x_local[0] / stride;
+  double y_red = x_local[1] / stride;
+  double z_red = x_local[2] / stride;
+
+  // Calculate index from relative coordinate, being careful with integer division.
+  int ind_x = int(x_red);
+  int ind_y = int(y_red);
+  int ind_z = int(z_red); // Should always be zero in 2D.
+
+  // JBC: There is some padding for detection / normal caculation that I don't understand clearly
+  // Danny: Does the below clarify? Or is there something else that is missing?
+  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
+  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
+  if ( (ind_x < 0) || (ind_y < 0) || ((domain->dimension == 3) && (ind_z < 0)) ) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || ((domain->dimension == 3) && (ind_z >= nslice - 1))) {
+    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
+    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+  }
+
+  // The normalised coordinates within the current grid cell.
+  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
+  x_red = x_red - static_cast<double>(ind_x);
+  y_red = y_red - static_cast<double>(ind_y);
+  z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
+
+  //  Interpolate
+  if (grid_style[ibody] == DISTRIBUTED) {
+    double **node_local_grid = atom->darray[index_grid_values];
+
+    // Level-set values on the grid points in the lower z plane (ind_z)
+    double ls000 = node_local_grid[j][ind_x     + ind_y       * ncol + ind_z * ncol * nrow];
+    double ls100 = node_local_grid[j][ind_x + 1 + ind_y       * ncol + ind_z * ncol * nrow];
+    double ls010 = node_local_grid[j][ind_x     + (ind_y + 1) * ncol + ind_z * ncol * nrow];
+    double ls110 = node_local_grid[j][ind_x + 1 + (ind_y + 1) * ncol + ind_z * ncol * nrow];
+
+    // Bi-linear interpolation in the lower z plane (ind_z)
+    double lsxy0 = ls000 + y_red * (ls010 - ls000) +
+                   x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
+
+    if (domain->dimension == 3) { // 3D
+      // Level-set values on the grid points in the upper z plane (ind_z+1)
+      double ls001 = node_local_grid[j][ind_x     + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
+      double ls101 = node_local_grid[j][ind_x + 1 + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
+      double ls011 = node_local_grid[j][ind_x     + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
+      double ls111 = node_local_grid[j][ind_x + 1 + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
+
+      // Bi-linear interpolation in the upper z plane (ind_z+1)
+      double lsxy1 = ls001 + y_red * (ls011 - ls001) +
+                     x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
+
+      // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
+      dist = z_red * (lsxy1 - lsxy0) + lsxy0;
+
+      // Computing normal as the gradient of trilinear interpolation
+      for (int a = 0; a < 2; a++) {
+        for (int b = 0; b < 2; b++) {
+          for (int c = 0; c < 2; c++) {
+            double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
+            nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
+            ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
+            nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
+          }
+        }
+      }
+    } else { // 2D
+      // Bi-linear interpolation
+      dist = lsxy0;
+      // Computing normal as the gradient of bilinear interpolation
+      for (int a = 0; a < 2; a++) {
+        for (int b = 0; b < 2; b++) {
+          double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol];
+          nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
+          ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
+        }
+      }
+      nz = 0.0;
+    }
+  } else {
+    int my_index = grid_index[jbody];
+    double *my_grid = global_grids[my_index];
+
+    // Level-set values on the grid points in the lower z plane (ind_z)
+    double ls000 = my_grid[ind_x     + ind_y       * ncol + ind_z * ncol * nrow];
+    double ls100 = my_grid[ind_x + 1 + ind_y       * ncol + ind_z * ncol * nrow];
+    double ls010 = my_grid[ind_x     + (ind_y + 1) * ncol + ind_z * ncol * nrow];
+    double ls110 = my_grid[ind_x + 1 + (ind_y + 1) * ncol + ind_z * ncol * nrow];
+
+    // Bi-linear interpolation in the lower z plane (ind_z)
+    double lsxy0 = ls000 + y_red * (ls010 - ls000) +
+                   x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
+
+    if (domain->dimension == 3) { // 3D
+      // Level-set values on the grid points in the upper z plane (ind_z+1)
+      double ls001 = my_grid[ind_x     + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
+      double ls101 = my_grid[ind_x + 1 + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
+      double ls011 = my_grid[ind_x     + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
+      double ls111 = my_grid[ind_x + 1 + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
+
+      // Bi-linear interpolation in the upper z plane (ind_z+1)
+      double lsxy1 = ls001 + y_red * (ls011 - ls001) +
+                     x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
+
+      // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
+      dist = z_red * (lsxy1 - lsxy0) + lsxy0;
+
+      // Computing normal as the gradient of trilinear interpolation
+      for (int a = 0; a < 2; a++) {
+        for (int b = 0; b < 2; b++) {
+          for (int c = 0; c < 2; c++) {
+            double lsVal = my_grid[(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
+            nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
+            ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
+            nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
+          }
+        }
+      }
+    } else { // 2D
+      // Bi-linear interpolation
+      dist = lsxy0;
+      // Computing normal as the gradient of bilinear interpolation
+      for (int a = 0; a < 2; a++) {
+        for (int b = 0; b < 2; b++) {
+          double lsVal = my_grid[(ind_x + a) + (ind_y + b) * ncol];
+          nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
+          ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
+        }
+      }
+      nz = 0.0;
+    }
+  }
+
+
+  // Assign normal
+  normal[0] = nx;
+  normal[1] = ny;
+  normal[2] = nz;
+
+  // Rotate normal back to global coordinates
+  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+
+  return dist;
 }

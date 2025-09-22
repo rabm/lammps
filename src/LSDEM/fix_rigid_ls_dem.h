@@ -59,11 +59,12 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_grid_values;
   int index_grid_min;
 
-  int ngrid_distributed[3]; // number of distributed grid points in each dimension
-  int *grid_style;          // distributed vs. global memory
-  int *grid_index;          // index of body's global memory, -1 otherwise
-  double **grid_min;        // minimum xyz coordinates of LS grid
-  double *grid_stride;      // the LS grid stride, assumed equal in all directions
+  int **grid_size;              // size of each grid
+  int subgrid_size[3];          // number of distributed subgrid points in each dimension
+  int *grid_style;              // distributed vs. global memory
+  int *grid_index;              // index of body's global memory, -1 otherwise
+  double **grid_min;            // minimum xyz coordinates of LS grid
+  double *grid_stride;          // the LS grid stride, assumed equal in all directions
   double **global_grids;
   double *grid_scale;
   double maxcut;
