@@ -57,7 +57,6 @@ class PairLSDEM : public Pair {
   class FixRigidLSDEM *fix_rigid;
 
   void allocate();
-  double smearedHeavisideStep(double);
 };
 
 }    // namespace LAMMPS_NS

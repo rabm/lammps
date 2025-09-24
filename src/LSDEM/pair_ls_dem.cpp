@@ -295,18 +295,33 @@ void PairLSDEM::compute(int eflag, int vflag)
         continue;
       }
 
+
+
       // Normal force
+
+      // Elastic spring
       // With penetration distance u and normal n (i->j),
       // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fn_mag = - kn[itype][jtype] * u;
+      fn_mag = - kn[itype][jtype] * u; // pow(u,b)
 
+      // Viscous damping or dashpot
       // Compute v_rel_n_mag here
-      // Viscous damping (Kelvin style) should be here
+      // fn_mag -= etan[itype][jtype]*v_rel_n_mag;
+
+      // First Maxwell arm
+      // fn1_mag[i] = expn1*f1_mag[i] + etan1[itype][jtype]*(1-expn1)*v_rel_n_mag;
+      // fn_mag -= fn1_mag[i]
+
+      // Second Maxwell arm
+      // fn2_mag[i] = expn2*f2_mag[i] + etan2[itype][jtype]*(1-expn2)*v_rel_n_mag;
+      // fn_mag -= fn2_mag[i]
 
       // The pair force vector (points j->i because repel)
       fpair[0] = fn_mag * normal[0];
       fpair[1] = fn_mag * normal[1];
       fpair[2] = fn_mag * normal[2];
+
+
 
       // Tangent force only exists if mu > 0 and kt > 0
       if ( (mu[itype][jtype] > 0) && (kt[itype][jtype] > 0) ){
@@ -386,6 +401,18 @@ void PairLSDEM::compute(int eflag, int vflag)
 
         // Insert parallel viscous model below.
         // Use v_t[0] = v_rel[0] - v_rel_n_mag*normal[0]; - eta_t*v_t
+
+        // Viscous damping or dashpot
+        // Compute v_rel_n_mag here
+        // fn_mag -= etat[itype][jtype]*v_rel_t_mag;
+
+        // First Maxwell arm
+        // fs1_mag[i] = expn1*fs1_mag[i] + etat1[itype][jtype]*(1-exps1)*v_rel_t_mag;
+        // fs_mag -= fs1_mag[i]
+
+        // Second Maxwell arm
+        // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
+        // fs_mag -= fs2_mag[i]
           
         // Standard elastic-perfectly-plastic Coulomb friction model.
         fs_tmp[0] -= kt[itype][jtype] * shear_incr[0];
@@ -491,6 +518,10 @@ void PairLSDEM::allocate()
   memory->create(kn, np1, np1, "pair:kn");
   memory->create(kt, np1, np1, "pair:kt");
   memory->create(mu, np1, np1, "pair:mu");
+  //memory->create(etan, np1, np1, "pair:etan");
+  //memory->create(etat, np1, np1, "pair:etat");
+  //memory->create(tau1, np1, np1, "pair:tau1");
+  //memory->create(tau2, np1, np1, "pair:tau2");
   memory->create(cut, np1, np1, "pair:cut");
   memory->create(gamma, np1, np1, "pair:gamma");
 }
@@ -525,20 +556,35 @@ void PairLSDEM::coeff(int narg, char **arg)
   utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
   utils::bounds(FLERR, arg[1], 1, atom->ntypes, jlo, jhi, error);
 
-  double kn_one = utils::numeric(FLERR, arg[2], false, lmp);
-  double kt_one = utils::numeric(FLERR, arg[3], false, lmp);
-  double mu_one = utils::numeric(FLERR, arg[4], false, lmp);
+  double kn_0 = utils::numeric(FLERR, arg[2], false, lmp);
+  double kt_0 = utils::numeric(FLERR, arg[3], false, lmp);
+  double mu_0 = utils::numeric(FLERR, arg[4], false, lmp);
+  // double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
+  // double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
+  // double tau_1 = utils::numeric(FLERR, arg[7], false, lmp);
+  // double tau_2 = utils::numeric(FLERR, arg[8], false, lmp);
   double cut_one = utils::numeric(FLERR, arg[5], false, lmp);
   double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
 
+  //if (kn_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (kt_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (mu_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (etan_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (etat_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (tau_1 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  //if (tau_2 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
   if (cut_one <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
     for (int j = MAX(jlo, i); j <= jhi; j++) {
-      kn[i][j] = kn_one;
-      kt[i][j] = kt_one;
-      mu[i][j] = mu_one;
+      kn[i][j] = kn_0;
+      kt[i][j] = kt_0;
+      mu[i][j] = mu_0;
+      //etan[i][j] = etan_0;
+      //etat[i][j] = etat_0;
+      //tau1[i][j] = tau_1;
+      //tau2[i][j] = tau_2;
       cut[i][j] = cut_one;
       gamma[i][j] = gamma_one;
 
@@ -570,7 +616,7 @@ void PairLSDEM::setup()
   double maxcut2 = -1;
   for (int i = 1; i <= n; i++)
     for (int j = 1; j <= n; j++)
-      maxcut2 = MAX(maxcut2, cut[i][j]);
+      maxcut2 = MAX(maxcut2, cut[i][j]); // Can we compute a sensible value for this somehow? 
 
   if (maxcut < maxcut2)
     error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
@@ -607,6 +653,9 @@ double PairLSDEM::init_one(int i, int j)
     gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
+  // DvdH: For most contact models mixing will not be simple. 
+  // I would probably discourage the use of this, or give a warning.
+
   // Enforces symmetry
   cut[j][i] = cut[i][j];
   kn[j][i] = kn[i][j];
@@ -633,6 +682,10 @@ void PairLSDEM::write_restart(FILE *fp)
         fwrite(&kn[i][j], sizeof(double), 1, fp);
         fwrite(&kt[i][j], sizeof(double), 1, fp);
         fwrite(&mu[i][j], sizeof(double), 1, fp);
+        //fwrite(&etan[i][j], sizeof(double), 1, fp);
+        //fwrite(&etat[i][j], sizeof(double), 1, fp);
+        //fwrite(&tau1[i][j], sizeof(double), 1, fp);
+        //fwrite(&tau2[i][j], sizeof(double), 1, fp);
         fwrite(&cut[i][j], sizeof(double), 1, fp);
         fwrite(&gamma[i][j], sizeof(double), 1, fp);
       }
@@ -659,12 +712,20 @@ void PairLSDEM::read_restart(FILE *fp)
           utils::sfread(FLERR, &kn[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &kt[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &mu[i][j], sizeof(double), 1, fp, nullptr, error);
+          //utils::sfread(FLERR, &etan[i][j], sizeof(double), 1, fp, nullptr, error);
+          //utils::sfread(FLERR, &etat[i][j], sizeof(double), 1, fp, nullptr, error);
+          //utils::sfread(FLERR, &tau1[i][j], sizeof(double), 1, fp, nullptr, error);
+          //utils::sfread(FLERR, &tau2[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
         }
         MPI_Bcast(&kn[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&kt[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&mu[i][j], 1, MPI_DOUBLE, 0, world);
+        //MPI_Bcast(&etan[i][j], 1, MPI_DOUBLE, 0, world);
+        //MPI_Bcast(&etat[i][j], 1, MPI_DOUBLE, 0, world);
+        //MPI_Bcast(&tau1[i][j], 1, MPI_DOUBLE, 0, world);
+        //MPI_Bcast(&tau2[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
@@ -679,6 +740,7 @@ void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
+    //fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], tau1[i][j], tau2[i][j], cut[i][i], gamma[i][i]);
 }
 
 /* ----------------------------------------------------------------------
@@ -690,17 +752,5 @@ void PairLSDEM::write_data_all(FILE *fp)
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
       fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
-}
-
-/* ----------------------------------------------------------------------
-   Smeared Heaviside step function
-------------------------------------------------------------------------- */
-
-double PairLSDEM::smearedHeavisideStep(double x)
-{
-  // A function that smoothly transition from 0 to 1 when x goes from -1 to 1.
-  // For x < -1, the function should be 0. For x > 1, the function should be 1.
-  // This is not implemented here, and up to the user to take care of ouside
-  // this function. See Kawamoto et al. (2016).
-  return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
+      //fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], tau1[i][j], tau2[i][j], cut[i][i], gamma[i][i]);
 }
