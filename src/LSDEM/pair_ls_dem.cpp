@@ -86,7 +86,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // Node quantities
   double **x = atom->x;
-  double **v = atom->v;
+  double **v = atom->v; // Is this the on-step or half-step accuracy? Half-step would give O(dt^2) accuracy for damping instead of O(dt). 
   double **f = atom->f;
   double **torque = atom->torque;
   double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
@@ -175,6 +175,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   // NOTE: calc_force_of_j_on_i and calc_force_of_i_on_j now cuase branching.
   // The contact model might do the same. May it be worth it to pre-sort the pairs
   // such that it is always i_on_j and the contact models are sorted?
+  // Currently, compiler vectorisation is scrambled, which might be particularly
+  // bad for any future Kokkos GPU port.
 
   // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
@@ -506,117 +508,6 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
-
-// Copied code below to fix rigid/ls/dem, delete after it works
-
-//   nrow = 20;
-//   ncol = 20;
-//   nslice = 1;
-//   double l_grid = 0.5;
-//   double x_com = 5.25;
-//   double y_com = 5.25;
-//   double r = 2.5;
-
-//   ngrid = nrow * ncol;
-//   spac = l_grid;
-
-  /*
-
-  // Volume integration
-  double **grain_grid = atom->darray[index_ls_grid];
-  double **grain_grid_x = atom->darray[index_ls_gridx];
-  double **grain_grid_y = atom->darray[index_ls_gridy];
-  double **grain_grid_z = atom->darray[index_ls_gridz];
-
-  // This is the reference distance values that determines the smearing with of
-  // the Heaviside step function. Current expression is the half-diagional of the
-  // grid cell divided by a smearing constant.
-  double smearCoeff = 1.5;
-  double ls_ref = 0.0;
-  if (smearCoeff != 0){
-    ls_ref = sqrt(0.75) * spac / smearCoeff;
-  }
-  // Initialise volume and centre of mass
-  double volume = 0.0, x_com = 0.0, y_com = 0.0, z_com = 0.0;
-  // Cell volume, temporary grid points, integration volume.
-  double volume_cell = spac*spac*spac;
-  double x_grid, y_grid, z_grid, dV = 0.0;
-
-  // Integration
-	for (int ind_x = 0; ind_x < nrow; xIndex++){
-		for (int ind_y = 0; ind_y < ncol; yIndex++){
-			for (int ind_z = 0; ind_z < nslice; zIndex++){
-        ls_val = grain_grid[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-				if (abs(ls_val) < ls_ref){
-          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
-					dV = smearedHeavisideStep(-ls_val/ls_ref)* volume_cell;
-        }else if (ls_val < 0){
-          // Inside and far away from boundary
-					dV = volume_cell;
-        }else if (ls_val > 0){
-          // Outside and far away from boundary
-					dV = 0.0;
-        }
-				if (dV > 0.) {
-          volume += dV;
-          x_grid = grain_grid_x[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-          y_grid = grain_grid_y[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-          z_grid = grain_grid_z[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-					x_com += x_grid * dV;
-					y_com += y_grid * dV;
-					z_com += z_grid * dV;
-				}
-			}
-		}
-	}
-  x_com /= volume;
-  y_com /= volume;
-  z_com /= volume;
-
-  // Computing the inertia tensor (a double loop is unavoidable).
-  double Ixx = 0.0, Iyy = 0.0, Izz = 0.0, Ixy = 0.0, Ixz = 0.0, Iyz = 0.0;
-	for (int ind_x = 0; ind_x < nrow; xIndex++){
-		for (int ind_y = 0; ind_y < ncol; yIndex++){
-			for (int ind_z = 0; ind_z < nslice; zIndex++){
-        ls_val = grain_grid[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-				if (abs(ls_val) < ls_ref){
-          // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
-					dV = smearedHeavisideStep(-ls_val/ls_ref)* volume_cell;
-        }else if (ls_val < 0){
-          // Inside and far away from boundary
-					dV = volume_cell;
-        }else if (ls_val > 0){
-          // Outside and far away from boundary
-					dV = 0.0;
-        }
-				if (dV > 0.) {
-          x_grid = grain_grid_x[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-          y_grid = grain_grid_y[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-          z_grid = grain_grid_z[ind_x + ind_y * nrow + ind_z * nrow * ncol];
-          Ixx += (pow(y_grid - y_com, 2) + pow(z_grid - z_com, 2)) * dV;
-					Iyy += (pow(x_grid - x_com, 2) + pow(z_grid - z_com, 2)) * dV;
-					Izz += (pow(x_grid - x_com, 2) + pow(y_grid - y_com, 2)) * dV;
-					Ixy -= (x_grid - x_com) * (y_grid - y_com) * dV;
-					Ixz -= (x_grid - x_com) * (z_grid - z_com) * dV;
-					Iyz -= (y_grid - y_com) * (z_grid - z_com) * dV;
-        }
-			}
-		}
-	}
-
-  // Check to see if level set has a non-inertial reference frame
-  double I_diag_norm = sqrt(Ixx*Ixx + Iyy*Iyy + Izz*Izz);
-  double I_off_diag_norm = sqrt(2*Ixy*Ixy + 2*Ixz*Ixz + 2*Iyz*Iyz);
-  if (I_off_diag_norm / I_diag_norm > 0.01){
-    // Throw some kind of error. Level set is not given in a non-inertial frame.
-    // Intergration of rotational motion will be wrong.
-  }
-  // ASSIGN INERTIA
-
-  // This is the part where we load or initialise surface nodes :)
-
-  */
-
 
 }
 

@@ -767,7 +767,7 @@ double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *gri
   double I_diag_norm = sqrt(inertia_ls[0] * inertia_ls[0] + inertia_ls[1] * inertia_ls[1] + inertia_ls[2] * inertia_ls[2]);
   double I_off_diag_norm = sqrt(2.0 * (inertia_ls[3] * inertia_ls[3] + inertia_ls[4] * inertia_ls[4] + inertia_ls[5] * inertia_ls[5]));
   if (I_off_diag_norm / I_diag_norm > EPSILON_INERTIA)
-    error->all(FLERR, "None-inertial reference frame detected for level set in {}", filename);
+    error->all(FLERR, "Non-inertial reference frame detected for level set in {}. Intergration of rotational motion will be wrong.", filename);
 
   return volume;
 }
