@@ -30,14 +30,15 @@
 #include <cmath>
 #include <unordered_map>
 
-static constexpr double EPSILON = 1e-10;
+static constexpr double EPSILON = 1e-12;
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
 
 /* ---------------------------------------------------------------------- */
 
-PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), cut(nullptr), gamma(nullptr), fix_rigid(nullptr)
+PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), etan(nullptr), etat(nullptr), cut(nullptr),
+ decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr) // gamma(nullptr), 
 {
   writedata = 1;
   single_enable = 0;
@@ -54,8 +55,15 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(kn);
     memory->destroy(kt);
     memory->destroy(mu);
+    memory->destroy(etan);
+    memory->destroy(etat);
     memory->destroy(cut);
-    memory->destroy(gamma);
+    memory->destroy(decayn1);
+    memory->destroy(etan1);
+    memory->destroy(decayt1);
+    memory->destroy(etat1);
+    //memory->destroy(gamma);
+    // other consts
   }
 }
 
@@ -70,8 +78,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
-  double fs_tmp[3], normal_old[3], fs_mag, k[3], sintheta, costheta, term1[3], term2;
-  double shear_incr[3], v_rel[3], v_rel_n_mag, fs_mag_trial;
+  double fs_tmp[3], fs_mag, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
+  double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
+  double normal_old[3], tangent_old[3];
 
   // Currently require:
   //   Newton pair off.
@@ -92,6 +101,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
   double **fs = atom->darray[index_ls_dem_fs]; // Shear component of f (to be update from previous time step)
   int *touch_id = atom->ivector[index_ls_dem_touch_id]; // Grain in contact with this node (to be update from previous time step)
+  double **fn1 = atom->darray[index_ls_dem_fn1]; // Maxwell element force history (normal)
+  double **fs1 = atom->darray[index_ls_dem_fs1]; // Maxwell element force history (shear)
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -295,162 +306,206 @@ void PairLSDEM::compute(int eflag, int vflag)
         continue;
       }
 
-
-
-      // Normal force
+      //////////////////
+      // Normal force //
+      //////////////////
 
       // Elastic spring
-      // With penetration distance u and normal n (i->j),
-      // we have: F_{j on i} = f(ls_value) = - k_n * u * n.
-      fn_mag = - kn[itype][jtype] * u; // pow(u,b)
+      // With positive penetration distance u
+      fn_mag = kn[itype][jtype] * u; // pow(u,b)
 
-      // Viscous damping or dashpot
-      // Compute v_rel_n_mag here
-      // fn_mag -= etan[itype][jtype]*v_rel_n_mag;
+      // Relative velocity at the grain surface
+      // Note: The velocity at the node due to an angular velocity of the grain around its 
+      // centre of mass is already included, so the difference of linear velocities suffices.
+      v_rel[0] = vxitmp - vxjtmp;
+      v_rel[1] = vyitmp - vyjtmp;
+      v_rel[2] = vzitmp - vzjtmp;
 
-      // First Maxwell arm
-      // fn1_mag[i] = expn1*f1_mag[i] + etan1[itype][jtype]*(1-expn1)*v_rel_n_mag;
-      // fn_mag -= fn1_mag[i]
+      // Relative velocity in normal direction with sign
+      v_rel_n_mag = MathExtra::dot3(v_rel,normal);
 
-      // Second Maxwell arm
-      // fn2_mag[i] = expn2*f2_mag[i] + etan2[itype][jtype]*(1-expn2)*v_rel_n_mag;
-      // fn_mag -= fn2_mag[i]
+      // Viscous damping or dashpot (parallel, only resistive, no tensile force if v_rel_n_mag < 0)
+      if(etan[itype][jtype] > 0.0){
+        fn_mag += etan[itype][jtype] * MAX(v_rel_n_mag, 0.0);
+      }
 
-      // The pair force vector (points j->i because repel)
-      fpair[0] = fn_mag * normal[0];
-      fpair[1] = fn_mag * normal[1];
-      fpair[2] = fn_mag * normal[2];
+      // Maxwell arm (1st, parallel, only resistive)
+      if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayn1 > 0 if etan1 > 0
+        fn1_mag = decayn1[itype][jtype] * fn1_mag[i] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+        fn_mag += fn1_mag[i];
+        // Maxwell arm (2nd)
+        //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+        //fn_mag -= fn2_mag[i]
+      }
 
+      // The pair force vector should point j->i because of repulsion.
+      // With normal n (i->j), we have: F_{j on i} = f(ls_value) = - fn_mag * n.
+      fpair[0] = - fn_mag * normal[0];
+      fpair[1] = - fn_mag * normal[1];
+      fpair[2] = - fn_mag * normal[2];
 
+      ///////////////////
+      // Tangent force //
+      ///////////////////
 
       // Tangent force only exists if mu > 0 and kt > 0
-      if ( (mu[itype][jtype] > 0) && (kt[itype][jtype] > 0) ){
-
-        // Check if the pair is valid for shear history calculation
-        // Initialise if no contact
-        if (calc_force_of_i_on_j){
-          if (touch_id[i] == -1){
-            touch_id[i] = jbody;
-          }
-          if (touch_id[i] != jbody){
-            if (comm->me == 0) {
-              utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
-                ibody, jbody, update->ntimestep);
-            }
-          }
-        }else{
-          if (touch_id[j] == -1){
-            touch_id[j] = ibody;
-          }
-          if (touch_id[j] != ibody){
-            if (comm->me == 0) {
-              utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
-                jbody, ibody, update->ntimestep);
-            }
+      //if ( (kt[itype][jtype] > 0) && (mu[itype][jtype] > 0) ){
+      // DvdH: Grains without friction are silly, so I took out this check.
+    
+      // Check if the pair is valid for shear history calculation
+      // Initialise if no contact
+      if (calc_force_of_i_on_j){
+        if (touch_id[i] == -1){
+          touch_id[i] = jbody;
+        }
+        if (touch_id[i] != jbody){
+          if (comm->me == 0) {
+            utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+              ibody, jbody, update->ntimestep);
           }
         }
-
-        // Get old shear force and old node normal
-        if (calc_force_of_i_on_j) { // Use node of i.
-          fs_tmp[0] = fs[i][0];
-          fs_tmp[1] = fs[i][1];
-          fs_tmp[2] = fs[i][2];
-          normal_old[0] = n[i][0];
-          normal_old[1] = n[i][1];
-          normal_old[2] = n[i][2];
-        }else{ // Use node of j.
-          // Swap sign due to change of j->i to i->j reference frame.
-          fs_tmp[0] = -fs[j][0];
-          fs_tmp[1] = -fs[j][1];
-          fs_tmp[2] = -fs[j][2];
-          normal_old[0] = -n[j][0];
-          normal_old[1] = -n[j][1];
-          normal_old[2] = -n[j][2];
+      }else{
+        if (touch_id[j] == -1){
+          touch_id[j] = ibody;
         }
-
-        // Adjust fs_tmp to account for rotation of the contact plane.
-        if( MathExtra::len3(normal_old) > 0 ){
-          MathExtra::cross3(normal_old, normal, k); // Rotation vector
-          sintheta = MathExtra::len3(k); // Rotation magnitude
-          if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
-            costheta = sqrt(1 - sintheta*sintheta);
-            k[0] = k[0] / sintheta; // Rotation axis
-            k[1] = k[1] / sintheta;
-            k[2] = k[2] / sintheta;
-            // Applying Rodrigues' rotation formula to get the rotated shear displacement
-            MathExtra::cross3(k,fs_tmp,term1);
-            term2 = MathExtra::dot3(k,fs_tmp) * (1-costheta);
-            fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
-            fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
-            fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
+        if (touch_id[j] != ibody){
+          if (comm->me == 0) {
+            utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+              jbody, ibody, update->ntimestep);
           }
         }
+      }
 
-        // Relative velocity at the grain surface
-        // Note: The velocity at the node due to an angular velocity of the grain around its 
-        // centre of mass is already included, so the difference of linear velocities suffices.
-        v_rel[0] = vxitmp - vxjtmp;
-        v_rel[1] = vyitmp - vyjtmp;
-        v_rel[2] = vzitmp - vzjtmp;
+      // Get old shear force and old node normal
+      if (calc_force_of_i_on_j) { // Use node of i.
+        fs_tmp[0] = fs[i][0];
+        fs_tmp[1] = fs[i][1];
+        fs_tmp[2] = fs[i][2];
+        normal_old[0] = n[i][0];
+        normal_old[1] = n[i][1];
+        normal_old[2] = n[i][2];
+      }else{ // Use node of j.
+        // Swap sign due to change of j->i to i->j reference frame.
+        fs_tmp[0] = -fs[j][0];
+        fs_tmp[1] = -fs[j][1];
+        fs_tmp[2] = -fs[j][2];
+        normal_old[0] = -n[j][0];
+        normal_old[1] = -n[j][1];
+        normal_old[2] = -n[j][2];
+      }
 
-        // Increment of the shear displacement
-        v_rel_n_mag = MathExtra::dot3(v_rel,normal); // Can use this relative velocity for damping
-        shear_incr[0] = (v_rel[0] - v_rel_n_mag*normal[0])*dt; 
-        shear_incr[1] = (v_rel[1] - v_rel_n_mag*normal[1])*dt;
-        shear_incr[2] = (v_rel[2] - v_rel_n_mag*normal[2])*dt;
+      // Adjust fs_tmp to account for rotation of the contact plane.
+      if( MathExtra::len3(normal_old) > 0 ){
+        MathExtra::cross3(normal_old, normal, k); // Rotation vector
+        sintheta = MathExtra::len3(k); // Rotation magnitude
+        if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
+          costheta = sqrt(1 - sintheta*sintheta);
+          k[0] = k[0] / sintheta; // Rotation axis
+          k[1] = k[1] / sintheta;
+          k[2] = k[2] / sintheta;
+          // Applying Rodrigues' rotation formula to get the rotated shear displacement
+          MathExtra::cross3(k,fs_tmp,term1);
+          term2 = MathExtra::dot3(k,fs_tmp) * (1-costheta);
+          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
+          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
+          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
+        }
+      }
 
-        // Insert parallel viscous model below.
-        // Use v_t[0] = v_rel[0] - v_rel_n_mag*normal[0]; - eta_t*v_t
+      // Relative velocity in tangential direction
+      v_rel_t[0] = v_rel[0] - v_rel_n_mag*normal[0];
+      v_rel_t[1] = v_rel[1] - v_rel_n_mag*normal[1];
+      v_rel_t[2] = v_rel[2] - v_rel_n_mag*normal[2];
+      v_rel_t_mag = MathExtra::len3(v_rel_t);
 
-        // Viscous damping or dashpot
-        // Compute v_rel_n_mag here
-        // fn_mag -= etat[itype][jtype]*v_rel_t_mag;
+      // Tangent normal
+      if (v_rel_t_mag > EPSILON){
+        v_rel_t_mag_inv = 1.0/v_rel_t_mag;
+        tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
+        tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
+        tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
+      }else{
+        // Backup: Use old shear force direction as tangent.
+        v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
+        tangent[0] = fs_tmp[0] * v_rel_t_mag_inv;
+        tangent[1] = fs_tmp[1] * v_rel_t_mag_inv;
+        tangent[2] = fs_tmp[2] * v_rel_t_mag_inv;
+      }
 
-        // First Maxwell arm
-        // fs1_mag[i] = expn1*fs1_mag[i] + etat1[itype][jtype]*(1-exps1)*v_rel_t_mag;
-        // fs_mag -= fs1_mag[i]
+      // Magnitude increment of the shear displacement
+      shear_incr = v_rel_t_mag*dt;
 
-        // Second Maxwell arm
+      // Elastic spring
+      fs_mag_trial = kt[itype][jtype] * shear_incr;
+
+      // Viscous damping or dashpot (parallel, only resistive, no tensile force if v_rel_t_mag < 0)
+      if(etat[itype][jtype] > 0){
+        fs_mag_trial += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
+      }
+
+      // Maxwell arm (1st, parallel, only resistive)
+      if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayt1 > 0 if etat1 > 0
+        // Get the old tangent vector
+        v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
+        tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
+        tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
+        tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
+        // The dot(t_old,t) part accounts for the in-plane rotation of the tangent force.
+        // When the shear direction reverses, it correctly preserves the direction of the old force.
+        // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
+        // We could track the full vector, but it would cost more memory (and accessing time)
+        fs1_mag[i] += decayt1[itype][jtype] * fs1_mag[i] * MathExtra::dot3(tangent_old,tangent)
+          + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_ma is always positive
+        fs_mag_trial += fs1_mag[i];
+        // Maxwell arm (2nd)
         // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
         // fs_mag -= fs2_mag[i]
-          
-        // Standard elastic-perfectly-plastic Coulomb friction model.
-        fs_tmp[0] -= kt[itype][jtype] * shear_incr[0];
-        fs_tmp[1] -= kt[itype][jtype] * shear_incr[1];
-        fs_tmp[2] -= kt[itype][jtype] * shear_incr[2];
-        fs_mag_trial = MathExtra::len3(fs_tmp);
-        fs_mag = std::min(mu[itype][jtype]*fn_mag, fs_mag_trial);
-
-        if(fs_mag > 0){
-          // Final shear or tangential force
-          fs_tmp[0] = fs_mag * (fs_tmp[0]/fs_mag_trial);
-          fs_tmp[1] = fs_mag * (fs_tmp[1]/fs_mag_trial);
-          fs_tmp[2] = fs_mag * (fs_tmp[2]/fs_mag_trial);
-          // Add shear force to the pair force vector
-          fpair[0] += fs_tmp[0];
-          fpair[1] += fs_tmp[1];
-          fpair[2] += fs_tmp[2];
-        }
-
-        // Update saved shear force and normal
-        if (calc_force_of_i_on_j) { // Node of i.
-          fs[i][0] = fs_tmp[0];
-          fs[i][1] = fs_tmp[1];
-          fs[i][2] = fs_tmp[2];
-          n[i][0] = normal[0];
-          n[i][1] = normal[1];
-          n[i][2] = normal[2];
-        }else{ // Node of j. 
-          // Swap sign due to change of i->j to j->i reference frame.
-          fs[j][0] = -fs_tmp[0];
-          fs[j][1] = -fs_tmp[1];
-          fs[j][2] = -fs_tmp[2];
-          n[j][0] = -normal[0];
-          n[j][1] = -normal[1];
-          n[j][2] = -normal[2];
-        }
-
       }
+        
+      // Total shear or tangent force update (repulsive again)
+      fs_tmp[0] -= fs_mag_trial * tangent[0];
+      fs_tmp[1] -= fs_mag_trial * tangent[1];
+      fs_tmp[2] -= fs_mag_trial * tangent[2];
+      // Update trial shear force magnitude
+      fs_mag_trial = MathExtra::len3(fs_tmp); 
+
+      // Perfectly plastic Coulomb friction criterion
+      fs_mag = std::min(mu[itype][jtype]*fn_mag, fs_mag_trial);
+
+      if(fs_mag > 0){
+        // Final shear or tangential force
+        fs_tmp[0] = fs_mag * (fs_tmp[0]/fs_mag_trial);
+        fs_tmp[1] = fs_mag * (fs_tmp[1]/fs_mag_trial);
+        fs_tmp[2] = fs_mag * (fs_tmp[2]/fs_mag_trial);
+        // Add shear force to the pair force vector
+        fpair[0] += fs_tmp[0];
+        fpair[1] += fs_tmp[1];
+        fpair[2] += fs_tmp[2];
+      }
+
+      // Update saved shear force and normal
+      if (calc_force_of_i_on_j) { // Node of i.
+        fs[i][0] = fs_tmp[0];
+        fs[i][1] = fs_tmp[1];
+        fs[i][2] = fs_tmp[2];
+        n[i][0] = normal[0];
+        n[i][1] = normal[1];
+        n[i][2] = normal[2];
+      }else{ // Node of j. 
+        // Swap sign due to change of i->j to j->i reference frame.
+        fs[j][0] = -fs_tmp[0];
+        fs[j][1] = -fs_tmp[1];
+        fs[j][2] = -fs_tmp[2];
+        n[j][0] = -normal[0];
+        n[j][1] = -normal[1];
+        n[j][2] = -normal[2];
+      }
+
+      //} // Check if kt > 0 and mu > 0
+
+      //////////////////////////////
+      // Total forces and torques //
+      //////////////////////////////
 
       // Force on grain i
       f[i][0] += fpair[0];
@@ -518,12 +573,14 @@ void PairLSDEM::allocate()
   memory->create(kn, np1, np1, "pair:kn");
   memory->create(kt, np1, np1, "pair:kt");
   memory->create(mu, np1, np1, "pair:mu");
-  //memory->create(etan, np1, np1, "pair:etan");
-  //memory->create(etat, np1, np1, "pair:etat");
-  //memory->create(tau1, np1, np1, "pair:tau1");
-  //memory->create(tau2, np1, np1, "pair:tau2");
+  memory->create(etan, np1, np1, "pair:etan");
+  memory->create(etat, np1, np1, "pair:etat");
   memory->create(cut, np1, np1, "pair:cut");
-  memory->create(gamma, np1, np1, "pair:gamma");
+  memory->create(decayn1, np1, np1, "pair:decayn1");
+  memory->create(etan1, np1, np1, "pair:etan1");
+  memory->create(decayt1, np1, np1, "pair:decayt1");
+  memory->create(etat1, np1, np1, "pair:etat1");
+  //memory->create(gamma, np1, np1, "pair:gamma");
 }
 
 /* ----------------------------------------------------------------------
@@ -548,8 +605,8 @@ void PairLSDEM::settings(int narg, char ** arg)
 
 void PairLSDEM::coeff(int narg, char **arg)
 {
-  if (narg != 7)
-    error->all(FLERR, "Incorrect args for pair coefficients");
+  if (narg < 7)
+    error->all(FLERR, "Incorrect number of args for pair coefficients");
   if (!allocated) allocate();
 
   int ilo, ihi, jlo, jhi;
@@ -559,35 +616,67 @@ void PairLSDEM::coeff(int narg, char **arg)
   double kn_0 = utils::numeric(FLERR, arg[2], false, lmp);
   double kt_0 = utils::numeric(FLERR, arg[3], false, lmp);
   double mu_0 = utils::numeric(FLERR, arg[4], false, lmp);
-  // double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
-  // double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
-  // double tau_1 = utils::numeric(FLERR, arg[7], false, lmp);
-  // double tau_2 = utils::numeric(FLERR, arg[8], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[5], false, lmp);
-  double gamma_one = utils::numeric(FLERR, arg[6], false, lmp);
+  double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
+  double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
+  double cut_one = utils::numeric(FLERR, arg[7], false, lmp);
+  double kn_1 = utils::numeric(FLERR, arg[8], false, lmp);
+  double etan_1 = utils::numeric(FLERR, arg[9], false, lmp);
+  double kt_1 = utils::numeric(FLERR, arg[10], false, lmp);
+  double etat_1 = utils::numeric(FLERR, arg[11], false, lmp);
+  //double gamma_one = utils::numeric(FLERR, arg[6], false, lmp); // Doesn't do anything IIRC
 
-  //if (kn_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (kt_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (mu_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (etan_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (etat_0 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (tau_1 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  //if (tau_2 <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
-  if (cut_one <= 0.0) error->all(FLERR, "Incorrect args for pair coefficients");
+  if (kn_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (kt_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (mu_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (etan_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (etat_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (narg >= 7){
+    if (kn_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if (etan_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
+    if ( (kn_1 == 0) ^ (etan_1 == 0) ) {
+      error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
+    }
+  }
+  if (narg >= 9){
+    if (kt_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if (etat_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if ( (kt_1 == 0) ^ (etat_1 == 0) ) {
+      error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
+    }
+  }
 
+  // Determine contact model type, this pre-computed flag helps evaluate branching
+  // conditions more economically
+  // int mode = 0; // Default mode: purely elastic
+  // if ((etan_0 > 0.0) || (etat_0 > 0.0)){
+  //   mode = 1; // Elastic + parallel viscous damping
+  // }
+  // if ((kn_1 > 0.0) || (etan_1 > 0.0) || (kt_1 > 0.0) || (etat_1 > 0.0)){
+  //   mode = 2; // Generalised Maxwell solid
+  // }
+  // Neither k or eta in a Maxwell arm are allowed to be zero.
+
+  double dt = update->dt;
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
     for (int j = MAX(jlo, i); j <= jhi; j++) {
       kn[i][j] = kn_0;
       kt[i][j] = kt_0;
       mu[i][j] = mu_0;
-      //etan[i][j] = etan_0;
-      //etat[i][j] = etat_0;
-      //tau1[i][j] = tau_1;
-      //tau2[i][j] = tau_2;
+      etan[i][j] = etan_0;
+      etat[i][j] = etat_0;
       cut[i][j] = cut_one;
-      gamma[i][j] = gamma_one;
-
+      if (narg >= 7){
+        decayn1[i][j] = exp(-dt/etan_1*kn_1);
+        etan1[i][j] = etan_1;
+      }
+      if (narg >= 9){
+        decayt1[i][j] = exp(-dt/etat_1*kt_1);
+        etat1[i][j] = etat_1;
+      }
+      
+      // gamma[i][j] = gamma_one;
       setflag[i][j] = 1;
       count++;
     }
@@ -637,6 +726,8 @@ void PairLSDEM::setup()
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
+  index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
+  index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
 }
 
 /* ----------------------------------------------------------------------
@@ -649,8 +740,14 @@ double PairLSDEM::init_one(int i, int j)
     cut[i][j] = mix_distance(cut[i][i], cut[j][j]);
     kn[i][j] = mix_energy(kn[i][i], kn[j][j], cut[i][i], cut[j][j]);
     kt[i][j] = mix_energy(kt[i][i], kt[j][j], cut[i][i], cut[j][j]);
+    etan[i][j] = mix_energy(etan[i][i], etan[j][j], cut[i][i], cut[j][j]);
+    etat[i][j] = mix_energy(etat[i][i], etat[j][j], cut[i][i], cut[j][j]);
     mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
-    gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
+    decayn1[i][j] = mix_energy(decayn1[i][i], decayn1[j][j], cut[i][i], cut[j][j]);
+    etan1[i][j] = mix_energy(etan1[i][i], etan1[j][j], cut[i][i], cut[j][j]);
+    decayt1[i][j] = mix_energy(decayt1[i][i], decayt1[j][j], cut[i][i], cut[j][j]);
+    etat1[i][j] = mix_energy(etat1[i][i], etat1[j][j], cut[i][i], cut[j][j]);
+    //gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
   // DvdH: For most contact models mixing will not be simple. 
@@ -661,7 +758,13 @@ double PairLSDEM::init_one(int i, int j)
   kn[j][i] = kn[i][j];
   kt[j][i] = kt[i][j];
   mu[j][i] = mu[i][j];
-  gamma[j][i] = gamma[i][j];
+  etan[i][j] = etan[j][i];
+  etat[i][j] = etat[j][i];
+  decayn1[i][j] = decayn1[j][i];
+  etan1[i][j] = etan1[j][i];
+  decayt1[i][j] = decayt1[j][i];
+  etat1[i][j] = etat1[j][i];
+  //gamma[j][i] = gamma[i][j];
 
   return cut[i][j];
 }
@@ -682,12 +785,14 @@ void PairLSDEM::write_restart(FILE *fp)
         fwrite(&kn[i][j], sizeof(double), 1, fp);
         fwrite(&kt[i][j], sizeof(double), 1, fp);
         fwrite(&mu[i][j], sizeof(double), 1, fp);
-        //fwrite(&etan[i][j], sizeof(double), 1, fp);
-        //fwrite(&etat[i][j], sizeof(double), 1, fp);
-        //fwrite(&tau1[i][j], sizeof(double), 1, fp);
-        //fwrite(&tau2[i][j], sizeof(double), 1, fp);
+        fwrite(&etan[i][j], sizeof(double), 1, fp);
+        fwrite(&etat[i][j], sizeof(double), 1, fp);
         fwrite(&cut[i][j], sizeof(double), 1, fp);
-        fwrite(&gamma[i][j], sizeof(double), 1, fp);
+        fwrite(&decayn1[i][j], sizeof(double), 1, fp);
+        fwrite(&etan1[i][j], sizeof(double), 1, fp);
+        fwrite(&decayt1[i][j], sizeof(double), 1, fp);
+        fwrite(&etat1[i][j], sizeof(double), 1, fp);
+        //fwrite(&gamma[i][j], sizeof(double), 1, fp);
       }
     }
 }
@@ -712,22 +817,26 @@ void PairLSDEM::read_restart(FILE *fp)
           utils::sfread(FLERR, &kn[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &kt[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &mu[i][j], sizeof(double), 1, fp, nullptr, error);
-          //utils::sfread(FLERR, &etan[i][j], sizeof(double), 1, fp, nullptr, error);
-          //utils::sfread(FLERR, &etat[i][j], sizeof(double), 1, fp, nullptr, error);
-          //utils::sfread(FLERR, &tau1[i][j], sizeof(double), 1, fp, nullptr, error);
-          //utils::sfread(FLERR, &tau2[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &etan[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &etat[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
-          utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &decayn1[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &etan1[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &decayt1[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &etat1[i][j], sizeof(double), 1, fp, nullptr, error);
+          //utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
         }
         MPI_Bcast(&kn[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&kt[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&mu[i][j], 1, MPI_DOUBLE, 0, world);
-        //MPI_Bcast(&etan[i][j], 1, MPI_DOUBLE, 0, world);
-        //MPI_Bcast(&etat[i][j], 1, MPI_DOUBLE, 0, world);
-        //MPI_Bcast(&tau1[i][j], 1, MPI_DOUBLE, 0, world);
-        //MPI_Bcast(&tau2[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&etan[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&etat[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
-        MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&decayn1[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&etan1[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&decayt1[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&etat1[i][j], 1, MPI_DOUBLE, 0, world);
+        //MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
     }
 }
@@ -739,8 +848,8 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
-    //fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], tau1[i][j], tau2[i][j], cut[i][i], gamma[i][i]);
+    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], cut[i][i], 
+      decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
 }
 
 /* ----------------------------------------------------------------------
@@ -751,6 +860,6 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], cut[i][i], gamma[i][i]);
-      //fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], tau1[i][j], tau2[i][j], cut[i][i], gamma[i][i]);
+      fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], cut[i][i], 
+        decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
 }

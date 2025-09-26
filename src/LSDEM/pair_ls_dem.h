@@ -44,7 +44,7 @@ class PairLSDEM : public Pair {
   double maxcut;
 
  protected:
-  double **kn, **kt, **mu, **cut, **gamma;
+  double **kn, **kt, **mu, **etan, **etat, **cut, **decayn1, **etan1, **decayt1, **etat1; //, **gamma
 
   int index_ls_grid;
   int index_ls_dem_com;
@@ -53,6 +53,8 @@ class PairLSDEM : public Pair {
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;
+  int index_ls_dem_fn1;
+  int index_ls_dem_fs1;
 
   class FixRigidLSDEM *fix_rigid;
 

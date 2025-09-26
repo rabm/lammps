@@ -54,6 +54,8 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;
+  int index_ls_dem_fn1;
+  int index_ls_dem_fs1;
   int index_ls_dem_size;
 
   int index_grid_values;
@@ -74,6 +76,8 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void read_gridfile(int, int, std::string, int **, double *);
   double process_ls_grid(int *, double, double *, double *, std::string);
   inline double smeared_heaviside_step(double);
+  //inline double compute_volume();
+  //double compute_surface_area();
 };
 
 }    // namespace LAMMPS_NS
