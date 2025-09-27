@@ -76,8 +76,8 @@ class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this 
   void read_gridfile(int, int, std::string, int **, double *);
   double process_ls_grid(int *, double, double *, double *, std::string);
   inline double smeared_heaviside_step(double);
-  //inline double compute_volume();
-  //double compute_surface_area();
+  inline double compute_volume(int *, double, double *, double);
+  double compute_surface_area(int *, double, double *, double);
 };
 
 }    // namespace LAMMPS_NS

@@ -52,27 +52,9 @@ inline double FixRigidLSDEM::smeared_heaviside_step(double x)
   return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
 }
 
-//inline double FixRigidLSDEM::compute_volume()
-
-
-Real LevelSet::volumeInsideThreshold(Real epsilon) const
+inline double FixRigidLSDEM::compute_volume(int *grid_size, double stride, double *grid_values, double epsilon)
 {
-	if (smearCoeff <= 0)
-		LOG_WARN("Using volumeInsideThreshold (for surface measurement, probably) with a negative smearCoeff = " << smearCoeff << " is not expected");
-	Real vol(0.);                                                // to-be-returned volume which is inside phi = epsilon
-	Real phiRef(0.5 * sqrt(3.0) * lsGrid->spacing / smearCoeff); // the reference length for smoothing the Heaviside
-	Real volCell(pow(lsGrid->spacing, 3));                       // lsGrid voxel volume
-	for (int xIndex = 0; xIndex < lsGrid->nGP[0]; xIndex++) {
-		for (int yIndex = 0; yIndex < lsGrid->nGP[1]; yIndex++) {
-			for (int zIndex = 0; zIndex < lsGrid->nGP[2]; zIndex++) {
-				vol += smearedHeaviside((epsilon - distField[xIndex][yIndex][zIndex]) / phiRef) * volCell;
-			}
-		}
-	}
-	return vol;
-}
-
-// Volume integration
+  // Volume integration without centre of mass (re)computation and level-set offset epsilon
 
   // This is the reference distance values that determines the smearing with of
   // the Heaviside step function. Current expression is the half-diagional of the
@@ -83,7 +65,7 @@ Real LevelSet::volumeInsideThreshold(Real epsilon) const
     ls_ref = sqrt(0.75) * stride / smearCoeff;
 
   // Initialise volume and centre of mass
-  double volume = 0.0, x_com = 0.0, y_com = 0.0, z_com = 0.0;
+  double volume = 0.0;
   // Cell volume, temporary grid points, integration volume.
   double volume_cell = stride * stride;
   if (domain->dimension == 3) volume_cell *= stride;
@@ -96,7 +78,7 @@ Real LevelSet::volumeInsideThreshold(Real epsilon) const
         ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
         if (abs(ls_val) < ls_ref) {
           // Close to boundary if abs(ls_val) < ls_ref, apply smearing.
-          dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
+          dV = smeared_heaviside_step( (epsilon - ls_val) / ls_ref) * volume_cell;
         } else if (ls_val < 0) {
           // Inside and far away from boundary
           dV = volume_cell;
@@ -106,56 +88,39 @@ Real LevelSet::volumeInsideThreshold(Real epsilon) const
         }
         if (dV > 0.0) {
           volume += dV;
-          x_com += ind_x * stride * dV;
-          y_com += ind_y * stride * dV;
-          z_com += ind_z * stride * dV;
         }
       }
     }
   }
-  x_com /= volume;
-  y_com /= volume;
-  z_com /= volume;
-
-Real LevelSet::getSurface_epsilon(Real epsilon) const // to avoid code duplication in getSurface
-{
-	Real volExcess(volumeInsideThreshold(epsilon)), volDefault(volumeInsideThreshold(-epsilon));
-	if (volExcess == volDefault) // may happen in case of failed iterative search in getSurface and an epsilon really fading to 0
-		LOG_WARN(
-		        "Measuring twice the same volume when using epsilon = " << epsilon << " for a grid spacing of " << lsGrid->spacing
-		                                                                << ", we will obtain a zero surface");
-	return (volExcess - volDefault) / (2 * epsilon);
+  return volume;
 }
-Real LevelSet::getSurface(Real epsilon) const
+
+double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double *grid_values, double epsilon)
 {
-	unsigned int cptr(0), cptrMax(100);
-	Real         surfOld(getSurface_epsilon(epsilon));
-	Real         surfNew(-1), relChange(-1);
-	while (cptr < cptrMax) {
-		epsilon   = epsilon / 2;
-		surfNew   = (getSurface_epsilon(epsilon));
-		relChange = math::abs(surfOld - surfNew) / surfOld;
-		LOG_INFO(
-		        "During the iteration nbr " << cptr + 1 << " (with new epsilon = " << epsilon << "), it is computed " << surfNew
-		                                    << " for new surface value, to compare with " << surfOld << " for old surface value, ie a " << relChange
-		                                    << " relative change");
-		if (relChange < 1.e-7) // we converged to a limit
+  // Compute the surface area as the limit of the difference in volume
+	unsigned int iter, iter_max;
+	double vol_in, vol_out, area, area_old, diff;
+
+  iter = 0;
+  area_old = 1.0e-18; // Safe guess as it would be a squared nanometre in SI units.
+	while (iter < iter_max) {
+		epsilon = 0.5 * epsilon; // Dilation measure
+    vol_in = compute_volume(grid_size, stride, grid_values, -epsilon);
+    vol_out = compute_volume(grid_size, stride, grid_values, epsilon);
+    if (vol_in == vol_out) 
+      utils::logmesg(lmp, "WARNING: Inside and outside volumes are exactly the same for surface area calculation iteration {}.\n", iter);
+		area = (vol_in - vol_out) / (2.0 * epsilon);
+		diff = abs(area - area_old) / area_old;
+    // Test for convergence
+		if (diff < 1.0e-7)
 			break;
-		else { // we go for another round
-			surfOld = surfNew;
-			cptr++;
-		}
+		area_old = area;
+		iter++;
 	}
-	if (cptr == cptrMax) LOG_ERROR("We reached " << cptrMax << " iterations wo converging to a limit surface value");
-	return surfNew;
+	if (iter == iter_max) 
+    utils::logmesg(lmp, "WARNING: Surface area calculation did not converge in {} iterations.\n", iter_max);
+	return area;
 }
-
-
-
-
-
-
-
 
 //TODO: Should we have a flag (or child classes) for different memory distribution strategies?
 //      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
@@ -225,7 +190,7 @@ void FixRigidLSDEM::post_constructor()
   // Store positional information of grain on all atoms
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d_ls_dem_vol d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d2_ls_dem_fn1 d2_ls_dem_fs1 ghost yes writedata no",
+    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d_ls_dem_vol d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);

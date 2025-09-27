@@ -101,8 +101,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
   double **fs = atom->darray[index_ls_dem_fs]; // Shear component of f (to be update from previous time step)
   int *touch_id = atom->ivector[index_ls_dem_touch_id]; // Grain in contact with this node (to be update from previous time step)
-  double **fn1 = atom->darray[index_ls_dem_fn1]; // Maxwell element force history (normal)
-  double **fs1 = atom->darray[index_ls_dem_fs1]; // Maxwell element force history (shear)
+  double *fn1 = atom->dvector[index_ls_dem_fn1]; // Maxwell element force history (magnitude only, normal)
+  double *fs1 = atom->dvector[index_ls_dem_fs1]; // Maxwell element force history (magnitude only, shear)
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -324,15 +324,20 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Relative velocity in normal direction with sign
       v_rel_n_mag = MathExtra::dot3(v_rel,normal);
 
-      // Viscous damping or dashpot (parallel, only resistive, no tensile force if v_rel_n_mag < 0)
+      // Viscous damping or dashpot (parallel, only repulsive, i.e. no attractive force if v_rel_n_mag < 0)
       if(etan[itype][jtype] > 0.0){
         fn_mag += etan[itype][jtype] * MAX(v_rel_n_mag, 0.0);
       }
 
-      // Maxwell arm (1st, parallel, only resistive)
+      // Maxwell arm (1st, parallel, only repulsive)
       if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayn1 > 0 if etan1 > 0
-        fn1_mag = decayn1[itype][jtype] * fn1_mag[i] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
-        fn_mag += fn1_mag[i];
+        if (calc_force_of_i_on_j) { // Node of i.
+          fn1[i] = decayn1[itype][jtype] * fn1[i] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+          fn_mag += fn1[i];
+        }else{ // Node of j. 
+          fn1[j] = decayn1[itype][jtype] * fn1[j] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+          fn_mag += fn1[j];
+        }
         // Maxwell arm (2nd)
         //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
         //fn_mag -= fn2_mag[i]
@@ -443,7 +448,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         fs_mag_trial += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
       }
 
-      // Maxwell arm (1st, parallel, only resistive)
+      // Maxwell arm (1st, parallel, only repulsive)
       if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayt1 > 0 if etat1 > 0
         // Get the old tangent vector
         v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
@@ -454,9 +459,15 @@ void PairLSDEM::compute(int eflag, int vflag)
         // When the shear direction reverses, it correctly preserves the direction of the old force.
         // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
         // We could track the full vector, but it would cost more memory (and accessing time)
-        fs1_mag[i] += decayt1[itype][jtype] * fs1_mag[i] * MathExtra::dot3(tangent_old,tangent)
-          + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_ma is always positive
-        fs_mag_trial += fs1_mag[i];
+        if (calc_force_of_i_on_j) { // Node of i.
+          fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old,tangent)
+            + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+          fs_mag_trial += fs1[i];
+        }else{ // Node of j. 
+          fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old,tangent)
+            + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+          fs_mag_trial += fs1[j];
+        }
         // Maxwell arm (2nd)
         // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
         // fs_mag -= fs2_mag[i]
@@ -848,8 +859,8 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], cut[i][i], 
-      decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
+    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][i], etat[i][i], cut[i][i], 
+      decayn1[i][i], etan1[i][i], decayt1[i][i], etat1[i][i]);
 }
 
 /* ----------------------------------------------------------------------
@@ -860,6 +871,6 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][j], etat[i][j], cut[i][i], 
+      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g\n", i, j, kn[i][j], kt[i][j], mu[i][j], etan[i][j], etat[i][j], cut[i][j], 
         decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
 }
