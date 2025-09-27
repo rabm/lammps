@@ -95,30 +95,45 @@ inline double FixRigidLSDEM::compute_volume(int *grid_size, double stride, doubl
   return volume;
 }
 
-double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double *grid_values, double epsilon)
+double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double *grid_values)
 {
   // Compute the surface area as the limit of the difference in volume
 	unsigned int iter, iter_max;
-	double vol_in, vol_out, area, area_old, diff;
+	double epsilon, vol_in, vol_out, area, area_old, diff;
+
+  utils::logmesg(lmp, "New surface area calculation.\n");
 
   iter = 0;
-  area_old = 1.0e-18; // Safe guess as it would be a squared nanometre in SI units.
+  iter_max = 100;
+  
+  // First computation of area
+  epsilon = stride;
+  vol_in = compute_volume(grid_size, stride, grid_values, -epsilon);
+  vol_out = compute_volume(grid_size, stride, grid_values, epsilon);
+  if ( fabs(vol_in - vol_out) < 1e-300 ) 
+      utils::logmesg(lmp, "WARNING: Inside and outside volumes are the same for surface area calculation iteration {}.\n", iter);
+  area_old = (vol_out - vol_in) / (2.0 * epsilon);
+  area = area_old;
+  
+  // Iterations to improve area estimate
 	while (iter < iter_max) {
-		epsilon = 0.5 * epsilon; // Dilation measure
+		epsilon *= 0.5; // Dilation measure
     vol_in = compute_volume(grid_size, stride, grid_values, -epsilon);
     vol_out = compute_volume(grid_size, stride, grid_values, epsilon);
-    if (vol_in == vol_out) 
-      utils::logmesg(lmp, "WARNING: Inside and outside volumes are exactly the same for surface area calculation iteration {}.\n", iter);
-		area = (vol_in - vol_out) / (2.0 * epsilon);
-		diff = abs(area - area_old) / area_old;
+    utils::logmesg(lmp, "Test vol in {} and vol out {}.\n", vol_in, vol_out);
+		area = (vol_out - vol_in) / (2.0 * epsilon);
+		diff = fabs(area - area_old) / area_old;
+    utils::logmesg(lmp, "Area {}, area old {}, diff {}.\n", area, area_old, diff);
     // Test for convergence
 		if (diff < 1.0e-7)
 			break;
 		area_old = area;
 		iter++;
 	}
+
+  // Test for convergence
 	if (iter == iter_max) 
-    utils::logmesg(lmp, "WARNING: Surface area calculation did not converge in {} iterations.\n", iter_max);
+    utils::logmesg(lmp, "WARNING: Surface area calculation did not converge in {} iterations.\n", iter);
 	return area;
 }
 
@@ -190,12 +205,13 @@ void FixRigidLSDEM::post_constructor()
   // Store positional information of grain on all atoms
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d_ls_dem_vol d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d_ls_dem_vol d_ls_dem_node_area d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
   index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
+  index_ls_dem_node_area = atom->find_custom("ls_dem_node_area", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
@@ -310,6 +326,7 @@ void FixRigidLSDEM::init()
     double **grid_values = atom->darray[index_grid_values];
     double **grid_min_local = atom->darray[index_grid_min];
     double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
+    double *ls_dem_node_area = atom->dvector[index_ls_dem_node_area];
 
     // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
     //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
@@ -408,13 +425,21 @@ void FixRigidLSDEM::init()
             }
           }
           // compare/replace inertia with inertia_ls
+          // DvdH: Is this not taken care of below because inertia_ls is adjusted by reference?
         }
       }
 
+      // DvdH: This looks as if the volume is re-computed for each and every node. That seems rather wasteful?
       for (int i = 0; i < atom->nlocal; i++) {
         ibody = body[i];
-        ls_dem_vol[i] = process_ls_grid(grid_size[ibody], grid_stride[ibody], temp_grid_values,   inertia_ls, filename);
-        // calculate surface area as well
+        // DvdH: This function should output the inerta tensor as well, which should go to each grain.
+        // The CoM computed here should also be used to check the user-provided CoM;
+        // grid_min + computed_CoM = 0 should hold (up to half a grid stride or so).
+        ls_dem_vol[i] = process_ls_grid(grid_size[ibody], grid_stride[ibody], temp_grid_values, inertia_ls, filename);
+
+        // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
+        // Normalise by number of nodes.
+        ls_dem_node_area[i] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values) / (atom->nlocal);
       }
     }
 
@@ -759,7 +784,8 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   Process a grid file
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *grid_values, double *inertia_ls, std::string filename)
+double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *grid_values, 
+  double *inertia_ls, std::string filename)
 {
   // Volume integration
 
@@ -806,7 +832,10 @@ double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *gri
   y_com /= volume;
   z_com /= volume;
 
-  // Computing the inertia tensor (a double loop is unavoidable)
+  // We should check if grain_com + grid_min(local) = 0. If this is not true, then the supplied
+  // CoM and computed CoM are not the same, which would give (integration) issues.
+
+  // Computing the inertia tensor (a second loop is unavoidable)
   double delx, dely, delz;
   for (int a = 0; a < 6; a++) inertia_ls[a] = 0.0;
   for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
@@ -1042,7 +1071,6 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
       nz = 0.0;
     }
   }
-
 
   // Assign normal
   normal[0] = nx;

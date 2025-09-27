@@ -80,7 +80,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
   double fs_tmp[3], fs_mag, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
   double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
-  double normal_old[3], tangent_old[3];
+  double normal_old[3], tangent_old[3], areai, areaj;
 
   // Currently require:
   //   Newton pair off.
@@ -103,6 +103,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int *touch_id = atom->ivector[index_ls_dem_touch_id]; // Grain in contact with this node (to be update from previous time step)
   double *fn1 = atom->dvector[index_ls_dem_fn1]; // Maxwell element force history (magnitude only, normal)
   double *fs1 = atom->dvector[index_ls_dem_fs1]; // Maxwell element force history (magnitude only, shear)
+  double *node_area = atom->dvector[index_ls_dem_node_area]; // Area per node used to normalise forces
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -198,6 +199,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     vxitmp = v[i][0];
     vyitmp = v[i][1];
     vzitmp = v[i][2];
+    areai = node_area[i];
     itype = type[i];
     ibody = body[i];
     ivol = grain_vol[i];
@@ -221,6 +223,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
+      areaj = node_area[j];
       jbody = body[j];
       jtag = tag[j];
       jvol = grain_vol[j];
@@ -341,6 +344,13 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Maxwell arm (2nd)
         //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
         //fn_mag -= fn2_mag[i]
+      }
+
+      // Multiply by node area to make the force independent of discretisation (fn_mag was a stress)
+      if (calc_force_of_i_on_j) { // Node of i.
+        fn_mag *= areai;
+      }else{ // Node of j.
+        fn_mag *= areaj;
       }
 
       // The pair force vector should point j->i because of repulsion.
@@ -472,7 +482,14 @@ void PairLSDEM::compute(int eflag, int vflag)
         // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
         // fs_mag -= fs2_mag[i]
       }
-        
+      
+      // Multiply by node area to make the force independent of discretisation (fs_mag_trial was a stress)
+      if (calc_force_of_i_on_j) { // Node of i.
+        fs_mag_trial *= areai;
+      }else{ // Node of j.
+        fs_mag_trial *= areaj;
+      }
+
       // Total shear or tangent force update (repulsive again)
       fs_tmp[0] -= fs_mag_trial * tangent[0];
       fs_tmp[1] -= fs_mag_trial * tangent[1];
@@ -636,23 +653,23 @@ void PairLSDEM::coeff(int narg, char **arg)
   double etat_1 = utils::numeric(FLERR, arg[11], false, lmp);
   //double gamma_one = utils::numeric(FLERR, arg[6], false, lmp); // Doesn't do anything IIRC
 
-  if (kn_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (kt_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (mu_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (etan_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (etat_0 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (kn_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (kt_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (mu_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (etan_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (etat_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
   if (narg >= 7){
-    if (kn_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if (etan_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if (kn_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if (etan_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
-    if ( (kn_1 == 0) ^ (etan_1 == 0) ) {
+    if ( (kn_1 == 0.0) ^ (etan_1 == 0.0) ) {
       error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
     }
   }
   if (narg >= 9){
-    if (kt_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if (etat_1 <= 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if ( (kt_1 == 0) ^ (etat_1 == 0) ) {
+    if (kt_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if (etat_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+    if ( (kt_1 == 0.0) ^ (etat_1 == 0.0) ) {
       error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
     }
   }
