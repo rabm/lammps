@@ -95,7 +95,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // Node quantities
   double **x = atom->x;
-  double **v = atom->v; // Is this the on-step or half-step accuracy? Half-step would give O(dt^2) accuracy for damping instead of O(dt). 
+  double **v = atom->v; // This is the half-step, giving O(dt^2) accuracy for damping instead of O(dt). 
   double **f = atom->f;
   double **torque = atom->torque;
   double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
@@ -317,7 +317,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // With positive penetration distance u
       fn_mag = kn[itype][jtype] * u; // pow(u,b)
 
-      // Relative velocity at the grain surface
+      // Relative velocity at the grain surface at the half step t + 0.5*dt.
       // Note: The velocity at the node due to an angular velocity of the grain around its 
       // centre of mass is already included, so the difference of linear velocities suffices.
       v_rel[0] = vxitmp - vxjtmp;
@@ -375,7 +375,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
         if (touch_id[i] != jbody){
           if (comm->me == 0) {
-            utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+            utils::logmesg(lmp, "WARNING: Shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
               ibody, jbody, update->ntimestep);
           }
         }
@@ -385,7 +385,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
         if (touch_id[j] != ibody){
           if (comm->me == 0) {
-            utils::logmesg(lmp, "WARNING: shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+            utils::logmesg(lmp, "WARNING: Shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
               jbody, ibody, update->ntimestep);
           }
         }
