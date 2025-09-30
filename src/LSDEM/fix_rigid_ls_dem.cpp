@@ -98,11 +98,6 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 	unsigned int iter, iter_max;
 	double epsilon, vol_in, vol_out, area, area_old, diff;
 
-  //utils::logmesg(lmp, "New surface area calculation.\n");
-
-  iter = 0;
-  iter_max = 100;
-  
   // First computation of area
   epsilon = stride;
   vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
@@ -113,20 +108,20 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
   area = area_old;
   
   // Iterations to improve area estimate
+  iter = 0;
+  iter_max = 100;
 	while (iter < iter_max) {
 		epsilon *= 0.5; // Dilation measure
     vol_in = compute_volume(grid_size, stride, grid_values, -epsilon);
     vol_out = compute_volume(grid_size, stride, grid_values, epsilon);
 		area = (vol_out - vol_in) / (2.0 * epsilon);
-		diff = fabs(area - area_old) / area_old;
+		diff = fabs( (area - area_old) / area_old );
     // Test for convergence
-		if (diff < 1.0e-7)
+		if (diff < 1.0e-7) // TODO: Declare hard-coded tolerance value based on global variable? 
 			break;
 		area_old = area;
 		iter++;
 	}
-
-  utils::logmesg(lmp, "Stride {}. Test vol in {} and vol out {}. Area {}, area old {}, diff {}. Dim {}. \n", stride, vol_in, vol_out, area, area_old, diff, domain->dimension);
 
   // Test for convergence
 	if (iter == iter_max) 

@@ -57,6 +57,7 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(mu);
     memory->destroy(etan);
     memory->destroy(etat);
+    memory->destroy(knp);
     memory->destroy(cut);
     memory->destroy(decayn1);
     memory->destroy(etan1);
@@ -315,7 +316,11 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Elastic spring
       // With positive penetration distance u
-      fn_mag = kn[itype][jtype] * u; // pow(u,b)
+      if (fabs(knp[itype][jtype]) < EPSILON){
+        fn_mag = kn[itype][jtype] * u;
+      }else{
+        fn_mag = kn[itype][jtype] * pow(u,knp[itype][jtype]);
+      }
 
       // Relative velocity at the grain surface at the half step t + 0.5*dt.
       // Note: The velocity at the node due to an angular velocity of the grain around its 
@@ -603,6 +608,7 @@ void PairLSDEM::allocate()
   memory->create(mu, np1, np1, "pair:mu");
   memory->create(etan, np1, np1, "pair:etan");
   memory->create(etat, np1, np1, "pair:etat");
+  memory->create(knp, np1, np1, "pair:knp");
   memory->create(cut, np1, np1, "pair:cut");
   memory->create(decayn1, np1, np1, "pair:decayn1");
   memory->create(etan1, np1, np1, "pair:etan1");
@@ -646,11 +652,12 @@ void PairLSDEM::coeff(int narg, char **arg)
   double mu_0 = utils::numeric(FLERR, arg[4], false, lmp);
   double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[7], false, lmp);
-  double kn_1 = utils::numeric(FLERR, arg[8], false, lmp);
-  double etan_1 = utils::numeric(FLERR, arg[9], false, lmp);
-  double kt_1 = utils::numeric(FLERR, arg[10], false, lmp);
-  double etat_1 = utils::numeric(FLERR, arg[11], false, lmp);
+  double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);  
+  double cut_one = utils::numeric(FLERR, arg[8], false, lmp);
+  double kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
+  double etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
+  double kt_1 = utils::numeric(FLERR, arg[11], false, lmp);
+  double etat_1 = utils::numeric(FLERR, arg[12], false, lmp);
   //double gamma_one = utils::numeric(FLERR, arg[6], false, lmp); // Doesn't do anything IIRC
 
   if (kn_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
@@ -658,6 +665,7 @@ void PairLSDEM::coeff(int narg, char **arg)
   if (mu_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
   if (etan_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
   if (etat_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  // Values of knp_0 can be both positive and negative.
   if (narg >= 7){
     if (kn_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     if (etan_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
@@ -685,6 +693,8 @@ void PairLSDEM::coeff(int narg, char **arg)
   // }
   // Neither k or eta in a Maxwell arm are allowed to be zero.
 
+  // Need a check for dt staying constant. If it changes, decayn1 and decayt1 need to be recomputed.
+
   double dt = update->dt;
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
@@ -694,6 +704,7 @@ void PairLSDEM::coeff(int narg, char **arg)
       mu[i][j] = mu_0;
       etan[i][j] = etan_0;
       etat[i][j] = etat_0;
+      knp[i][j] = knp_0;
       cut[i][j] = cut_one;
       if (narg >= 7){
         decayn1[i][j] = exp(-dt/etan_1*kn_1);
@@ -768,9 +779,10 @@ double PairLSDEM::init_one(int i, int j)
     cut[i][j] = mix_distance(cut[i][i], cut[j][j]);
     kn[i][j] = mix_energy(kn[i][i], kn[j][j], cut[i][i], cut[j][j]);
     kt[i][j] = mix_energy(kt[i][i], kt[j][j], cut[i][i], cut[j][j]);
+    mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
     etan[i][j] = mix_energy(etan[i][i], etan[j][j], cut[i][i], cut[j][j]);
     etat[i][j] = mix_energy(etat[i][i], etat[j][j], cut[i][i], cut[j][j]);
-    mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
+    knp[i][j] = mix_energy(knp[i][i], knp[j][j], cut[i][i], cut[j][j]);
     decayn1[i][j] = mix_energy(decayn1[i][i], decayn1[j][j], cut[i][i], cut[j][j]);
     etan1[i][j] = mix_energy(etan1[i][i], etan1[j][j], cut[i][i], cut[j][j]);
     decayt1[i][j] = mix_energy(decayt1[i][i], decayt1[j][j], cut[i][i], cut[j][j]);
@@ -786,6 +798,7 @@ double PairLSDEM::init_one(int i, int j)
   kn[j][i] = kn[i][j];
   kt[j][i] = kt[i][j];
   mu[j][i] = mu[i][j];
+  knp[j][i] = knp[i][j];
   etan[i][j] = etan[j][i];
   etat[i][j] = etat[j][i];
   decayn1[i][j] = decayn1[j][i];
@@ -815,6 +828,7 @@ void PairLSDEM::write_restart(FILE *fp)
         fwrite(&mu[i][j], sizeof(double), 1, fp);
         fwrite(&etan[i][j], sizeof(double), 1, fp);
         fwrite(&etat[i][j], sizeof(double), 1, fp);
+        fwrite(&knp[i][j], sizeof(double), 1, fp);
         fwrite(&cut[i][j], sizeof(double), 1, fp);
         fwrite(&decayn1[i][j], sizeof(double), 1, fp);
         fwrite(&etan1[i][j], sizeof(double), 1, fp);
@@ -847,6 +861,7 @@ void PairLSDEM::read_restart(FILE *fp)
           utils::sfread(FLERR, &mu[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etan[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etat[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &knp[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &decayn1[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etan1[i][j], sizeof(double), 1, fp, nullptr, error);
@@ -859,6 +874,7 @@ void PairLSDEM::read_restart(FILE *fp)
         MPI_Bcast(&mu[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etan[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etat[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&knp[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&decayn1[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etan1[i][j], 1, MPI_DOUBLE, 0, world);
@@ -876,7 +892,7 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][i], etat[i][i], cut[i][i], 
+    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][i], etat[i][i], knp[i][i], cut[i][i], 
       decayn1[i][i], etan1[i][i], decayt1[i][i], etat1[i][i]);
 }
 
@@ -888,6 +904,6 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g\n", i, j, kn[i][j], kt[i][j], mu[i][j], etan[i][j], etat[i][j], cut[i][j], 
+      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g %g\n", i, j, kn[i][j], kt[i][j], mu[i][j], etan[i][j], etat[i][j], knp[i][j], cut[i][j], 
         decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
 }
