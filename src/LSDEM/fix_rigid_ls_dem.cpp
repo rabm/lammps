@@ -102,11 +102,11 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
   epsilon = stride;
   vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
   vol_out = compute_volume(grid_size, stride, grid_values, -epsilon);
-  if ( fabs(vol_in - vol_out) < 1e-300 ) 
+  if ( fabs(vol_in - vol_out) < 1e-300 )
       utils::logmesg(lmp, "WARNING: Inside and outside volumes are the same for surface area calculation iteration {}.\n", iter);
   area_old = (vol_out - vol_in) / (2.0 * epsilon);
   area = area_old;
-  
+
   // Iterations to improve area estimate
   iter = 0;
   iter_max = 100;
@@ -117,14 +117,14 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 		area = (vol_out - vol_in) / (2.0 * epsilon);
 		diff = fabs( (area - area_old) / area_old );
     // Test for convergence
-		if (diff < 1.0e-7) // TODO: Declare hard-coded tolerance value based on global variable? 
+		if (diff < 1.0e-7) // TODO: Declare hard-coded tolerance value based on global variable?
 			break;
 		area_old = area;
 		iter++;
 	}
 
   // Test for convergence
-	if (iter == iter_max) 
+	if (iter == iter_max)
     utils::logmesg(lmp, "WARNING: Surface area calculation did not converge in {} iterations.\n", iter);
 	return area;
 }
@@ -244,6 +244,7 @@ void FixRigidLSDEM::init()
   maxcut = pair->maxcut;
 
   int index_global = 0;
+  int distributed_flag = 0;
   if (!stored_flag) {
     stored_flag = 1;
 
@@ -286,6 +287,8 @@ void FixRigidLSDEM::init()
           ntotal_global[index_global] = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
           index_global += 1;
         }
+      } else {
+        distributed_flag = 1;
       }
     }
 
@@ -293,30 +296,40 @@ void FixRigidLSDEM::init()
     // Allocate memory for level sets //
     // ------------------------------ //
 
+    int ntotal;
     rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
 
-    for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
-    if (dim == 2) subgrid_size[2] = 1;
-    id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-    int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-    modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
+    if (distributed_flag) {
+      for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
+      if (dim == 2) subgrid_size[2] = 1;
+      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+      ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+      if (ntotal > 1000)
+        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a max stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, max_stride);
+      modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
 
-    int tmp1, tmp2;
-    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+      int tmp1, tmp2;
+      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    }
 
-    memory->create_ragged(global_grids, index_global, ntotal_global, "rigid/ls/dem:global_grids");
+    if (index_global) {
+      memory->create_ragged(global_grids, index_global, ntotal_global, "rigid/ls/dem:global_grids");
+    }
 
     // ------------------------------ //
     // Read and store level sets      //
     // ------------------------------ //
 
     ntotal = max_grid_size[0] * max_grid_size[1] * max_grid_size[2];
-    double *temp_grid_values;
+    double *temp_grid_values = nullptr;
     memory->create(temp_grid_values, ntotal, "rigid/ls/dem:temp_grid_values");
 
-    double **grid_values = atom->darray[index_grid_values];
-    double **grid_min_local = atom->darray[index_grid_min];
+    double **grid_values, **grid_min_local;
+    if (distributed_flag) {
+      grid_values = atom->darray[index_grid_values];
+      grid_min_local = atom->darray[index_grid_min];
+    }
     double *ls_dem_vol = atom->dvector[index_ls_dem_vol];
     double *ls_dem_node_area = atom->dvector[index_ls_dem_node_area];
 
@@ -407,7 +420,7 @@ void FixRigidLSDEM::init()
                   error->all(FLERR, "Level set does not include a large enough buffer for the   cutoff");
 
                 index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-                index_local = ix_local + iy_local * subgrid_size[0] + iz_local *   subgrid_size[0] * subgrid_size[1];
+                index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
 
                 // Final sanity check (defensive)
                 if (index_global < 0 || index_global >= ntotal)
@@ -776,7 +789,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   Process a grid file
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *grid_values, 
+double FixRigidLSDEM::process_ls_grid(int *grid_size, double stride, double *grid_values,
   double *inertia_ls, std::string filename)
 {
   // Volume integration

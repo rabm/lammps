@@ -24,7 +24,7 @@ FixStyle(rigid/ls/dem,FixRigidLSDEM);
 
 namespace LAMMPS_NS {
 
-class FixRigidLSDEM : public FixRigid { // TODO: delete all functions that this class will not redefine
+class FixRigidLSDEM : public FixRigid {
  public:
   FixRigidLSDEM(class LAMMPS *, int, char **);
   ~FixRigidLSDEM() override;

@@ -38,7 +38,7 @@ using namespace MathConst;
 /* ---------------------------------------------------------------------- */
 
 PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), etan(nullptr), etat(nullptr), cut(nullptr),
- decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr) // gamma(nullptr), 
+ decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr) // gamma(nullptr),
 {
   writedata = 1;
   single_enable = 0;
@@ -96,7 +96,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // Node quantities
   double **x = atom->x;
-  double **v = atom->v; // This is the half-step, giving O(dt^2) accuracy for damping instead of O(dt). 
+  double **v = atom->v; // This is the half-step, giving O(dt^2) accuracy for damping instead of O(dt).
   double **f = atom->f;
   double **torque = atom->torque;
   double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
@@ -323,7 +323,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Relative velocity at the grain surface at the half step t + 0.5*dt.
-      // Note: The velocity at the node due to an angular velocity of the grain around its 
+      // Note: The velocity at the node due to an angular velocity of the grain around its
       // centre of mass is already included, so the difference of linear velocities suffices.
       v_rel[0] = vxitmp - vxjtmp;
       v_rel[1] = vyitmp - vyjtmp;
@@ -342,7 +342,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         if (calc_force_of_i_on_j) { // Node of i.
           fn1[i] = decayn1[itype][jtype] * fn1[i] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
           fn_mag += fn1[i];
-        }else{ // Node of j. 
+        }else{ // Node of j.
           fn1[j] = decayn1[itype][jtype] * fn1[j] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
           fn_mag += fn1[j];
         }
@@ -371,7 +371,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Tangent force only exists if mu > 0 and kt > 0
       //if ( (kt[itype][jtype] > 0) && (mu[itype][jtype] > 0) ){
       // DvdH: Grains without friction are silly, so I took out this check.
-    
+
       // Check if the pair is valid for shear history calculation
       // Initialise if no contact
       if (calc_force_of_i_on_j){
@@ -478,7 +478,7 @@ void PairLSDEM::compute(int eflag, int vflag)
           fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old,tangent)
             + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
           fs_mag_trial += fs1[i];
-        }else{ // Node of j. 
+        }else{ // Node of j.
           fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old,tangent)
             + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
           fs_mag_trial += fs1[j];
@@ -487,7 +487,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
         // fs_mag -= fs2_mag[i]
       }
-      
+
       // Multiply by node area to make the force independent of discretisation (fs_mag_trial was a stress)
       if (calc_force_of_i_on_j) { // Node of i.
         fs_mag_trial *= areai;
@@ -500,7 +500,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       fs_tmp[1] -= fs_mag_trial * tangent[1];
       fs_tmp[2] -= fs_mag_trial * tangent[2];
       // Update trial shear force magnitude
-      fs_mag_trial = MathExtra::len3(fs_tmp); 
+      fs_mag_trial = MathExtra::len3(fs_tmp);
 
       // Perfectly plastic Coulomb friction criterion
       fs_mag = std::min(mu[itype][jtype]*fn_mag, fs_mag_trial);
@@ -524,7 +524,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         n[i][0] = normal[0];
         n[i][1] = normal[1];
         n[i][2] = normal[2];
-      }else{ // Node of j. 
+      }else{ // Node of j.
         // Swap sign due to change of i->j to j->i reference frame.
         fs[j][0] = -fs_tmp[0];
         fs[j][1] = -fs_tmp[1];
@@ -652,7 +652,7 @@ void PairLSDEM::coeff(int narg, char **arg)
   double mu_0 = utils::numeric(FLERR, arg[4], false, lmp);
   double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
-  double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);  
+  double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);
   double cut_one = utils::numeric(FLERR, arg[8], false, lmp);
   double kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
   double etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
@@ -714,7 +714,7 @@ void PairLSDEM::coeff(int narg, char **arg)
         decayt1[i][j] = exp(-dt/etat_1*kt_1);
         etat1[i][j] = etat_1;
       }
-      
+
       // gamma[i][j] = gamma_one;
       setflag[i][j] = 1;
       count++;
@@ -744,7 +744,7 @@ void PairLSDEM::setup()
   double maxcut2 = -1;
   for (int i = 1; i <= n; i++)
     for (int j = 1; j <= n; j++)
-      maxcut2 = MAX(maxcut2, cut[i][j]); // Can we compute a sensible value for this somehow? 
+      maxcut2 = MAX(maxcut2, cut[i][j]); // Can we compute a sensible value for this somehow?
 
   if (maxcut < maxcut2)
     error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
@@ -767,6 +767,7 @@ void PairLSDEM::setup()
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
+  index_ls_dem_node_area = atom->find_custom("ls_dem_node_area", tmp1, tmp2);
 }
 
 /* ----------------------------------------------------------------------
@@ -790,7 +791,7 @@ double PairLSDEM::init_one(int i, int j)
     //gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
-  // DvdH: For most contact models mixing will not be simple. 
+  // DvdH: For most contact models mixing will not be simple.
   // I would probably discourage the use of this, or give a warning.
 
   // Enforces symmetry
@@ -892,7 +893,7 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][i], etat[i][i], knp[i][i], cut[i][i], 
+    fprintf(fp, "%d %g %g %g %g %g %g %g %g %g %g %g\n", i, kn[i][i], kt[i][i], mu[i][i], etan[i][i], etat[i][i], knp[i][i], cut[i][i],
       decayn1[i][i], etan1[i][i], decayt1[i][i], etat1[i][i]);
 }
 
@@ -904,6 +905,6 @@ void PairLSDEM::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g %g\n", i, j, kn[i][j], kt[i][j], mu[i][j], etan[i][j], etat[i][j], knp[i][j], cut[i][j], 
+      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g %g\n", i, j, kn[i][j], kt[i][j], mu[i][j], etan[i][j], etat[i][j], knp[i][j], cut[i][j],
         decayn1[i][j], etan1[i][j], decayt1[i][j], etat1[i][j]);
 }
