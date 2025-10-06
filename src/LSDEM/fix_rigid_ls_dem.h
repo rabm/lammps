@@ -40,6 +40,8 @@ class FixRigidLSDEM : public FixRigid {
 
   double memory_usage() override;
 
+  inline double *get_vol_array() { return grid_vol; };
+  inline double *get_area_array() { return grid_area; };
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
 
@@ -50,8 +52,6 @@ class FixRigidLSDEM : public FixRigid {
   char *id_fix, *id_fix2;
   int index_ls_dem_com;
   int index_ls_dem_quat;
-  int index_ls_dem_vol;
-  int index_ls_dem_node_area;
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;
@@ -68,6 +68,10 @@ class FixRigidLSDEM : public FixRigid {
   int *grid_index;              // index of body's global memory, -1 otherwise
   double **grid_min;            // minimum xyz coordinates of LS grid
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
+  double *grid_vol;
+  double *grid_area;
+  int *grid_nnodes;             // the number of nodes in the grid
+
   double **global_grids;
   double *grid_scale;
   double maxcut, warncut;
@@ -75,7 +79,7 @@ class FixRigidLSDEM : public FixRigid {
 
   void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
-  double process_ls_grid(int *, double, double *, double *, std::string);
+  double compute_grid_properties(int *, double, double *, double *, double *, std::string);
   inline double smeared_heaviside_step(double);
   inline double compute_volume(int *, double, double *, double);
   double compute_surface_area(int *, double, double *);

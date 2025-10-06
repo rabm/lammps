@@ -104,7 +104,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int *touch_id = atom->ivector[index_ls_dem_touch_id]; // Grain in contact with this node (to be update from previous time step)
   double *fn1 = atom->dvector[index_ls_dem_fn1]; // Maxwell element force history (magnitude only, normal)
   double *fs1 = atom->dvector[index_ls_dem_fs1]; // Maxwell element force history (magnitude only, shear)
-  double *node_area = atom->dvector[index_ls_dem_node_area]; // Area per node used to normalise forces
+
   tagint *tag = atom->tag;
   int *type = atom->type;
   int nlocal = atom->nlocal;
@@ -114,11 +114,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // Grain quantities
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
-  double *grain_vol = atom->dvector[index_ls_dem_vol];
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
   int *body = fix_rigid->get_body_array();
   int nbody = fix_rigid->get_nbody();
+  double *grain_vol = fix_rigid->get_vol_array();
+  double *node_area = fix_rigid->get_area_array(); // Area per node used to normalise forces
 
   inum = list->inum;
   allnum = inum + list->gnum;
@@ -200,13 +201,15 @@ void PairLSDEM::compute(int eflag, int vflag)
     vxitmp = v[i][0];
     vyitmp = v[i][1];
     vzitmp = v[i][2];
-    areai = node_area[i];
     itype = type[i];
     ibody = body[i];
-    ivol = grain_vol[i];
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
+
+    ivol = grain_vol[ibody];
+    areai = node_area[ibody];
+
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -224,14 +227,15 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
-      areaj = node_area[j];
       jbody = body[j];
       jtag = tag[j];
-      jvol = grain_vol[j];
       jcomx = grain_com[j][0];
       jcomy = grain_com[j][1];
       jcomz = grain_com[j][2];
       jtype = type[j];
+
+      jvol = grain_vol[jbody];
+      areaj = node_area[jbody];
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
@@ -283,11 +287,11 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // No adhesion, cohesion, or ranged forces.
-      if (u < 0) {
+      if (u <= 0) {
         // Reset shear force if no contact
         // If i and j are not a shear-interacting pair, it will skip the reset
-        if (calc_force_of_i_on_j){
-          if (touch_id[i] == jbody){
+        if (calc_force_of_i_on_j) {
+          if (touch_id[i] == jbody) {
             touch_id[i] = -1;
             fs[i][0] = 0.0;
             fs[i][1] = 0.0;
@@ -296,8 +300,8 @@ void PairLSDEM::compute(int eflag, int vflag)
             n[i][1] = 0.0;
             n[i][2] = 0.0;
           }
-        }else{ // calc_force_of_j_on_i already guaranteed to be true (see line ~233)
-          if (touch_id[j] == ibody){
+        } else { // calc_force_of_j_on_i already guaranteed to be true (see line ~233)
+          if (touch_id[j] == ibody) {
             touch_id[j] = -1;
             fs[j][0] = 0.0;
             fs[j][1] = 0.0;
@@ -316,10 +320,10 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Elastic spring
       // With positive penetration distance u
-      if (fabs(knp[itype][jtype]) < EPSILON){
+      if (fabs(knp[itype][jtype]) < EPSILON) {
         fn_mag = kn[itype][jtype] * u;
-      }else{
-        fn_mag = kn[itype][jtype] * pow(u,knp[itype][jtype]);
+      } else {
+        fn_mag = kn[itype][jtype] * pow(u, knp[itype][jtype]);
       }
 
       // Relative velocity at the grain surface at the half step t + 0.5*dt.
@@ -330,20 +334,20 @@ void PairLSDEM::compute(int eflag, int vflag)
       v_rel[2] = vzitmp - vzjtmp;
 
       // Relative velocity in normal direction with sign
-      v_rel_n_mag = MathExtra::dot3(v_rel,normal);
+      v_rel_n_mag = MathExtra::dot3(v_rel, normal);
 
       // Viscous damping or dashpot (parallel, only repulsive, i.e. no attractive force if v_rel_n_mag < 0)
-      if(etan[itype][jtype] > 0.0){
+      if (etan[itype][jtype] > 0.0) {
         fn_mag += etan[itype][jtype] * MAX(v_rel_n_mag, 0.0);
       }
 
       // Maxwell arm (1st, parallel, only repulsive)
-      if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayn1 > 0 if etan1 > 0
+      if (etan1[itype][jtype] > 0.0) { // preprocessing guarantees that decayn1 > 0 if etan1 > 0
         if (calc_force_of_i_on_j) { // Node of i.
-          fn1[i] = decayn1[itype][jtype] * fn1[i] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+          fn1[i] = decayn1[itype][jtype] * fn1[i] + etan1[itype][jtype] * (1.0 - decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
           fn_mag += fn1[i];
-        }else{ // Node of j.
-          fn1[j] = decayn1[itype][jtype] * fn1[j] + etan1[itype][jtype] * (1-decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+        } else { // Node of j.
+          fn1[j] = decayn1[itype][jtype] * fn1[j] + etan1[itype][jtype] * (1.0 - decayn1[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
           fn_mag += fn1[j];
         }
         // Maxwell arm (2nd)
@@ -354,7 +358,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Multiply by node area to make the force independent of discretisation (fn_mag was a stress)
       if (calc_force_of_i_on_j) { // Node of i.
         fn_mag *= areai;
-      }else{ // Node of j.
+      } else { // Node of j.
         fn_mag *= areaj;
       }
 
@@ -374,23 +378,23 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Check if the pair is valid for shear history calculation
       // Initialise if no contact
-      if (calc_force_of_i_on_j){
-        if (touch_id[i] == -1){
+      if (calc_force_of_i_on_j) {
+        if (touch_id[i] == -1) {
           touch_id[i] = jbody;
         }
-        if (touch_id[i] != jbody){
+        if (touch_id[i] != jbody) {
           if (comm->me == 0) {
-            utils::logmesg(lmp, "WARNING: Shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+            error->warning(FLERR, "Shear history of node on grain {} penetrating {} cannot be computed at step {}",
               ibody, jbody, update->ntimestep);
           }
         }
-      }else{
-        if (touch_id[j] == -1){
+      } else {
+        if (touch_id[j] == -1) {
           touch_id[j] = ibody;
         }
-        if (touch_id[j] != ibody){
+        if (touch_id[j] != ibody) {
           if (comm->me == 0) {
-            utils::logmesg(lmp, "WARNING: Shear history of node on grain {} penetrating {} cannot be computed at step {}.\n",
+            error->warning(FLERR, "Shear history of node on grain {} penetrating {} cannot be computed at step {}",
               jbody, ibody, update->ntimestep);
           }
         }
@@ -404,7 +408,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         normal_old[0] = n[i][0];
         normal_old[1] = n[i][1];
         normal_old[2] = n[i][2];
-      }else{ // Use node of j.
+      } else { // Use node of j.
         // Swap sign due to change of j->i to i->j reference frame.
         fs_tmp[0] = -fs[j][0];
         fs_tmp[1] = -fs[j][1];
@@ -415,17 +419,17 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Adjust fs_tmp to account for rotation of the contact plane.
-      if( MathExtra::len3(normal_old) > 0 ){
+      if( MathExtra::len3(normal_old) > 0 ) {
         MathExtra::cross3(normal_old, normal, k); // Rotation vector
         sintheta = MathExtra::len3(k); // Rotation magnitude
         if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
-          costheta = sqrt(1 - sintheta*sintheta);
+          costheta = sqrt(1 - sintheta * sintheta);
           k[0] = k[0] / sintheta; // Rotation axis
           k[1] = k[1] / sintheta;
           k[2] = k[2] / sintheta;
           // Applying Rodrigues' rotation formula to get the rotated shear displacement
-          MathExtra::cross3(k,fs_tmp,term1);
-          term2 = MathExtra::dot3(k,fs_tmp) * (1-costheta);
+          MathExtra::cross3(k, fs_tmp, term1);
+          term2 = MathExtra::dot3(k, fs_tmp) * (1.0 - costheta);
           fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
           fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
           fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
@@ -433,18 +437,18 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Relative velocity in tangential direction
-      v_rel_t[0] = v_rel[0] - v_rel_n_mag*normal[0];
-      v_rel_t[1] = v_rel[1] - v_rel_n_mag*normal[1];
-      v_rel_t[2] = v_rel[2] - v_rel_n_mag*normal[2];
+      v_rel_t[0] = v_rel[0] - v_rel_n_mag * normal[0];
+      v_rel_t[1] = v_rel[1] - v_rel_n_mag * normal[1];
+      v_rel_t[2] = v_rel[2] - v_rel_n_mag * normal[2];
       v_rel_t_mag = MathExtra::len3(v_rel_t);
 
       // Tangent normal
-      if (v_rel_t_mag > EPSILON){
-        v_rel_t_mag_inv = 1.0/v_rel_t_mag;
+      if (v_rel_t_mag > EPSILON) {
+        v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
         tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
         tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
         tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
-      }else{
+      } else {
         // Backup: Use old shear force direction as tangent.
         v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
         tangent[0] = fs_tmp[0] * v_rel_t_mag_inv;
@@ -459,14 +463,14 @@ void PairLSDEM::compute(int eflag, int vflag)
       fs_mag_trial = kt[itype][jtype] * shear_incr;
 
       // Viscous damping or dashpot (parallel, only resistive, no tensile force if v_rel_t_mag < 0)
-      if(etat[itype][jtype] > 0){
+      if(etat[itype][jtype] > 0) {
         fs_mag_trial += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
       }
 
       // Maxwell arm (1st, parallel, only repulsive)
-      if (etan1[itype][jtype] > 0.0){ // preprocessing guarantees that decayt1 > 0 if etat1 > 0
+      if (etan1[itype][jtype] > 0.0) { // preprocessing guarantees that decayt1 > 0 if etat1 > 0
         // Get the old tangent vector
-        v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
+        v_rel_t_mag_inv = 1.0 / MathExtra::len3(fs_tmp);
         tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
         tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
         tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
@@ -475,12 +479,12 @@ void PairLSDEM::compute(int eflag, int vflag)
         // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
         // We could track the full vector, but it would cost more memory (and accessing time)
         if (calc_force_of_i_on_j) { // Node of i.
-          fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old,tangent)
-            + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+          fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old, tangent)
+            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
           fs_mag_trial += fs1[i];
-        }else{ // Node of j.
-          fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old,tangent)
-            + etat1[itype][jtype] * (1-decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+        } else { // Node of j.
+          fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old, tangent)
+            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
           fs_mag_trial += fs1[j];
         }
         // Maxwell arm (2nd)
@@ -491,7 +495,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Multiply by node area to make the force independent of discretisation (fs_mag_trial was a stress)
       if (calc_force_of_i_on_j) { // Node of i.
         fs_mag_trial *= areai;
-      }else{ // Node of j.
+      } else { // Node of j.
         fs_mag_trial *= areaj;
       }
 
@@ -503,13 +507,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       fs_mag_trial = MathExtra::len3(fs_tmp);
 
       // Perfectly plastic Coulomb friction criterion
-      fs_mag = std::min(mu[itype][jtype]*fn_mag, fs_mag_trial);
+      fs_mag = std::min(mu[itype][jtype] * fn_mag, fs_mag_trial);
 
-      if(fs_mag > 0){
+      if (fs_mag > 0) {
         // Final shear or tangential force
-        fs_tmp[0] = fs_mag * (fs_tmp[0]/fs_mag_trial);
-        fs_tmp[1] = fs_mag * (fs_tmp[1]/fs_mag_trial);
-        fs_tmp[2] = fs_mag * (fs_tmp[2]/fs_mag_trial);
+        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
         // Add shear force to the pair force vector
         fpair[0] += fs_tmp[0];
         fpair[1] += fs_tmp[1];
@@ -524,7 +528,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         n[i][0] = normal[0];
         n[i][1] = normal[1];
         n[i][2] = normal[2];
-      }else{ // Node of j.
+      } else { // Node of j.
         // Swap sign due to change of i->j to j->i reference frame.
         fs[j][0] = -fs_tmp[0];
         fs[j][1] = -fs_tmp[1];
@@ -761,7 +765,6 @@ void PairLSDEM::setup()
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_vol = atom->find_custom("ls_dem_vol", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
