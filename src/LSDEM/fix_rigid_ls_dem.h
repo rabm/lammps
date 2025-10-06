@@ -70,7 +70,7 @@ class FixRigidLSDEM : public FixRigid {
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
   double **global_grids;
   double *grid_scale;
-  double maxcut;
+  double maxcut, warncut;
   int dim, rcell;
 
   void read_gridfile_names(char **);

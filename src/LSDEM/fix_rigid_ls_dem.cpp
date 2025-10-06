@@ -42,7 +42,8 @@ using namespace RigidConst;
 
 enum {GLOBAL, DISTRIBUTED};
 
-static constexpr double EPSILON_INERTIA = 1e-7;
+static constexpr double EPSILON_INERTIA = 1.0e-7;
+static constexpr double BIG = 1.0e20;
 
 inline double FixRigidLSDEM::smeared_heaviside_step(double x)
 {
@@ -140,7 +141,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr)
 {
   comm_forward = 8;
-  maxcut = -1;
+  maxcut = warncut = -1;
   stored_flag = 0;
   distributed_flag = 0;
 
@@ -298,6 +299,7 @@ void FixRigidLSDEM::init()
 
     int ntotal;
     rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
+    warncut = maxcut - max_stride;
 
     if (distributed_flag) {
       for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
@@ -939,13 +941,10 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   // Danny: Does the below clarify? Or is there something else that is missing?
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ( (ind_x < 0) || (ind_y < 0) || ((domain->dimension == 3) && (ind_z < 0)) ) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  } else if ( (ind_x >= nrow - 1) || (ind_y >= ncol - 1) || ((domain->dimension == 3) && (ind_z >= nslice - 1))) {
-    // Point is outside the LS grid of grain j. Cannot compute distance or normal.
-    error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-  }
+  if ((ind_x < 0 || ind_x >= (nrow - 1)) || (ind_y < 0 || ind_y >= (ncol - 1)) ||
+      ((domain->dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
+    //error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
+    return BIG;
 
   // The normalised coordinates within the current grid cell.
   // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
@@ -954,14 +953,15 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
 
   //  Interpolate
+  int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
   if (grid_style[ibody] == DISTRIBUTED) {
     double **node_local_grid = atom->darray[index_grid_values];
 
     // Level-set values on the grid points in the lower z plane (ind_z)
-    double ls000 = node_local_grid[j][ind_x     + ind_y       * ncol + ind_z * ncol * nrow];
-    double ls100 = node_local_grid[j][ind_x + 1 + ind_y       * ncol + ind_z * ncol * nrow];
-    double ls010 = node_local_grid[j][ind_x     + (ind_y + 1) * ncol + ind_z * ncol * nrow];
-    double ls110 = node_local_grid[j][ind_x + 1 + (ind_y + 1) * ncol + ind_z * ncol * nrow];
+    double ls000 = node_local_grid[j][my_index];
+    double ls100 = node_local_grid[j][my_index + 1];
+    double ls010 = node_local_grid[j][my_index + ncol];
+    double ls110 = node_local_grid[j][my_index + 1 + ncol];
 
     // Bi-linear interpolation in the lower z plane (ind_z)
     double lsxy0 = ls000 + y_red * (ls010 - ls000) +
@@ -969,10 +969,10 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
     if (domain->dimension == 3) { // 3D
       // Level-set values on the grid points in the upper z plane (ind_z+1)
-      double ls001 = node_local_grid[j][ind_x     + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
-      double ls101 = node_local_grid[j][ind_x + 1 + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
-      double ls011 = node_local_grid[j][ind_x     + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
-      double ls111 = node_local_grid[j][ind_x + 1 + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
+      double ls001 = node_local_grid[j][my_index + ncol * nrow];
+      double ls101 = node_local_grid[j][my_index + 1 + ncol * nrow];
+      double ls011 = node_local_grid[j][my_index + ncol + ncol * nrow];
+      double ls111 = node_local_grid[j][my_index + 1 + ncol + ncol * nrow];
 
       // Bi-linear interpolation in the upper z plane (ind_z+1)
       double lsxy1 = ls001 + y_red * (ls011 - ls001) +
@@ -1010,7 +1010,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     double *my_grid = global_grids[my_index];
 
     // Level-set values on the grid points in the lower z plane (ind_z)
-    double ls000 = my_grid[ind_x     + ind_y       * ncol + ind_z * ncol * nrow];
+    double ls000 = my_grid[ind_x     + ind_y       * ncol + ind_z * ncol * nrow]; // todo: maybe update indices like above
     double ls100 = my_grid[ind_x + 1 + ind_y       * ncol + ind_z * ncol * nrow];
     double ls010 = my_grid[ind_x     + (ind_y + 1) * ncol + ind_z * ncol * nrow];
     double ls110 = my_grid[ind_x + 1 + (ind_y + 1) * ncol + ind_z * ncol * nrow];
@@ -1066,6 +1066,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   // Rotate normal back to global coordinates
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
+
+  //if (-dist > warncut) maybe warn that you are about to penetrate too far
 
   return dist;
 }
