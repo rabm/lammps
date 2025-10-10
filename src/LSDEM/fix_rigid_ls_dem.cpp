@@ -44,8 +44,8 @@ enum {GLOBAL, DISTRIBUTED};
 
 static constexpr double EPSILON_ITERATION = 1.0e-15;
 static constexpr double EPSILON_INERTIA = 1.0e-7;
-static constexpr int MAX_ITERATIONS = 100;
-static constexpr int RECOMMENDED_MAX_NGRID = 1000;
+static constexpr int MAX_ITERATIONS = 100; // For surface area integration
+static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid
 
 inline double FixRigidLSDEM::smeared_heaviside_step(double x)
 {
@@ -169,11 +169,12 @@ void FixRigidLSDEM::post_constructor()
   // Store positional information of grain on all atoms
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d2_ls_dem_omega 3 d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
+  index_ls_dem_omega = atom->find_custom("ls_dem_omega", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
@@ -189,7 +190,8 @@ void FixRigidLSDEM::init()
 
   // For updating center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
-  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_omega = atom->darray[index_ls_dem_omega];
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody, i, a;
 
@@ -201,10 +203,14 @@ void FixRigidLSDEM::init()
     grain_com[i][1] = xcm[ibody][1];
     grain_com[i][2] = xcm[ibody][2];
 
-    quat_lsdem[i][0] = quat[ibody][0];
-    quat_lsdem[i][1] = quat[ibody][1];
-    quat_lsdem[i][2] = quat[ibody][2];
-    quat_lsdem[i][3] = quat[ibody][3];
+    grain_quat[i][0] = quat[ibody][0];
+    grain_quat[i][1] = quat[ibody][1];
+    grain_quat[i][2] = quat[ibody][2];
+    grain_quat[i][3] = quat[ibody][3];
+
+    grain_omega[i][0] = omega[ibody][0];
+    grain_omega[i][1] = omega[ibody][1];
+    grain_omega[i][2] = omega[ibody][2];
 
     touch_id[i] = -1;
   }
@@ -411,7 +417,6 @@ void FixRigidLSDEM::init()
       for (ibody = 0; ibody < nbody; ibody++) {
         grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
 
-
         // DvdH: grid_min + computed_CoM = 0 should hold (up to half a grid stride or so).
         // JTC: can now compare/redefine xcm[ibody][a] and com_temp[a] as needed;
 
@@ -474,20 +479,25 @@ void FixRigidLSDEM::initial_integrate(int vflag)
 {
   FixRigid::initial_integrate(vflag);
 
-  double **x_lsdem = atom->darray[index_ls_dem_com];
-  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_omega = atom->darray[index_ls_dem_omega];
 
   int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
-    x_lsdem[i][0] = xcm[ibody][0];
-    x_lsdem[i][1] = xcm[ibody][1];
-    x_lsdem[i][2] = xcm[ibody][2];
+    grain_com[i][0] = xcm[ibody][0];
+    grain_com[i][1] = xcm[ibody][1];
+    grain_com[i][2] = xcm[ibody][2];
 
-    quat_lsdem[i][0] = quat[ibody][0];
-    quat_lsdem[i][1] = quat[ibody][1];
-    quat_lsdem[i][2] = quat[ibody][2];
-    quat_lsdem[i][3] = quat[ibody][3];
+    grain_quat[i][0] = quat[ibody][0];
+    grain_quat[i][1] = quat[ibody][1];
+    grain_quat[i][2] = quat[ibody][2];
+    grain_quat[i][3] = quat[ibody][3];
+
+    grain_omega[i][0] = omega[ibody][0];
+    grain_omega[i][1] = omega[ibody][1];
+    grain_omega[i][2] = omega[ibody][2];
   }
 }
 
@@ -496,22 +506,27 @@ void FixRigidLSDEM::initial_integrate(int vflag)
 int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
 {
   int i, j, m;
-  double **x_lsdem = atom->darray[index_ls_dem_com];
-  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_omega = atom->darray[index_ls_dem_omega];
 
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
     buf[m++] = ubuf(body[j]).d;
 
-    buf[m++] = x_lsdem[j][0];
-    buf[m++] = x_lsdem[j][1];
-    buf[m++] = x_lsdem[j][2];
+    buf[m++] = grain_com[j][0];
+    buf[m++] = grain_com[j][1];
+    buf[m++] = grain_com[j][2];
 
-    buf[m++] = quat_lsdem[j][0];
-    buf[m++] = quat_lsdem[j][1];
-    buf[m++] = quat_lsdem[j][2];
-    buf[m++] = quat_lsdem[j][3];
+    buf[m++] = grain_quat[j][0];
+    buf[m++] = grain_quat[j][1];
+    buf[m++] = grain_quat[j][2];
+    buf[m++] = grain_quat[j][3];
+
+    buf[m++] = grain_omega[j][0];
+    buf[m++] = grain_omega[j][1];
+    buf[m++] = grain_omega[j][2];
   }
   return m;
 }
@@ -521,22 +536,27 @@ int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag
 void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   int i, m, last;
-  double **x_lsdem = atom->darray[index_ls_dem_com];
-  double **quat_lsdem = atom->darray[index_ls_dem_quat];
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_omega = atom->darray[index_ls_dem_omega];
 
   m = 0;
   last = first + n;
   for (i = first; i < last; i++) {
     body[i] = (int) ubuf(buf[m++]).i;
 
-    x_lsdem[i][0] = buf[m++];
-    x_lsdem[i][1] = buf[m++];
-    x_lsdem[i][2] = buf[m++];
+    grain_com[i][0] = buf[m++];
+    grain_com[i][1] = buf[m++];
+    grain_com[i][2] = buf[m++];
 
-    quat_lsdem[i][0] = buf[m++];
-    quat_lsdem[i][1] = buf[m++];
-    quat_lsdem[i][2] = buf[m++];
-    quat_lsdem[i][3] = buf[m++];
+    grain_quat[i][0] = buf[m++];
+    grain_quat[i][1] = buf[m++];
+    grain_quat[i][2] = buf[m++];
+    grain_quat[i][3] = buf[m++];
+
+    grain_omega[i][0] = buf[m++];
+    grain_omega[i][1] = buf[m++];
+    grain_omega[i][2] = buf[m++];
   }
 }
 

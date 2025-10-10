@@ -49,6 +49,7 @@ class PairLSDEM : public Pair {
   int index_ls_grid;
   int index_ls_dem_com;
   int index_ls_dem_quat;
+  int index_ls_dem_omega;
   int index_ls_dem_vol;
   int index_ls_dem_node_area;
   int index_ls_dem_n;

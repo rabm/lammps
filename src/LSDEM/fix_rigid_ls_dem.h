@@ -52,6 +52,7 @@ class FixRigidLSDEM : public FixRigid {
   char *id_fix, *id_fix2;
   int index_ls_dem_com;
   int index_ls_dem_quat;
+  int index_ls_dem_omega;
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;

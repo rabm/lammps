@@ -78,6 +78,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
+  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
   double fs_tmp[3], fs_mag, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
   double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
@@ -114,6 +115,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // Grain quantities
   double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
+  double **grain_omega = atom->darray[index_ls_dem_omega]; // Need angular velocity for spin correction
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
   int *body = fix_rigid->get_body_array();
@@ -206,6 +208,9 @@ void PairLSDEM::compute(int eflag, int vflag)
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
+    iomegax = grain_omega[i][0];
+    iomegay = grain_omega[i][1];
+    iomegaz = grain_omega[i][2];
 
     ivol = grain_vol[ibody];
     areai = node_area[ibody];
@@ -229,10 +234,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       vzjtmp = v[j][2];
       jbody = body[j];
       jtag = tag[j];
+      jtype = type[j];
       jcomx = grain_com[j][0];
       jcomy = grain_com[j][1];
       jcomz = grain_com[j][2];
-      jtype = type[j];
+      jomegax = grain_omega[j][0];
+      jomegay = grain_omega[j][1];
+      jomegaz = grain_omega[j][2];
 
       jvol = grain_vol[jbody];
       areaj = node_area[jbody];
@@ -418,9 +426,30 @@ void PairLSDEM::compute(int eflag, int vflag)
         normal_old[2] = -n[j][2];
       }
 
-      // Adjust fs_tmp to account for rotation of the contact plane.
+      // Adjust fs_tmp to account for rotation of the contact normal and plane.
       if( MathExtra::len3(normal_old) > 0 ) {
+        // Account for tilt. This is an exact correction over the previous time step.
         MathExtra::cross3(normal_old, normal, k); // Rotation vector
+        sintheta = MathExtra::len3(k); // Rotation magnitude
+        if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
+          costheta = sqrt(1 - sintheta * sintheta);
+          k[0] = k[0] / sintheta; // Rotation axis
+          k[1] = k[1] / sintheta;
+          k[2] = k[2] / sintheta;
+          // Applying Rodrigues' rotation formula to get the rotated shear displacement
+          MathExtra::cross3(k, fs_tmp, term1);
+          term2 = MathExtra::dot3(k, fs_tmp) * (1.0 - costheta);
+          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
+          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
+          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
+        }
+
+        // Account for spin. This is an approximation using the half-step angular velocities.
+        // We furthermore decide to rotate around the new normal 
+        // to avoid introducing an erronous out-of-plane rotation.
+        k[0] = 0.5*(iomegax + jomegax)*dt*normal[0];
+        k[1] = 0.5*(iomegax + jomegax)*dt*normal[1];
+        k[2] = 0.5*(iomegax + jomegax)*dt*normal[2];
         sintheta = MathExtra::len3(k); // Rotation magnitude
         if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
           costheta = sqrt(1 - sintheta * sintheta);
@@ -765,6 +794,7 @@ void PairLSDEM::setup()
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
   index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
+  index_ls_dem_omega = atom->find_custom("ls_dem_omega", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
