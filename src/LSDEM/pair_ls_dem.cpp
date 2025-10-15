@@ -686,7 +686,7 @@ void PairLSDEM::coeff(int narg, char **arg)
   double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
   double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[8], false, lmp);
+  double cut_one = utils::numeric(FLERR, arg[8], false, lmp); // TODO: unchecked access to narg > 7 that is not guarded from the error check above
   double kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
   double etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
   double kt_1 = utils::numeric(FLERR, arg[11], false, lmp);

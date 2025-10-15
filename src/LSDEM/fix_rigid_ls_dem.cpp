@@ -459,6 +459,115 @@ void FixRigidLSDEM::init()
   }
 }
 
+/* ----------------------------------------------------------------------
+   compute initial fcm and torque on bodies, also initial virial
+   reset all particle velocities to be consistent with vcm and omega
+
+   Forces apply at the contact point between a surface atom and a level-set.
+   There is no LAMMPS structure for it so forces are applied on nearest atoms
+   Torques computed from forces applied at the atom position would be off.
+   To avoid this miscalculation:
+     1. exact torques are applied on (extended) atoms in pair_ls_dem
+     2. torques are not computed from forces on atoms (unlike Fix Rigid)
+
+     TODO: this is a lot of code duplication. A cleaner way to do that
+           could be to write little helper functions for computing torques from forces
+           and not call it for LSDEM
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::setup(int vflag)
+{
+  int i,n,ibody;
+
+  // fcm = force on center-of-mass of each rigid body
+
+  double **f = atom->f;
+  int nlocal = atom->nlocal;
+
+  for (ibody = 0; ibody < nbody; ibody++)
+    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
+
+  for (i = 0; i < nlocal; i++) {
+    if (body[i] < 0) continue;
+    ibody = body[i];
+    sum[ibody][0] += f[i][0];
+    sum[ibody][1] += f[i][1];
+    sum[ibody][2] += f[i][2];
+  }
+
+  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
+
+  for (ibody = 0; ibody < nbody; ibody++) {
+    fcm[ibody][0] = all[ibody][0];
+    fcm[ibody][1] = all[ibody][1];
+    fcm[ibody][2] = all[ibody][2];
+  }
+
+  // torque = torque on each rigid body
+
+  double **x = atom->x;
+
+  for (ibody = 0; ibody < nbody; ibody++)
+    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
+
+  // extended particles add their torque to torque of body
+
+  if (extended) {
+    double **torque_one = atom->torque;
+
+    for (i = 0; i < nlocal; i++) {
+      if (body[i] < 0) continue;
+      ibody = body[i];
+      if (eflags[i] & TORQUE) {
+        sum[ibody][0] += torque_one[i][0];
+        sum[ibody][1] += torque_one[i][1];
+        sum[ibody][2] += torque_one[i][2];
+      }
+    }
+  }
+
+  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
+
+  for (ibody = 0; ibody < nbody; ibody++) {
+    torque[ibody][0] = all[ibody][0];
+    torque[ibody][1] = all[ibody][1];
+    torque[ibody][2] = all[ibody][2];
+  }
+
+  // enforce 2d body forces and torques
+
+  if (domain->dimension == 2) enforce2d();
+
+  // zero langextra in case Langevin thermostat not used
+  // no point to calling post_force() here since langextra
+  // is only added to fcm/torque in final_integrate()
+
+  for (ibody = 0; ibody < nbody; ibody++)
+    for (i = 0; i < 6; i++) langextra[ibody][i] = 0.0;
+
+  // virial setup before call to set_v
+
+  v_init(vflag);
+
+  // set velocities from angmom & omega
+
+  for (ibody = 0; ibody < nbody; ibody++)
+    MathExtra::angmom_to_omega(angmom[ibody],ex_space[ibody],ey_space[ibody],
+                               ez_space[ibody],inertia[ibody],omega[ibody]);
+
+  set_v();
+
+  // guesstimate virial as 2x the set_v contribution
+
+  if (vflag_global)
+    for (n = 0; n < 6; n++) virial[n] *= 2.0;
+  if (vflag_atom) {
+    for (i = 0; i < nlocal; i++)
+      for (n = 0; n < 6; n++)
+        vatom[i][n] *= 2.0;
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
 void FixRigidLSDEM::setup_pre_force(int vflag)
@@ -557,6 +666,78 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
     grain_omega[i][0] = buf[m++];
     grain_omega[i][1] = buf[m++];
     grain_omega[i][2] = buf[m++];
+  }
+}
+
+/* ----------------------------------------------------------------------
+   Calculation of the forces and torques for LS-DEM grains
+   
+   Forces apply at the contact point between a surface atom and a level-set.
+   There is no LAMMPS structure for it so forces are applied on nearest atoms
+   Torques computed from forces applied at the atom position would be off.
+   To avoid this miscalculation:
+     1. exact torques are applied on (extended) atoms in pair_ls_dem
+     2. torques are not computed from forces on atoms (unlike Fix Rigid)
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::compute_forces_and_torques()
+{
+  int i,ibody;
+
+  // sum over atoms to get force and torque on rigid body
+
+  double **f = atom->f;
+  int nlocal = atom->nlocal;
+
+
+  for (ibody = 0; ibody < nbody; ibody++)
+    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
+
+  for (i = 0; i < nlocal; i++) {
+    if (body[i] < 0) continue;
+    ibody = body[i];
+
+    sum[ibody][0] += f[i][0];
+    sum[ibody][1] += f[i][1];
+    sum[ibody][2] += f[i][2];
+  }
+
+  if (extended) { // TODO: check and error out if particle not extended? Or no check at all (checked somewhere else, e.g., in init() ?
+    double **torque_one = atom->torque;
+
+    for (i = 0; i < nlocal; i++) {
+      if (body[i] < 0) continue;
+      ibody = body[i];
+
+      if (eflags[i] & TORQUE) {
+        sum[ibody][3] += torque_one[i][0];
+        sum[ibody][4] += torque_one[i][1];
+        sum[ibody][5] += torque_one[i][2];
+      }
+    }
+  }
+
+  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
+
+  // No Langevin thermostat forces included
+
+  for (ibody = 0; ibody < nbody; ibody++) {
+    fcm[ibody][0] = all[ibody][0];
+    fcm[ibody][1] = all[ibody][1];
+    fcm[ibody][2] = all[ibody][2];
+    torque[ibody][0] = all[ibody][3];
+    torque[ibody][1] = all[ibody][4];
+    torque[ibody][2] = all[ibody][5];
+  }
+
+  // add gravity force to COM of each body
+
+  if (id_gravity) {
+    for (ibody = 0; ibody < nbody; ibody++) {
+      fcm[ibody][0] += gvec[0]*masstotal[ibody];
+      fcm[ibody][1] += gvec[1]*masstotal[ibody];
+      fcm[ibody][2] += gvec[2]*masstotal[ibody];
+    }
   }
 }
 

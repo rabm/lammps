@@ -869,7 +869,7 @@ void FixRigid::setup(int vflag)
     }
   }
 
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
+  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world); // TODO: why do we all-recude twice on the 6-vector ? computing forces first and then torques? That seems like a waste?
 
   for (ibody = 0; ibody < nbody; ibody++) {
     torque[ibody][0] = all[ibody][0];
