@@ -417,8 +417,14 @@ void FixRigidLSDEM::init()
       for (ibody = 0; ibody < nbody; ibody++) {
         grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
 
-        // DvdH: grid_min + computed_CoM = 0 should hold (up to half a grid stride or so).
-        // JTC: can now compare/redefine xcm[ibody][a] and com_temp[a] as needed;
+        // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
+        // A misalignment would mean that the forces and rotations are applied to the wrong point in
+        // space, leading to integration issues.
+        if( sqrt( (grid_min[ibody][0]+com_temp[0])**2 + (grid_min[ibody][1]+com_temp[1])**2 
+          + (grid_min[ibody][2]+com_temp[2])**2 ) > (0.5 * grid_stride[ibody])
+        ){
+          error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input file!");
+        }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
         for (a = 0; a < 3; a++)
@@ -430,7 +436,7 @@ void FixRigidLSDEM::init()
 
         // Calculate eigen system of inertia tensor
         int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
-        if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS gid");
+        if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
         for (a = 0; a < 3; a++) {
           ex_space[ibody][a] = evectors[a][0];
@@ -878,6 +884,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   // open file and read and parse first non-empty, non-comment line containing the 2 or 3 grid dimensions
   // Broadcast to other procs
   // TODO: there must be a better way to read the first 2,3 lines
+  // DvdH: The names grid_scale_buf and grid_size_buf are a bit confusing as I would expected them swapped
   int nlines = 1;
   const char* gridfile = filename.c_str();
   if (comm->me == 0) {
@@ -928,7 +935,9 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   if (which == 0) {
     grid_stride[ibody] = grid_size_buf[0] * grid_scale[ibody];
     for (int idim = 0; idim < dim; idim++) {
+      // The grid_size_buf is [stride, xmin, ymin, zmin]. The grid_scale is the scaling factor.
       grid_min[ibody][idim] = grid_size_buf[idim + 1] * grid_scale[ibody];
+      // The grid_shape_buf is [nx, ny, nz]
       grid_size[ibody][idim] = (int) grid_shape_buf[idim];
     }
 
@@ -1020,9 +1029,6 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
   com_temp[0] /= volume;
   com_temp[1] /= volume;
   com_temp[2] /= volume;
-
-  // We should check if grain_com + grid_min(local) = 0. If this is not true, then the supplied
-  // CoM and computed CoM are not the same, which would give (integration) issues.
 
   // Computing the inertia tensor (a second loop is unavoidable)
   double delx, dely, delz;
