@@ -428,28 +428,17 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Adjust fs_tmp to account for rotation of the contact normal and plane.
       if( MathExtra::len3(normal_old) > 0 ) {
-        // Account for tilt. This is an exact correction over the previous time step.
+        // Account for tilt. This is an exact correction over rotation from the previous
+        // to the current time step.
         MathExtra::cross3(normal_old, normal, k); // Rotation vector
-        sintheta = MathExtra::len3(k); // Rotation magnitude
-        if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
-          costheta = sqrt(1 - sintheta * sintheta);
-          k[0] = k[0] / sintheta; // Rotation axis
-          k[1] = k[1] / sintheta;
-          k[2] = k[2] / sintheta;
-          // Applying Rodrigues' rotation formula to get the rotated shear displacement
-          MathExtra::cross3(k, fs_tmp, term1);
-          term2 = MathExtra::dot3(k, fs_tmp) * (1.0 - costheta);
-          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
-          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
-          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
-        }
-
         // Account for spin. This is an approximation using the half-step angular velocities.
-        // We furthermore decide to rotate around the new normal 
-        // to avoid introducing an erronous out-of-plane rotation.
-        k[0] = 0.5*(iomegax + jomegax)*dt*normal[0];
-        k[1] = 0.5*(iomegax + jomegax)*dt*normal[1];
-        k[2] = 0.5*(iomegax + jomegax)*dt*normal[2];
+        // We furthermore decide to rotate around the new normal to avoid introducing an 
+        // erronous out-of-plane rotation.
+        k[0] += 0.5*(iomegax + jomegax)*dt*normal[0];
+        k[1] += 0.5*(iomegax + jomegax)*dt*normal[1];
+        k[2] += 0.5*(iomegax + jomegax)*dt*normal[2];
+
+        // Applying the rotation
         sintheta = MathExtra::len3(k); // Rotation magnitude
         if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
           costheta = sqrt(1 - sintheta * sintheta);
