@@ -420,8 +420,9 @@ void FixRigidLSDEM::init()
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
         // A misalignment would mean that the forces and rotations are applied to the wrong point in
         // space, leading to integration issues.
-        if( sqrt( (grid_min[ibody][0]+com_temp[0])**2 + (grid_min[ibody][1]+com_temp[1])**2 
-          + (grid_min[ibody][2]+com_temp[2])**2 ) > (0.5 * grid_stride[ibody])
+        if( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
+                  (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
+                  (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
         ){
           error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input file!");
         }
