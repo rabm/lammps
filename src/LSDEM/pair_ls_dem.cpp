@@ -428,15 +428,15 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Adjust fs_tmp to account for rotation of the contact normal and plane.
       if( MathExtra::len3(normal_old) > 0 ) {
-        // Account for tilt. This is an exact correction over rotation from the previous
-        // to the current time step.
+        // Account for tilt. This is an exact correction over rotation of the normal 
+        // from the previous to the current time step.
         MathExtra::cross3(normal_old, normal, k); // Rotation vector
         // Account for spin. This is an approximation using the half-step angular velocities.
         // We furthermore decide to rotate around the new normal to avoid introducing an 
         // erronous out-of-plane rotation.
         k[0] += 0.5*(iomegax + jomegax)*dt*normal[0];
-        k[1] += 0.5*(iomegax + jomegax)*dt*normal[1];
-        k[2] += 0.5*(iomegax + jomegax)*dt*normal[2];
+        k[1] += 0.5*(iomegay + jomegay)*dt*normal[1];
+        k[2] += 0.5*(iomegaz + jomegaz)*dt*normal[2];
 
         // Applying the rotation
         sintheta = MathExtra::len3(k); // Rotation magnitude
