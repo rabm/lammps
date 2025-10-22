@@ -80,9 +80,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
-  double fs_tmp[3], fs_mag, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
+  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
   double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
-  double normal_old[3], tangent_old[3], areai, areaj;
+  double normal_old[3], tangent_old[3], fs_mag_add, areai, areaj;
 
   // Currently require:
   //   Newton pair off.
@@ -322,9 +322,9 @@ void PairLSDEM::compute(int eflag, int vflag)
         continue;
       }
 
-      //////////////////
-      // Normal force //
-      //////////////////
+      ///////////////////
+      // Normal stress //
+      ///////////////////
 
       // Elastic spring
       // With positive penetration distance u
@@ -363,22 +363,15 @@ void PairLSDEM::compute(int eflag, int vflag)
         //fn_mag -= fn2_mag[i]
       }
 
-      // Multiply by node area to make the force independent of discretisation (fn_mag was a stress)
-      if (calc_force_of_i_on_j) { // Node of i.
-        fn_mag *= areai;
-      } else { // Node of j.
-        fn_mag *= areaj;
-      }
-
       // The pair force vector should point j->i because of repulsion.
       // With normal n (i->j), we have: F_{j on i} = f(ls_value) = - fn_mag * n.
       fpair[0] = - fn_mag * normal[0];
       fpair[1] = - fn_mag * normal[1];
       fpair[2] = - fn_mag * normal[2];
 
-      ///////////////////
-      // Tangent force //
-      ///////////////////
+      ////////////////////
+      // Tangent stress //
+      ////////////////////
 
       // Tangent force only exists if mu > 0 and kt > 0
       //if ( (kt[itype][jtype] > 0) && (mu[itype][jtype] > 0) ){
@@ -408,7 +401,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
       }
 
-      // Get old shear force and old node normal
+      // Get old elastic shear stress and old node normal
       if (calc_force_of_i_on_j) { // Use node of i.
         fs_tmp[0] = fs[i][0];
         fs_tmp[1] = fs[i][1];
@@ -459,6 +452,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       v_rel_t[1] = v_rel[1] - v_rel_n_mag * normal[1];
       v_rel_t[2] = v_rel[2] - v_rel_n_mag * normal[2];
       v_rel_t_mag = MathExtra::len3(v_rel_t);
+      // We note that this way of calculating the shear velocity is an approximation.
+      // The error lies mainly in the fact that the velocity difference was computed
+      // between the surface nodes, meaning that there is a small arm length that has
+      // not been accounted for. As a consequence, this breaks objectivity since v_rel_t
+      // will increase with the rigid body rotation omega_b. The extra arm length does
+      // not unjustifiably increase v_rel_t in the absence of rigid body motion, since
+      // the surface can indeed be said to move at omega x R.
 
       // Tangent normal
       if (v_rel_t_mag > EPSILON) {
@@ -474,71 +474,27 @@ void PairLSDEM::compute(int eflag, int vflag)
         tangent[2] = fs_tmp[2] * v_rel_t_mag_inv;
       }
 
-      // Magnitude increment of the shear displacement
-      shear_incr = v_rel_t_mag*dt;
+      // Elastic spring shear stress increment
+      shear_incr = kt[itype][jtype] * v_rel_t_mag * dt;
 
-      // Elastic spring
-      fs_mag_trial = kt[itype][jtype] * shear_incr;
-
-      // Viscous damping or dashpot (parallel, only resistive, no tensile force if v_rel_t_mag < 0)
-      if(etat[itype][jtype] > 0) {
-        fs_mag_trial += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
-      }
-
-      // Maxwell arm (1st, parallel, only repulsive)
-      if (etan1[itype][jtype] > 0.0) { // preprocessing guarantees that decayt1 > 0 if etat1 > 0
-        // Get the old tangent vector
-        v_rel_t_mag_inv = 1.0 / MathExtra::len3(fs_tmp);
-        tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
-        tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
-        tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
-        // The dot(t_old,t) part accounts for the in-plane rotation of the tangent force.
-        // When the shear direction reverses, it correctly preserves the direction of the old force.
-        // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
-        // We could track the full vector, but it would cost more memory (and accessing time)
-        if (calc_force_of_i_on_j) { // Node of i.
-          fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old, tangent)
-            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
-          fs_mag_trial += fs1[i];
-        } else { // Node of j.
-          fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old, tangent)
-            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
-          fs_mag_trial += fs1[j];
-        }
-        // Maxwell arm (2nd)
-        // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
-        // fs_mag -= fs2_mag[i]
-      }
-
-      // Multiply by node area to make the force independent of discretisation (fs_mag_trial was a stress)
-      if (calc_force_of_i_on_j) { // Node of i.
-        fs_mag_trial *= areai;
-      } else { // Node of j.
-        fs_mag_trial *= areaj;
-      }
-
-      // Total shear or tangent force update (repulsive again)
-      fs_tmp[0] -= fs_mag_trial * tangent[0];
-      fs_tmp[1] -= fs_mag_trial * tangent[1];
-      fs_tmp[2] -= fs_mag_trial * tangent[2];
-      // Update trial shear force magnitude
+      // New elastic force
+      fs_tmp[0] -= shear_incr * tangent[0];
+      fs_tmp[1] -= shear_incr * tangent[1];
+      fs_tmp[2] -= shear_incr * tangent[2];
       fs_mag_trial = MathExtra::len3(fs_tmp);
 
+      // Coulomb limit
+      fs_max = mu[itype][jtype] * fn_mag;
+
       // Perfectly plastic Coulomb friction criterion
-      fs_mag = std::min(mu[itype][jtype] * fn_mag, fs_mag_trial);
+      fs_mag = std::min(fs_max, fs_mag_trial);
 
-      if (fs_mag > 0) {
-        // Final shear or tangential force
-        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
-        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
-        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
-        // Add shear force to the pair force vector
-        fpair[0] += fs_tmp[0];
-        fpair[1] += fs_tmp[1];
-        fpair[2] += fs_tmp[2];
-      }
+      // Final shear or tangential stress
+      fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+      fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+      fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
 
-      // Update saved shear force and normal
+      // Update saved elastic shear stress and normal
       if (calc_force_of_i_on_j) { // Node of i.
         fs[i][0] = fs_tmp[0];
         fs[i][1] = fs_tmp[1];
@@ -556,11 +512,76 @@ void PairLSDEM::compute(int eflag, int vflag)
         n[j][2] = -normal[2];
       }
 
+      // Placeholder for viscous and viscoelastic stress components
+      fs_mag_add = 0.0; 
+
+      // Viscous damping or dashpot (parallel, only repulsive, no tensile force if v_rel_t_mag < 0)
+      if(etat[itype][jtype] > 0) {
+        fs_add += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
+      }
+
+      // Maxwell arm (1st, parallel, only repulsive)
+      if (etan1[itype][jtype] > 0.0) { // preprocessing guarantees that decayt1 > 0 if etat1 > 0
+        // Get the old tangent vector
+        v_rel_t_mag_inv = 1.0 / MathExtra::len3(fs_tmp);
+        tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
+        tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
+        tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
+        // The dot(t_old,t) part accounts for the in-plane rotation of the tangent force.
+        // When the shear direction reverses, it correctly preserves the direction of the old force.
+        // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
+        // We could track the full vector, but it would cost more memory (and accessing time)
+        if (calc_force_of_i_on_j) { // Node of i.
+          fs1[i] += decayt1[itype][jtype] * fs1[i] * MathExtra::dot3(tangent_old, tangent)
+            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+          fs_mag_add += fs1[i];
+        } else { // Node of j.
+          fs1[j] += decayt1[itype][jtype] * fs1[j] * MathExtra::dot3(tangent_old, tangent)
+            + etat1[itype][jtype] * (1 - decayt1[itype][jtype]) * v_rel_t_mag; // v_rel_t_mag is always positive
+          fs_mag_add += fs1[j];
+        }
+        // Maxwell arm (2nd)
+        // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
+        // fs_mag -= fs2_mag[i]
+      }
+
+      // Add potential viscous and viscoelastic components to shear stress (repulsive again)
+      fs_tmp[0] -= fs_mag_add * tangent[0];
+      fs_tmp[1] -= fs_mag_add * tangent[1];
+      fs_tmp[2] -= fs_mag_add * tangent[2];
+      // Update trial shear stress magnitude
+      fs_mag_trial = MathExtra::len3(fs_tmp);
+
+      // Re-apply plastic Coulomb friction criterion
+      fs_mag = std::min(fs_max, fs_mag_trial);
+
+      if (fs_mag > 0) {
+        // Final shear or tangential stress
+        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
+        // Add shear stress to the pair force stress
+        fpair[0] += fs_tmp[0];
+        fpair[1] += fs_tmp[1];
+        fpair[2] += fs_tmp[2];
+      }
+
       //} // Check if kt > 0 and mu > 0
 
       //////////////////////////////
       // Total forces and torques //
       //////////////////////////////
+
+      // Multiply by node area to make the force independent of discretisation (fpair was a stress)
+      if (calc_force_of_i_on_j) { // Node of i.
+        fpair[0] *= areai;
+        fpair[1] *= areai;
+        fpair[2] *= areai;
+      } else { // Node of j.
+        fpair[0] *= areaj;
+        fpair[1] *= areaj;
+        fpair[2] *= areaj;
+      }
 
       // Force on grain i
       f[i][0] += fpair[0];
