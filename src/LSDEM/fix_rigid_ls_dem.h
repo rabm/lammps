@@ -33,6 +33,7 @@ class FixRigidLSDEM : public FixRigid {
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;
   void init() override;
+  void setup(int) override;
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
@@ -78,6 +79,7 @@ class FixRigidLSDEM : public FixRigid {
   double maxcut, warncut;
   int dim, rcell;
 
+  void compute_forces_and_torques() override;
   void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
   double compute_grid_properties(int *, double, double *, double *, double *, std::string);
