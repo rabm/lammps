@@ -52,8 +52,8 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
     ez_space(nullptr), angmom(nullptr), omega(nullptr), torque(nullptr), quat(nullptr),
     imagebody(nullptr), fflag(nullptr), tflag(nullptr), langextra(nullptr), sum(nullptr),
     all(nullptr), remapflag(nullptr), xcmimage(nullptr), eflags(nullptr), orient(nullptr),
-    dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), random(nullptr),
-    avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
+    dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), id_no_grav(nullptr), apply_grav(nullptr),
+    random(nullptr), avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
 {
   int i, ibody;
 
@@ -320,6 +320,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
 
   inpfile = nullptr;
   id_gravity = nullptr;
+  id_no_grav = nullptr;
   id_dilate = nullptr;
 
   pcouple = NONE;
@@ -561,8 +562,24 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
       id_gravity = utils::strdup(arg[iarg + 1]);
       iarg += 2;
 
+    } else if (strcmp(arg[iarg], "exclude/gravity") == 0) {
+      if (iarg + 2 > narg)
+        utils::missing_cmd_args(FLERR, fmt::format("fix {} exclude/gravity", style), error);
+      delete[] id_no_grav;
+      id_no_grav = utils::strdup(arg[iarg + 1]);
+      int inograv = group->find(id_no_grav);
+      if (inograv == -1)
+        error->all(FLERR, "Fix {} exclude/gravity group ID {} does not exist", style, id_dilate);
+      iarg += 2;
+
     } else
       error->all(FLERR, "Illegal fix {} command", style);
+  }
+
+  if (id_no_grav) {
+    if (!id_gravity)
+      error->all(FLERR, "Cannot use exclude/gravity keyword without specifying a gravity fix");
+    memory->create(apply_grav, nbody, "rigid:apply_grav");
   }
 
   // clang-format off
@@ -636,6 +653,7 @@ FixRigid::~FixRigid()
   delete[] inpfile;
   delete[] id_dilate;
   delete[] id_gravity;
+  delete[] id_no_grav;
 
   memory->destroy(mol2body);
   memory->destroy(body2mol);
@@ -784,6 +802,15 @@ void FixRigid::init()
   ndof -= nlinear;
   if (ndof > 0.0) tfactor = force->mvv2e / (ndof * force->boltz);
   else tfactor = 0.0;
+
+  // recheck that exclude/gravity group has not been deleted
+
+  if (id_no_grav) {
+    int inograv = group->find(id_no_grav);
+    if (inograv == -1)
+      error->all(FLERR,"Fix {} exclude/gravity group ID does not exist", style);
+    no_grav_group_bit = group->bitmask[inograv];
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -908,6 +935,20 @@ void FixRigid::setup(int vflag)
     for (i = 0; i < nlocal; i++)
       for (n = 0; n < 6; n++)
         vatom[i][n] *= 2.0;
+  }
+
+  if (id_no_grav) {
+    for (ibody = 0; ibody < nbody; ibody++)
+      apply_grav[ibody] = 1;
+    int *mask = atom->mask;
+    for (i = 0; i < nlocal; i++) {
+      if (body[i] < 0) continue;
+      ibody = body[i];
+      if (mask[i] & no_grav_group_bit)
+        apply_grav[ibody] = 0;
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE,apply_grav,nbody,MPI_INT,MPI_MIN,world);
   }
 }
 
@@ -1211,9 +1252,11 @@ void FixRigid::compute_forces_and_torques()
 
   if (id_gravity) {
     for (ibody = 0; ibody < nbody; ibody++) {
-      fcm[ibody][0] += gvec[0]*masstotal[ibody];
-      fcm[ibody][1] += gvec[1]*masstotal[ibody];
-      fcm[ibody][2] += gvec[2]*masstotal[ibody];
+      if (apply_grav[ibody]) {
+        fcm[ibody][0] += gvec[0]*masstotal[ibody];
+        fcm[ibody][1] += gvec[1]*masstotal[ibody];
+        fcm[ibody][2] += gvec[2]*masstotal[ibody];
+      }
     }
   }
 }

@@ -131,8 +131,11 @@ class FixRigid : public Fix {
   int dilate_group_bit;    // mask for dilation group
   char *id_dilate;         // group name to dilate
 
-  char *id_gravity;    // ID of fix gravity command to add gravity forces
-  double *gvec;        // ptr to gravity vector inside the fix
+  char *id_gravity;        // ID of fix gravity command to add gravity forces
+  double *gvec;            // ptr to gravity vector inside the fix
+  int no_grav_group_bit;   // mask for gravity exclusion group
+  char *id_no_grav;        // group name to exclude from fix gravity
+  int *apply_grav;         // whether each rigid body uses gravity
 
   class RanMars *random;
   class AtomVecEllipsoid *avec_ellipsoid;
