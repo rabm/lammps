@@ -1092,7 +1092,7 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 		area = (vol_out - vol_in) / (2.0 * epsilon);
 		diff = fabs( (area - area_old) / area_old );
     // Test for convergence
-		if (diff < EPSILON) // TODO: Declare hard-coded tolerance value based on global variable?
+		if (diff < EPSILON_ITERATION) // TODO: Declare hard-coded tolerance value based on global variable?
 			break;
 		area_old = area;
 		iter++;
