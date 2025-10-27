@@ -428,11 +428,11 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Adjust fs_tmp to account for rotation of the contact normal and plane.
       if( MathExtra::len3(normal_old) > 0 ) {
-        // Account for tilt. This is an exact correction over rotation of the normal 
+        // Account for tilt. This is an exact correction over rotation of the normal
         // from the previous to the current time step.
         MathExtra::cross3(normal_old, normal, k); // Rotation vector
         // Account for spin. This is an approximation using the half-step angular velocities.
-        // We furthermore decide to rotate around the new normal to avoid introducing an 
+        // We furthermore decide to rotate around the new normal to avoid introducing an
         // erronous out-of-plane rotation.
         k[0] += 0.5*(iomegax + jomegax)*dt*normal[0];
         k[1] += 0.5*(iomegay + jomegay)*dt*normal[1];
@@ -440,7 +440,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
         // Applying the rotation
         sintheta = MathExtra::len3(k); // Rotation magnitude
-        if(sintheta > EPSILON){ // Don't apply rotation if magnitude is tiny
+        if (sintheta > EPSILON) { // Don't apply rotation if magnitude is tiny
           costheta = sqrt(1 - sintheta * sintheta);
           k[0] = k[0] / sintheta; // Rotation axis
           k[1] = k[1] / sintheta;
@@ -462,13 +462,22 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Tangent normal
       if (v_rel_t_mag > EPSILON) {
-        v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
+        if (v_rel_t_mag != 0) {
+          v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
+        } else {
+          v_rel_t_mag_inv = 0.0;
+        }
         tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
         tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
         tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
       } else {
         // Backup: Use old shear force direction as tangent.
-        v_rel_t_mag_inv = 1.0/MathExtra::len3(fs_tmp);
+        double norm = MathExtra::len3(fs_tmp);
+        if (norm != 0) {
+          v_rel_t_mag_inv = 1.0 / norm;
+        } else {
+          v_rel_t_mag_inv = 0.0;
+        }
         tangent[0] = fs_tmp[0] * v_rel_t_mag_inv;
         tangent[1] = fs_tmp[1] * v_rel_t_mag_inv;
         tangent[2] = fs_tmp[2] * v_rel_t_mag_inv;
@@ -488,7 +497,12 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Maxwell arm (1st, parallel, only repulsive)
       if (etan1[itype][jtype] > 0.0) { // preprocessing guarantees that decayt1 > 0 if etat1 > 0
         // Get the old tangent vector
-        v_rel_t_mag_inv = 1.0 / MathExtra::len3(fs_tmp);
+        double norm = MathExtra::len3(fs_tmp);
+        if (norm != 0) {
+          v_rel_t_mag_inv = 1.0 / norm;
+        } else {
+          v_rel_t_mag_inv = 0.0;
+        }
         tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
         tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
         tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
@@ -527,7 +541,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Perfectly plastic Coulomb friction criterion
       fs_mag = std::min(mu[itype][jtype] * fn_mag, fs_mag_trial);
 
-      if (fs_mag > 0) {
+      if (fs_mag > 0 && fs_mag_trial != 0) {
         // Final shear or tangential force
         fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
         fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
