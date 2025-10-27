@@ -43,7 +43,7 @@ using namespace RigidConst;
 enum {GLOBAL, DISTRIBUTED};
 
 static constexpr double EPSILON_ITERATION = 1.0e-15;
-static constexpr double EPSILON_INERTIA = 1.0e-7;
+static constexpr double EPSILON_INERTIA = 5.0e-4; // 0.5%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
 static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid
 
@@ -1092,7 +1092,7 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 		area = (vol_out - vol_in) / (2.0 * epsilon);
 		diff = fabs( (area - area_old) / area_old );
     // Test for convergence
-		if (diff < EPSILON) // TODO: Declare hard-coded tolerance value based on global variable?
+		if (diff < EPSILON_ITERATION) // TODO: Declare hard-coded tolerance value based on global variable?
 			break;
 		area_old = area;
 		iter++;
