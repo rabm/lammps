@@ -78,7 +78,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
-  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz;
+  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
   double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
   double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
@@ -427,9 +427,13 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Account for spin. This is an approximation using the half-step angular velocities.
         // We furthermore decide to rotate around the new normal to avoid introducing an
         // erronous out-of-plane rotation.
-        k[0] += 0.5*(iomegax + jomegax)*dt*normal[0];
-        k[1] += 0.5*(iomegay + jomegay)*dt*normal[1];
-        k[2] += 0.5*(iomegaz + jomegaz)*dt*normal[2];
+        spin_norm = 0.5*dt*( 
+          (iomegax + jomegax)*normal[0] + 
+          (iomegay + jomegay)*normal[1] + 
+          (iomegaz + jomegaz)*normal[2]); // 0.5*dt*(omegai+omegaj) \dot n
+        k[0] += spin_norm*normal[0];
+        k[1] += spin_norm*normal[1];
+        k[2] += spin_norm*normal[2];
 
         // Applying the rotation
         sintheta = MathExtra::len3(k); // Rotation magnitude
@@ -526,7 +530,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Viscous damping or dashpot (parallel, only repulsive, no tensile force if v_rel_t_mag < 0)
       if(etat[itype][jtype] > 0) {
-        fs_add += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
+        fs_mag_add += etat[itype][jtype] * MAX(v_rel_t_mag, 0.0);
       }
 
       // Maxwell arm (1st, parallel, only repulsive)
