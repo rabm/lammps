@@ -573,6 +573,20 @@ void FixRigidLSDEM::setup(int vflag)
       for (n = 0; n < 6; n++)
         vatom[i][n] *= 2.0;
   }
+
+  if (id_no_grav) {
+    for (ibody = 0; ibody < nbody; ibody++)
+      apply_grav[ibody] = 1;
+    int *mask = atom->mask;
+    for (i = 0; i < nlocal; i++) {
+      ibody = body[i];
+      if (ibody < 0) continue;
+      if (mask[i] & no_grav_group_bit)
+        apply_grav[ibody] = 0;
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE,apply_grav,nbody,MPI_INT,MPI_MIN,world);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -678,7 +692,7 @@ void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 
 /* ----------------------------------------------------------------------
    Calculation of the forces and torques for LS-DEM grains
-   
+
    Forces apply at the contact point between a surface atom and a level-set.
    There is no LAMMPS structure for it so forces are applied on nearest atoms
    Torques computed from forces applied at the atom position would be off.
@@ -741,9 +755,11 @@ void FixRigidLSDEM::compute_forces_and_torques()
 
   if (id_gravity) {
     for (ibody = 0; ibody < nbody; ibody++) {
-      fcm[ibody][0] += gvec[0]*masstotal[ibody];
-      fcm[ibody][1] += gvec[1]*masstotal[ibody];
-      fcm[ibody][2] += gvec[2]*masstotal[ibody];
+      if (apply_grav[ibody]) {
+        fcm[ibody][0] += gvec[0]*masstotal[ibody];
+        fcm[ibody][1] += gvec[1]*masstotal[ibody];
+        fcm[ibody][2] += gvec[2]*masstotal[ibody];
+      }
     }
   }
 }

@@ -942,8 +942,8 @@ void FixRigid::setup(int vflag)
       apply_grav[ibody] = 1;
     int *mask = atom->mask;
     for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
       ibody = body[i];
+      if (ibody < 0) continue;
       if (mask[i] & no_grav_group_bit)
         apply_grav[ibody] = 0;
     }
