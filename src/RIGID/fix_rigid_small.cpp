@@ -74,6 +74,7 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   dof_flag = 1;
   stores_ids = 1;
   centroidstressflag = CENTROID_AVAIL;
+  n_extra_attributes = 0;
 
   // perform initial allocation of atom-based arrays
   // register with Atom class
@@ -2536,7 +2537,7 @@ void FixRigidSmall::readfile(int which, double **array, int *inbody)
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != ATTRIBUTE_PERBODY)
+    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
       error->all(FLERR,"Incorrect rigid body format in fix {} file", style);
 
     // loop over lines of rigid body attributes

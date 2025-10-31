@@ -162,6 +162,8 @@ class FixRigidSmall : public Fix {
   int pcouple, pstyle;
   int p_chain;
 
+  int n_extra_attributes;   // # extra attributes a child class may have in input file
+
   int allremap;            // remap all atoms
   int dilate_group_bit;    // mask for dilation group
   char *id_dilate;         // group name to dilate
