@@ -332,6 +332,7 @@ void FixRigidLSDEM::init()
       filename = pair.first;
       // DvdH: Why is ibody here -1? temp_grid_values needs to change!
       // We also must do this again for all bodies, because if grid_scale changes, temp_grid_values also changes.
+      // Scaling is now applied in read_gridfile(), but maybe we can better apply it here so that we only have to load the grid file once?
       read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
 
       need_distributed = 0;
