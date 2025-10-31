@@ -215,11 +215,13 @@ void FixRigidLSDEM::init()
     touch_id[i] = -1;
   }
 
-  // Copy maximum cutoff
+  // Copy maximum cutoff from pair style
+  // This will determine radius of level set around nodes in the distributed case.
+  // TBD: Some (automatic?) optimisation.
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
     error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
-  maxcut = pair->maxcut;
+  maxcut = pair->maxcut; 
 
   int index_global = 0;
   int distributed_flag = 0;
@@ -239,8 +241,8 @@ void FixRigidLSDEM::init()
     int max_grid_size[3] = {0, 0, 0};
     double max_stride = 0;
     for (ibody = 0; ibody < nbody; ibody++) {
-      filename.assign(gridfiles[ibody]);
-      read_gridfile(ibody, 0, filename, grid_size, nullptr);
+      filename.assign(gridfiles[ibody]); // Retrieve file name
+      read_gridfile(ibody, 0, filename, grid_size, nullptr); // Get only grid sizes (tag 0)
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
@@ -276,6 +278,7 @@ void FixRigidLSDEM::init()
 
     int ntotal;
     rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
+    // DvdH: doesn't min_stride make more sense since a smaller stride will need a larger radius of cells around the node?
     warncut = maxcut - max_stride;
 
     for (ibody = 0; ibody < nbody; ibody++)
@@ -284,7 +287,7 @@ void FixRigidLSDEM::init()
       grid_nnodes[body[i]] += 1;
 
     if (distributed_flag) {
-      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?)
+      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?) DvdH: I think +1 is not needed, but result should be cast to int?
       if (dim == 2) subgrid_size[2] = 1;
       id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
       ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
@@ -317,6 +320,7 @@ void FixRigidLSDEM::init()
 
     // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
     //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
+    // DvdH: The LS grid should ALWAYS be axis-aligned. Something else should be giving an orientation to which we rotate just after loading.
 
     double *ls_val;
     double delx, dely, delz;
@@ -324,8 +328,10 @@ void FixRigidLSDEM::init()
     int need_distributed, need_global;
     int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    for (const auto& pair : file_map) {
+    for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
+      // DvdH: Why is ibody here -1? temp_grid_values needs to change!
+      // We also must do this again for all bodies, because if grid_scale changes, temp_grid_values also changes.
       read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
 
       need_distributed = 0;
@@ -349,7 +355,7 @@ void FixRigidLSDEM::init()
           ibody = body[i];
 
           if (pair.second.find(ibody) == pair.second.end())
-            continue; // Ideally would have list of all atoms in a rigid body... not sure if   exists...
+            continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
           nx = grid_size[ibody][0];
           ny = grid_size[ibody][1];
@@ -376,7 +382,7 @@ void FixRigidLSDEM::init()
           iz_node = (dim == 3) ? int(delz / stride) : 0;
 
           // index of local grid minimum in global grid.
-          // JBC: Can this be negative if not enough padding of the LS grid relative to grain     surface? i.e. ix < rcell ?
+          // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
           index_grid_min_local[0] = ix_node - rcell;
           index_grid_min_local[1] = iy_node - rcell;
           index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
@@ -384,7 +390,7 @@ void FixRigidLSDEM::init()
           // location of local grid minimum relative to CoM
           grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
           grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
-          grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * stride + grid_min[ibody]    [2] : 0.0;
+          grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * stride + grid_min[ibody][2] : 0.0;
 
           for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
             for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
@@ -398,14 +404,14 @@ void FixRigidLSDEM::init()
                 if (ix_global < 0 || ix_global >= nx ||
                     iy_global < 0 || iy_global >= ny ||
                     iz_global < 0 || iz_global >= nz)
-                  error->all(FLERR, "Level set does not include a large enough buffer for the   cutoff");
+                  error->all(FLERR, "Level set does not include a large enough buffer for the distributed grid cutoff.");
 
                 index_global = ix_global + iy_global * nx + iz_global * nx * ny;
                 index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
 
                 // Final sanity check (defensive)
                 if (index_global < 0 || index_global >= ntotal)
-                  error->all(FLERR, "Level set does not include a large enough buffer for the   cutoff");
+                  error->all(FLERR, "Level set does not include a large enough buffer for the distributed grid cutoff.");
                 grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
               }
             }
@@ -415,6 +421,7 @@ void FixRigidLSDEM::init()
 
       double com_temp[3], inertia_temp[6], inertia_matrix[3][3], evectors[3][3];
       for (ibody = 0; ibody < nbody; ibody++) {
+        // BUG : This part should loop through the different bodies but temp_grid_values doesn't change!!
         grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
 
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
@@ -424,16 +431,17 @@ void FixRigidLSDEM::init()
                   (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
                   (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
         ){
-          error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input file!");
+          error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
+            grid_min[ibody][0],grid_min[ibody][1],grid_min[ibody][2],com_temp[0],com_temp[1],com_temp[2]);
         }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
         for (a = 0; a < 3; a++)
-          inertia_matrix[a][a] = inertia_temp[a];
+          inertia_matrix[a][a] = inertia_temp[a]*masstotal[ibody]/grid_vol[ibody];
 
-        inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3];
-        inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4];
-        inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5];
+        inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3]*masstotal[ibody]/grid_vol[ibody];
+        inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4]*masstotal[ibody]/grid_vol[ibody];
+        inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5]*masstotal[ibody]/grid_vol[ibody];
 
         // Calculate eigen system of inertia tensor
         int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
