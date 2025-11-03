@@ -440,6 +440,7 @@ void FixRigidLSDEM::init()
         for (a = 0; a < 3; a++)
           inertia_matrix[a][a] = inertia_temp[a]*masstotal[ibody]/grid_vol[ibody];
 
+        // DvdH: DOES LAMMPS NEED A DIAGONALISED TENSOR OR THE IS THE CURRENT INERTIA TENSOR WITH ORIENTATION NEEDED?  
         inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3]*masstotal[ibody]/grid_vol[ibody];
         inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4]*masstotal[ibody]/grid_vol[ibody];
         inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5]*masstotal[ibody]/grid_vol[ibody];
@@ -972,7 +973,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
       grid_size[ibody][2] = 1;
     }
 
-  } else {
+  } else { // change to elif check
     auto buffer = new char[CHUNK * MAXLINE];
     int nread = 0;
     int me = comm->me;
