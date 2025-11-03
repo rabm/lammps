@@ -422,7 +422,12 @@ void FixRigidLSDEM::init()
 
       double com_temp[3], inertia_temp[6], inertia_matrix[3][3], evectors[3][3];
       for (ibody = 0; ibody < nbody; ibody++) {
-        // BUG : This part should loop through the different bodies but temp_grid_values doesn't change!!
+        // TODO JBC: this is the quick and easy way of doing this.
+        //           All procs share the same nbody so we can instead replace with range-based loop: for(int ibody : pair.second) {
+        //           But range-based loops require a declaration, which clashes with LAMMPS style of declaring ibody at the start (which I don't like, but think was easier as of now than changing all the indices of this function)
+        if (pair.second.find(ibody) == pair.second.end())
+          continue;
+
         grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
 
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
