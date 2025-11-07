@@ -144,7 +144,6 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_min);
   memory->destroy(grid_stride);
   memory->destroy(grid_scale);
-  memory->destroy(grid_scale);
   memory->destroy(grid_index);
   memory->destroy(grid_size);
   memory->destroy(grid_vol);
@@ -1203,9 +1202,9 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     x_local[1] -= grid_min[jbody][1];
     x_local[2] -= grid_min[jbody][2];
 
-    ncol = grid_size[ibody][0];
-    nrow = grid_size[ibody][1];
-    nslice = grid_size[ibody][2];
+    ncol = grid_size[jbody][0];
+    nrow = grid_size[jbody][1];
+    nslice = grid_size[jbody][2];
   }
 
   // Normalise the coordinates to be in units of the number of grid cells.
