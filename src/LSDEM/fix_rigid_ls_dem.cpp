@@ -42,10 +42,11 @@ using namespace RigidConst;
 
 enum {GLOBAL, DISTRIBUTED};
 
-static constexpr double EPSILON_ITERATION = 1.0e-15;
+static constexpr double EPSILON_ITERATION = 1.0e-6; // 0.0001%
 static constexpr double EPSILON_INERTIA = 5.0e-3; // 0.5%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
-static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid
+static constexpr int MAX_DIFF_AREA = 1.0e-1; // Fallback criterion for surface area integration
+static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
 
 inline double FixRigidLSDEM::smeared_heaviside_step(double x)
 {
@@ -84,7 +85,7 @@ inline double FixRigidLSDEM::compute_volume(int *grid_size, double stride, doubl
   for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
     for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
       for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]] - epsilon;
+        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]] + epsilon;
         dV = smeared_heaviside_step( -ls_val / ls_ref ) * volume_cell;
         if (dV > 0.0) {
           volume += dV;
@@ -1094,36 +1095,39 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
   return volume;
 }
 
-/* ----------------------------------------------------------------------
-   Calculate surface area using method from ...
-------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------------
+   Calculate surface area from Duriez and Galusinski (2025) Comp. Phys. Comm.
+------------------------------------------------------------------------------ */
 
 double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double *grid_values)
 {
   // Compute the surface area as the limit of the difference in volume
 	unsigned int iter, iter_max;
-	double epsilon, vol_in, vol_out, area, area_old, diff;
+	double epsilon, vol_in, vol_out, area, area_old, area_init, diff;
 
   // First computation of area
   epsilon = stride;
   vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
   vol_out = compute_volume(grid_size, stride, grid_values, -epsilon);
   if ( fabs(vol_in - vol_out) < EPSILON_ITERATION )
-      error->warning(FLERR, "Inside and outside volumes are the same for surface area calculation iteration {}", iter);
+      error->warning(FLERR, "Inside and outside volumes are the same for surface area calculation iteration {}.", iter);
   area_old = (vol_out - vol_in) / (2.0 * epsilon);
   area = area_old;
+  // Save first result as fallback option. This is reasonably accurate (<1% error),
+  // even for only one positive level set value outside the object.
+  area_init = area; 
 
   // Iterations to improve area estimate
   iter = 0;
   iter_max = MAX_ITERATIONS;
 	while (iter < iter_max) {
-		epsilon *= 0.5; // Dilation measure
-    vol_in = compute_volume(grid_size, stride, grid_values, -epsilon);
-    vol_out = compute_volume(grid_size, stride, grid_values, epsilon);
+		epsilon *= 0.5; // Erosion or dilation measure
+    vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
+    vol_out = compute_volume(grid_size, stride, grid_values, -epsilon);
 		area = (vol_out - vol_in) / (2.0 * epsilon);
 		diff = fabs( (area - area_old) / area_old );
     // Test for convergence
-		if (diff < EPSILON_ITERATION) // TODO: Declare hard-coded tolerance value based on global variable?
+		if (diff < EPSILON_ITERATION)
 			break;
 		area_old = area;
 		iter++;
@@ -1131,7 +1135,14 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 
   // Test for convergence
 	if (iter == iter_max)
-    error->warning(FLERR, "Surface area calculation did not converge in {} iterations", iter);
+    error->warning(FLERR, "Surface area calculation did not converge in {} iterations, giving {}.",iter,area);
+  if ( !( (area > 0.0) && std::isfinite(area) ) )
+    error->all(FLERR, "Surface area calculation returns nonesense despite converging, giving {}.",area);
+  if ( abs(abs(area/area_init)-1) > MAX_DIFF_AREA ){
+    error->warning(FLERR, "Surface area calculation returns a value far from the initial estimate, " 
+      "likely due to flat or sharp surfaces causing convergence to the wrong value. Falling back to initial estimate.");
+    area = area_init;
+  }
 	return area;
 }
 
