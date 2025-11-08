@@ -1313,6 +1313,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
           }
         }
       }
+
     } else { // 2D
       // Bi-linear interpolation
       dist = lsxy0;
@@ -1329,26 +1330,23 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     // Grain-stored grid values are shared and un-scaled, so apply scaling
     dist *= scale;
     // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride 
-    // but not the level-set values, hence it is necessary.
-    nx *= scale;
-    ny *= scale;
-    nz *= scale;
+    // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
   }
 
+  // Get magnitude of discrete gradient for normalisation
+  double mag = 1.0/sqrt(nx*nx+ny*ny+nz*nz);
+
   // Assign normal
-  normal[0] = nx;
-  normal[1] = ny;
-  normal[2] = nz;
+  normal[0] = nx*mag;
+  normal[1] = ny*mag;
+  normal[2] = nz*mag;
 
   // Rotate normal back to global coordinates
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   //if (-dist > warncut) maybe warn that you are about to penetrate too far
 
-  // Temporary check if normal is indeed of magnitude 1
-  double mag = MathExtra::len3(normal);
-  if ( abs(mag-1) > 1e-3 )
-    error->warning(FLERR,"Magnitude of the normal is not equal to 1 as should be but {}.",mag);
+
 
   return dist;
 }

@@ -121,7 +121,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   int *body = fix_rigid->get_body_array();
   int nbody = fix_rigid->get_nbody();
   double *grain_vol = fix_rigid->get_vol_array();
-  double *node_area = fix_rigid->get_area_array(); // Area per node used to normalise forces
+  double *node_area = fix_rigid->get_area_array();
 
   inum = list->inum;
   allnum = inum + list->gnum;
@@ -188,7 +188,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     }
   }
 
-  // NOTE: calc_force_of_j_on_i and calc_force_of_i_on_j now cuase branching.
+  // NOTE: calc_force_of_j_on_i and calc_force_of_i_on_j now cause branching.
   // The contact model might do the same. May it be worth it to pre-sort the pairs
   // such that it is always i_on_j and the contact models are sorted?
   // Currently, compiler vectorisation is scrambled, which might be particularly
@@ -600,7 +600,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         fpair[1] *= areaj;
         fpair[2] *= areaj;
       }
-
+      
       // Force on grain i
       f[i][0] += fpair[0];
       f[i][1] += fpair[1];
