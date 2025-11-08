@@ -42,7 +42,7 @@ class FixRigidLSDEM : public FixRigid {
   double memory_usage() override;
 
   inline double *get_vol_array() { return grid_vol; };
-  inline double *get_area_array() { return grid_area; };
+  inline double *get_area_array() { return node_area; };
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
 
@@ -71,7 +71,7 @@ class FixRigidLSDEM : public FixRigid {
   double **grid_min;            // minimum xyz coordinates of LS grid
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
   double *grid_vol;
-  double *grid_area;
+  double *node_area;
   int *grid_nnodes;             // the number of nodes in the grid
 
   double **global_grids;

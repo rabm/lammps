@@ -103,7 +103,7 @@ inline double FixRigidLSDEM::compute_volume(int *grid_size, double stride, doubl
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
-    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), grid_area(nullptr), grid_nnodes(nullptr)
+    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr), grid_nnodes(nullptr)
 {
   comm_forward = 8;
   maxcut = warncut = -1;
@@ -122,7 +122,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_index, nbody, "rigid/ls/dem:grid_index");
   memory->create(grid_size, nbody, 3, "rigid/ls/dem:grid_size");
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
-  memory->create(grid_area, nbody, "rigid/ls/dem:grid_area");
+  memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(grid_nnodes, nbody, "rigid/ls/dem:grid_nnodes");
 }
 
@@ -146,7 +146,7 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_index);
   memory->destroy(grid_size);
   memory->destroy(grid_vol);
-  memory->destroy(grid_area);
+  memory->destroy(node_area);
   memory->destroy(grid_nnodes);
 
   memory->destroy(global_grids);
@@ -344,7 +344,8 @@ void FixRigidLSDEM::init()
 
       if (need_global) {
         for (int n = 0; n < ntotal_global[index_global]; n++)
-          global_grids[index_global][n] = temp_grid_values[n]; // Unscaled grid values stored for GLOBAL grains to avoid duplicating memory
+          // Unscaled grid values of grains stored globally to avoid duplicating memory
+          global_grids[index_global][n] = temp_grid_values[n]; 
       }
 
       if (need_distributed) {
@@ -359,7 +360,7 @@ void FixRigidLSDEM::init()
           nz = grid_size[ibody][2];
           ntotal = nx * ny * nz;
 
-          // location of atom/node relative to CoM
+          // Location of atom/node relative to CoM
           delx = x[i][0] - grain_com[i][0];
           dely = x[i][1] - grain_com[i][1];
           delz = x[i][2] - grain_com[i][2];
@@ -367,24 +368,23 @@ void FixRigidLSDEM::init()
           // Account for PBCs
           domain->minimum_image(delx, dely, delz);
 
-          // location of atom/node relative to global grid minimum
+          // Location of atom/node relative to entire grain grid minimum.
           delx -= grid_min[ibody][0];
           dely -= grid_min[ibody][1];
           delz -= grid_min[ibody][2];
 
-          // index of atom/node in global grid
+          // Index of atom/node in entire grain grid.
           double stride = grid_stride[ibody];
           ix_node = int(delx / stride);
           iy_node = int(dely / stride);
           iz_node = int(delz / stride);
 
-          // index of local grid minimum in global grid.
-          // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
+          // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
           index_grid_min_local[0] = ix_node - rcell;
           index_grid_min_local[1] = iy_node - rcell;
           index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
 
-          // location of local grid minimum relative to CoM
+          // Location of local grid minimum relative to CoM
           grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
           grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
           grid_min_local[i][2] = index_grid_min_local[2] * stride + grid_min[ibody][2];
@@ -409,14 +409,15 @@ void FixRigidLSDEM::init()
                 // Final sanity check (defensive)
                 if (index_global < 0 || index_global >= ntotal)
                   error->all(FLERR, "Level set does not include a large enough buffer for the distributed grid cutoff.");
-                grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody]; // true (scaled) level-set stored for DISTRIBUTED
+                // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
+                grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody]; 
               }
             }
           }
         }
       }
 
-      double com_temp[3], inertia_temp[6], inertia_matrix[3][3], evectors[3][3];
+      double com_temp[3], inertia_temp[6], density, inertia_matrix[3][3], evectors[3][3], scale, scale2, scale3;
       for (ibody = 0; ibody < nbody; ibody++) {
         // TODO JBC: this is the quick and easy way of doing this.
         //           All procs share the same nbody so we can instead replace with range-based loop: for(int ibody : pair.second) {
@@ -424,11 +425,8 @@ void FixRigidLSDEM::init()
         if (pair.second.find(ibody) == pair.second.end())
           continue;
 
-        // Compute properties on un-scaled grid, then scale properties
-        double scale = grid_scale[ibody];
-        grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody] / scale, temp_grid_values, com_temp, inertia_temp, filename);
-        grid_vol[ibody] *= scale*scale*scale;
-        MathExtra::scale3(scale, com_temp);
+        // Compute properties from the level-set grid
+        grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
 
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
         // A misalignment would mean that the forces and rotations are applied to the wrong point in
@@ -442,7 +440,7 @@ void FixRigidLSDEM::init()
         }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
-        double density = masstotal[ibody] / grid_vol[ibody];
+        density = masstotal[ibody] / grid_vol[ibody];
 
         for (a = 0; a < 3; a++)
           inertia_matrix[a][a] = inertia_temp[a] * density;
@@ -450,12 +448,12 @@ void FixRigidLSDEM::init()
         inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3] * density;
         inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4] * density;
         inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5] * density;
-        MathExtra::scalar_times3(scale*scale*scale*scale*scale, inertia_matrix);
-
+        
         // Calculate eigen system of inertia tensor
         int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
         if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
+        // Set grain orientation based on eigenvectors of inertia tensor
         for (a = 0; a < 3; a++) {
           ex_space[ibody][a] = evectors[a][0];
           ey_space[ibody][a] = evectors[a][1];
@@ -463,11 +461,22 @@ void FixRigidLSDEM::init()
         }
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
-        grid_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody] / scale, temp_grid_values);
-        grid_area[ibody] *= scale*scale;
-
+        node_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values);
+        
         // Normalise by number of nodes
-        grid_area[ibody] /= grid_nnodes[ibody];
+        node_area[ibody] /= grid_nnodes[ibody];
+
+        // Scale all relevant quantities by given scaling of grain size
+        scale = grid_scale[ibody];
+        grid_stride[ibody] *= scale;
+        grid_min[ibody][0] *= scale;
+        grid_min[ibody][2] *= scale;
+        grid_min[ibody][3] *= scale;
+        scale2 = scale*scale;
+        node_area[ibody] *= scale2;
+        scale3 = scale*scale2;
+        grid_vol[ibody] *= scale3;
+        MathExtra::scalar_times3(scale2*scale3, inertia_matrix);
       }
     }
 
@@ -919,7 +928,6 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   // open file and read and parse first non-empty, non-comment line containing the 2 or 3 grid dimensions
   // Broadcast to other procs
   // TODO: there must be a better way to read the first 2,3 lines
-  // DvdH: The names grid_scale_buf and grid_size_buf are a bit confusing as I would expected them swapped
   int nlines = 1;
   const char* gridfile = filename.c_str();
   if (comm->me == 0) {
@@ -968,16 +976,13 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   else if (nlines < 0) error->all(FLERR, "Fix rigid/ls/dem gridfile has incorrect format");
 
   if (which == 0) {
-    // grid_stride stored per-body: true (scaled) stride saved for all bodies.
-    // No savings achievable by storing stride once for all GLOBAL bodies having the same grid
-    // which would also require storing stride somewhere for DISTRIBUTED (storing at the body-level like here being the cheapest)
-    grid_stride[ibody] = grid_size_buf[0] * grid_scale[ibody];
+    // All these quantities are stored per body (grain) because different scaling of the
+    // grain size might be applied later. They are needed at the grain level anyway for 
+    // most memory distribution methods.
+    grid_stride[ibody] = grid_size_buf[0];
     for (int idim = 0; idim < dim; idim++) {
-      // grid_min stored per-body: true (scaled) grid_min saved for all bodies.
-      // No savings achievable by storing grid_min once for all GLOBAL bodies having the same grid
-      // which would also require storing grid_min somewhere for DISTRIBUTED (storing at the body-level like here being the cheapest)
       // The grid_size_buf is [stride, xmin, ymin, zmin].
-      grid_min[ibody][idim] = grid_size_buf[idim + 1] * grid_scale[ibody];
+      grid_min[ibody][idim] = grid_size_buf[idim + 1];
       // The grid_shape_buf is [nx, ny, nz]
       grid_size[ibody][idim] = (int) grid_shape_buf[idim];
     }
@@ -1015,9 +1020,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
         *next = '\0';
 
         try {
-          // level-set values are read unscaled in the temporary grid_values array
-          // DISTRIBUTED level-sets will store the true (scaled) value, computed from grid_values and grid_scale
-          // GLOBAL level-sets will store this unscaled value, which is common to multiple bodies. Each body will compute the true (scaled) value on the fly when necessary
+          // Level-set values are read into the temporary grid_values array
           ValueTokenizer values(buf);
           grid_values[nread + i] = values.next_double();
         } catch (TokenizerException &e) {
@@ -1320,7 +1323,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
       }
       nz = 0.0;
     }
-    // Grain-stored grid values are un-scaled, so apply scaling
+    // Grain-stored grid values are shared and un-scaled, so apply scaling
+    // Normal won't need scaling because grid_stride was already scaled
     dist *= scale;
   }
 
@@ -1333,6 +1337,11 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   //if (-dist > warncut) maybe warn that you are about to penetrate too far
+
+  // Temporary check if normal is indeed of magnitude 1
+  double mag = MathExtra::len3(normal);
+  if (abs(mag)>1e-3)
+    error->warning(FLERR,"Magnitude of the normal is not equal to 1 as should be but {}.",mag);
 
   return dist;
 }
