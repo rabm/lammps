@@ -1168,20 +1168,20 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   // See comments above functions in math_extra.h/cpp for details
 
   int ncol, nrow, nslice;
-  if (grid_style[ibody == DISTRIBUTED]) {
+  if (grid_style[ibody] == DISTRIBUTED) {
     // Translate local coordinates such that they are relative
-    // to the lower corner of the level set grid.
+    // to the lower corner of the node's level set grid.
     double **local_grid_min = atom->darray[index_grid_min];
     x_local[0] -= local_grid_min[j][0];
     x_local[1] -= local_grid_min[j][1];
     x_local[2] -= local_grid_min[j][2];
-    // This local_grid_min should be the minimum of the node's grid in the distributed case,
-    // while of the global grid in the global / non-distributed case.
 
-    ncol = subgrid_size[0]; // Danny: this should be for the node's grid as well
+    ncol = subgrid_size[0];
     nrow = subgrid_size[1];
     nslice = subgrid_size[2];
   } else {
+    // Translate local coordinates such that they are relative
+    // to the lower corner of the grain's level set grid.
     x_local[0] -= grid_min[jbody][0];
     x_local[1] -= grid_min[jbody][1];
     x_local[2] -= grid_min[jbody][2];
@@ -1201,14 +1201,12 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   int ind_y = int(y_red);
   int ind_z = int(z_red); // Should always be zero in 2D.
 
-  // JBC: There is some padding for detection / normal caculation that I don't understand clearly
-  // Danny: Does the below clarify? Or is there something else that is missing?
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
   if ((ind_x < 0 || ind_x >= (nrow - 1)) || (ind_y < 0 || ind_y >= (ncol - 1)) ||
       ((domain->dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
     //error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-    return BIG;
+    return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
 
   // The normalised coordinates within the current grid cell.
   // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
@@ -1322,11 +1320,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
       }
       nz = 0.0;
     }
-    // GLOBAL grid values stored un-scaled
+    // Grain-stored grid values are un-scaled, so apply scaling
     dist *= scale;
-    nx *= scale;
-    ny *= scale;
-    nz *= scale;
   }
 
   // Assign normal
