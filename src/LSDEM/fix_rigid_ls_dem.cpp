@@ -43,7 +43,7 @@ using namespace RigidConst;
 enum {GLOBAL, DISTRIBUTED};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
-static constexpr double EPSILON_INERTIA = 5.0e-3; // 0.5%
+static constexpr double EPSILON_INERTIA = 1.0e-3; // 0.1%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
 static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
 
