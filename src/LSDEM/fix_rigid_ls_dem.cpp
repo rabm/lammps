@@ -1324,8 +1324,12 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
       nz = 0.0;
     }
     // Grain-stored grid values are shared and un-scaled, so apply scaling
-    // Normal won't need scaling because grid_stride was already scaled
     dist *= scale;
+    // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride 
+    // but not the level-set values, hence it is necessary.
+    nx *= scale;
+    ny *= scale;
+    nz *= scale;
   }
 
   // Assign normal
