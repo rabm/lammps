@@ -245,7 +245,6 @@ void FixRigidLSDEM::init()
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
-      if (dim == 2) grid_size[ibody][2] = 1;
       for (a = 0; a < 3; a++)
         if (grid_size[ibody][a] > max_grid_size[a])
           max_grid_size[a] = grid_size[ibody][a];
@@ -359,7 +358,7 @@ void FixRigidLSDEM::init()
 
           nx = grid_size[ibody][0];
           ny = grid_size[ibody][1];
-          nz = (dim == 3) ? grid_size[ibody][2] : 1;
+          nz = grid_size[ibody][2];
           ntotal = nx * ny * nz;
 
           // location of atom/node relative to CoM
@@ -373,13 +372,13 @@ void FixRigidLSDEM::init()
           // location of atom/node relative to global grid minimum
           delx -= grid_min[ibody][0];
           dely -= grid_min[ibody][1];
-          if (domain->dimension == 3) delz -= grid_min[ibody][2];
+          delz -= grid_min[ibody][2];
 
           // index of atom/node in global grid
           double stride = grid_stride[ibody];
           ix_node = int(delx / stride);
           iy_node = int(dely / stride);
-          iz_node = (dim == 3) ? int(delz / stride) : 0;
+          iz_node = int(delz / stride);
 
           // index of local grid minimum in global grid.
           // JBC: Can this be negative if not enough padding of the LS grid relative to grain surface? i.e. ix < rcell ?
@@ -390,7 +389,7 @@ void FixRigidLSDEM::init()
           // location of local grid minimum relative to CoM
           grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
           grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
-          grid_min_local[i][2] = (dim == 3) ? index_grid_min_local[2] * stride + grid_min[ibody][2] : 0.0;
+          grid_min_local[i][2] = index_grid_min_local[2] * stride + grid_min[ibody][2];
 
           for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
             for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
@@ -398,7 +397,7 @@ void FixRigidLSDEM::init()
                 // Shift local cell to global cell
                 ix_global = ix_local + index_grid_min_local[0];
                 iy_global = iy_local + index_grid_min_local[1];
-                iz_global = (dim == 3) ? iz_local + index_grid_min_local[2] : 0;
+                iz_global = iz_local + index_grid_min_local[2];
 
                 // Explicit bounds check per dimension (safer and clearer)
                 if (ix_global < 0 || ix_global >= nx ||
