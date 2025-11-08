@@ -324,6 +324,7 @@ void FixRigidLSDEM::init()
     double delx, dely, delz;
     double **x = atom->x;
     int need_distributed, need_global;
+    double com_temp[3], inertia_temp[6], density, inertia_matrix[3][3], evectors[3][3], scale, scale2, scale3;
     int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
@@ -331,8 +332,71 @@ void FixRigidLSDEM::init()
       // DvdH: Why is ibody here -1?
       read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
 
-      need_distributed = 0;
-      need_global = 0;
+      // Compute grain properties per unique grid
+      for (ibody = 0; ibody < nbody; ibody++) {
+        // TODO JBC: this is the quick and easy way of doing this.
+        //           All procs share the same nbody so we can instead replace with range-based loop: for(int ibody : pair.second) {
+        //           But range-based loops require a declaration, which clashes with LAMMPS style of declaring ibody at the start (which I don't like, but think was easier as of now than changing all the indices of this function)
+        if (pair.second.find(ibody) == pair.second.end())
+          continue;
+
+        // Compute properties from the level-set grid
+        grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
+
+        // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
+        // A misalignment would mean that the forces and rotations are applied to the wrong point in
+        // space, leading to integration issues.
+        if( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
+                  (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
+                  (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
+        ){
+          error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
+            grid_min[ibody][0],grid_min[ibody][1],grid_min[ibody][2],com_temp[0],com_temp[1],com_temp[2]);
+        }
+
+        // Overwrite inertia, could modify logic (compare or warn) if desired
+        density = masstotal[ibody] / grid_vol[ibody];
+
+        for (a = 0; a < 3; a++)
+          inertia_matrix[a][a] = inertia_temp[a] * density;
+        // DvdH: DOES LAMMPS NEED A DIAGONALISED TENSOR OR THE IS THE CURRENT INERTIA TENSOR WITH ORIENTATION NEEDED?  
+        inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3] * density;
+        inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4] * density;
+        inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5] * density;
+        
+        // Calculate eigen system of inertia tensor
+        int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
+        if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
+
+        // Set grain orientation based on eigenvectors of inertia tensor
+        for (a = 0; a < 3; a++) {
+          ex_space[ibody][a] = evectors[a][0];
+          ey_space[ibody][a] = evectors[a][1];
+          ez_space[ibody][a] = evectors[a][2];
+        }
+
+        // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
+        node_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values);
+        
+        // Normalise by number of nodes
+        node_area[ibody] /= grid_nnodes[ibody];
+
+        // Scale all relevant quantities by given scaling of grain size
+        scale = grid_scale[ibody];
+        grid_stride[ibody] *= scale;
+        grid_min[ibody][0] *= scale;
+        grid_min[ibody][2] *= scale;
+        grid_min[ibody][3] *= scale;
+        scale2 = scale*scale;
+        node_area[ibody] *= scale2;
+        scale3 = scale*scale2;
+        grid_vol[ibody] *= scale3;
+        MathExtra::scalar_times3(scale2*scale3, inertia_matrix);
+      }
+
+      // Start handling memory approach
+      need_distributed = 0; // Save relevant grid snippet at node, regardless of duplicity
+      need_global = 0;  // Save the entire grid as a shared memory stucture between grains with the same grid
       for (const auto& jbody : file_map[filename]) {
         if (grid_style[jbody] == DISTRIBUTED) {
           need_distributed = 1;
@@ -417,67 +481,6 @@ void FixRigidLSDEM::init()
         }
       }
 
-      double com_temp[3], inertia_temp[6], density, inertia_matrix[3][3], evectors[3][3], scale, scale2, scale3;
-      for (ibody = 0; ibody < nbody; ibody++) {
-        // TODO JBC: this is the quick and easy way of doing this.
-        //           All procs share the same nbody so we can instead replace with range-based loop: for(int ibody : pair.second) {
-        //           But range-based loops require a declaration, which clashes with LAMMPS style of declaring ibody at the start (which I don't like, but think was easier as of now than changing all the indices of this function)
-        if (pair.second.find(ibody) == pair.second.end())
-          continue;
-
-        // Compute properties from the level-set grid
-        grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, filename);
-
-        // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
-        // A misalignment would mean that the forces and rotations are applied to the wrong point in
-        // space, leading to integration issues.
-        if( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
-                  (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
-                  (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
-        ){
-          error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
-            grid_min[ibody][0],grid_min[ibody][1],grid_min[ibody][2],com_temp[0],com_temp[1],com_temp[2]);
-        }
-
-        // Overwrite inertia, could modify logic (compare or warn) if desired
-        density = masstotal[ibody] / grid_vol[ibody];
-
-        for (a = 0; a < 3; a++)
-          inertia_matrix[a][a] = inertia_temp[a] * density;
-        // DvdH: DOES LAMMPS NEED A DIAGONALISED TENSOR OR THE IS THE CURRENT INERTIA TENSOR WITH ORIENTATION NEEDED?  
-        inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3] * density;
-        inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4] * density;
-        inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5] * density;
-        
-        // Calculate eigen system of inertia tensor
-        int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
-        if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
-
-        // Set grain orientation based on eigenvectors of inertia tensor
-        for (a = 0; a < 3; a++) {
-          ex_space[ibody][a] = evectors[a][0];
-          ey_space[ibody][a] = evectors[a][1];
-          ez_space[ibody][a] = evectors[a][2];
-        }
-
-        // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
-        node_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values);
-        
-        // Normalise by number of nodes
-        node_area[ibody] /= grid_nnodes[ibody];
-
-        // Scale all relevant quantities by given scaling of grain size
-        scale = grid_scale[ibody];
-        grid_stride[ibody] *= scale;
-        grid_min[ibody][0] *= scale;
-        grid_min[ibody][2] *= scale;
-        grid_min[ibody][3] *= scale;
-        scale2 = scale*scale;
-        node_area[ibody] *= scale2;
-        scale3 = scale*scale2;
-        grid_vol[ibody] *= scale3;
-        MathExtra::scalar_times3(scale2*scale3, inertia_matrix);
-      }
     }
 
     memory->destroy(gridfiles);
@@ -1344,7 +1347,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   // Temporary check if normal is indeed of magnitude 1
   double mag = MathExtra::len3(normal);
-  if (abs(mag)>1e-3)
+  if ( abs(mag-1) > 1e-3 )
     error->warning(FLERR,"Magnitude of the normal is not equal to 1 as should be but {}.",mag);
 
   return dist;
