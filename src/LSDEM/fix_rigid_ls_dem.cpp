@@ -1144,8 +1144,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   int ibody = body[i];
   int jbody = body[j];
-  double dist, nx(0.0), ny(0.0), nz(0.0);
-  double stride = grid_stride[ibody];
+  double dist, nx, ny, nz(0.0);
+  double strideinv = 1.0 / grid_stride[ibody];
 
   // Calculate position of node i in node j's grid using:
   //   x[i][0-2] = location of i
@@ -1171,7 +1171,9 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   // See comments above functions in math_extra.h/cpp for details
 
   int ncol, nrow, nslice;
+  double *mygrid;
   if (grid_style[ibody] == DISTRIBUTED) {
+    mygrid = atom->darray[index_grid_values][j];
     // Translate local coordinates such that they are relative
     // to the lower corner of the node's level set grid.
     double **local_grid_min = atom->darray[index_grid_min];
@@ -1183,6 +1185,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
     nrow = subgrid_size[1];
     nslice = subgrid_size[2];
   } else {
+    mygrid = global_grids[grid_index[jbody]];
     // Translate local coordinates such that they are relative
     // to the lower corner of the grain's level set grid.
     x_local[0] -= grid_min[jbody][0];
@@ -1195,9 +1198,9 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   }
 
   // Normalise the coordinates to be in units of the number of grid cells.
-  double x_red = x_local[0] / stride;
-  double y_red = x_local[1] / stride;
-  double z_red = x_local[2] / stride;
+  double x_red = x_local[0] * strideinv;
+  double y_red = x_local[1] * strideinv;
+  double z_red = x_local[2] * strideinv;
 
   // Calculate index from relative coordinate, being careful with integer division.
   int ind_x = int(x_red);
@@ -1219,117 +1222,51 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   //  Interpolate
   int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
-  if (grid_style[ibody] == DISTRIBUTED) {
-    double **node_local_grid = atom->darray[index_grid_values];
 
-    // Level-set values on the grid points in the lower z plane (ind_z)
-    double ls000 = node_local_grid[j][my_index];
-    double ls100 = node_local_grid[j][my_index + 1];
-    double ls010 = node_local_grid[j][my_index + ncol];
-    double ls110 = node_local_grid[j][my_index + 1 + ncol];
+  // Level-set values on the grid points in the lower z plane (ind_z)
+  double ls000 = mygrid[my_index];
+  double ls100 = mygrid[my_index + 1];
+  double ls010 = mygrid[my_index + ncol];
+  double ls110 = mygrid[my_index + 1 + ncol];
 
-    // Bi-linear interpolation in the lower z plane (ind_z)
-    double lsxy0 = ls000 + y_red * (ls010 - ls000) +
-                   x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
+  // Bi-linear interpolation in the lower z plane (ind_z)
+  double lsxy0 = ls000 + y_red * (ls010 - ls000) +
+                 x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
+  dist = lsxy0;
 
-    if (domain->dimension == 3) { // 3D
-      // Level-set values on the grid points in the upper z plane (ind_z+1)
-      double ls001 = node_local_grid[j][my_index + ncol * nrow];
-      double ls101 = node_local_grid[j][my_index + 1 + ncol * nrow];
-      double ls011 = node_local_grid[j][my_index + ncol + ncol * nrow];
-      double ls111 = node_local_grid[j][my_index + 1 + ncol + ncol * nrow];
+  // Computing normal as the gradient of trilinear interpolation
+  // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
+  // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
+  nx = (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
+  ny = (ls010 - ls000 + x_red * (ls110 - ls100 - ls010 + ls000));
 
-      // Bi-linear interpolation in the upper z plane (ind_z+1)
-      double lsxy1 = ls001 + y_red * (ls011 - ls001) +
-                     x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
+  if (domain->dimension == 3) { // 3D
+    // Level-set values on the grid points in the upper z plane (ind_z+1)
+    double ls001 = mygrid[my_index + ncol * nrow];
+    double ls101 = mygrid[my_index + 1 + ncol * nrow];
+    double ls011 = mygrid[my_index + ncol + ncol * nrow];
+    double ls111 = mygrid[my_index + 1 + ncol + ncol * nrow];
 
-      // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-      dist = z_red * (lsxy1 - lsxy0) + lsxy0;
+    // Bi-linear interpolation in the upper z plane (ind_z+1)
+    double lsxy1 = ls001 + y_red * (ls011 - ls001) +
+                   x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
 
-      // Computing normal as the gradient of trilinear interpolation
-      for (int a = 0; a < 2; a++) {
-        for (int b = 0; b < 2; b++) {
-          for (int c = 0; c < 2; c++) {
-            double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
-            nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
-            ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
-            nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
-          }
-        }
-      }
-    } else { // 2D
-      // Bi-linear interpolation
-      dist = lsxy0;
-      // Computing normal as the gradient of bilinear interpolation
-      for (int a = 0; a < 2; a++) {
-        for (int b = 0; b < 2; b++) {
-          double lsVal = node_local_grid[j][(ind_x + a) + (ind_y + b) * ncol];
-          nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
-          ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
-        }
-      }
-      nz = 0.0;
-    }
-  } else {
-    int my_index = grid_index[jbody];
-    double scale = grid_scale[jbody];
-    double *my_grid = global_grids[my_index];
-
-    // Level-set values on the grid points in the lower z plane (ind_z)
-    double ls000 = my_grid[ind_x     + ind_y       * ncol + ind_z * ncol * nrow]; // todo: maybe update indices like above
-    double ls100 = my_grid[ind_x + 1 + ind_y       * ncol + ind_z * ncol * nrow];
-    double ls010 = my_grid[ind_x     + (ind_y + 1) * ncol + ind_z * ncol * nrow];
-    double ls110 = my_grid[ind_x + 1 + (ind_y + 1) * ncol + ind_z * ncol * nrow];
-
-    // Bi-linear interpolation in the lower z plane (ind_z)
-    double lsxy0 = ls000 + y_red * (ls010 - ls000) +
-                   x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
-
-    if (domain->dimension == 3) { // 3D
-      // Level-set values on the grid points in the upper z plane (ind_z+1)
-      double ls001 = my_grid[ind_x     + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
-      double ls101 = my_grid[ind_x + 1 + ind_y       * ncol + (ind_z + 1) * ncol * nrow];
-      double ls011 = my_grid[ind_x     + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
-      double ls111 = my_grid[ind_x + 1 + (ind_y + 1) * ncol + (ind_z + 1) * ncol * nrow];
-
-      // Bi-linear interpolation in the upper z plane (ind_z+1)
-      double lsxy1 = ls001 + y_red * (ls011 - ls001) +
-                     x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
-
-      // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-      dist = z_red * (lsxy1 - lsxy0) + lsxy0;
-
-      // Computing normal as the gradient of trilinear interpolation
-      for (int a = 0; a < 2; a++) {
-        for (int b = 0; b < 2; b++) {
-          for (int c = 0; c < 2; c++) {
-            double lsVal = my_grid[(ind_x + a) + (ind_y + b) * ncol + (ind_z + c) * ncol * nrow];
-            nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red) * ((1 - c) * (1 - z_red) + c * z_red);
-            ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - c) * (1 - z_red) + c * z_red);
-            nz += lsVal * (2 * c - 1) * ((1 - a) * (1 - x_red) + a * x_red) * ((1 - b) * (1 - y_red) + b * y_red);
-          }
-        }
-      }
-
-    } else { // 2D
-      // Bi-linear interpolation
-      dist = lsxy0;
-      // Computing normal as the gradient of bilinear interpolation
-      for (int a = 0; a < 2; a++) {
-        for (int b = 0; b < 2; b++) {
-          double lsVal = my_grid[(ind_x + a) + (ind_y + b) * ncol];
-          nx += lsVal * (2 * a - 1) * ((1 - b) * (1 - y_red) + b * y_red);
-          ny += lsVal * (2 * b - 1) * ((1 - a) * (1 - x_red) + a * x_red);
-        }
-      }
-      nz = 0.0;
-    }
-    // Grain-stored grid values are shared and un-scaled, so apply scaling
-    dist *= scale;
-    // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride 
-    // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
+    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
+    dist = z_red * (lsxy1 - lsxy0) + lsxy0;
+    nx *= 1 - z_red;
+    nx += z_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
+    ny *= 1 - z_red;
+    ny += z_red * (ls011 - ls001 + x_red * (ls111 - ls101 - ls011 + ls001));
+    nz = lsxy1 - lsxy0;
   }
 
+  // Grain-stored grid values are shared and un-scaled, so apply scaling
+  if (grid_style[ibody] == GLOBAL) dist *= grid_scale[ibody];
+
+  // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
+  // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
+
+  utils::logmesg(lmp,"before {} {} {}\n",nx, ny, nz);
   // Get magnitude of discrete gradient for normalisation
   double mag = 1.0/sqrt(nx*nx+ny*ny+nz*nz);
 
@@ -1338,6 +1275,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   normal[1] = ny*mag;
   normal[2] = nz*mag;
 
+  utils::logmesg(lmp,"after {} {} {}\n\n",normal[0], normal[1], normal[2]);
   // Rotate normal back to global coordinates
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
