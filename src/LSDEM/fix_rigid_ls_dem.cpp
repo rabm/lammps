@@ -1142,10 +1142,9 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];
 
-  int ibody = body[i];
   int jbody = body[j];
   double dist, nx, ny, nz(0.0);
-  double strideinv = 1.0 / grid_stride[ibody];
+  double strideinv = 1.0 / grid_stride[jbody];
 
   // Calculate position of node i in node j's grid using:
   //   x[i][0-2] = location of i
@@ -1172,7 +1171,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
   int ncol, nrow, nslice;
   double *mygrid;
-  if (grid_style[ibody] == DISTRIBUTED) {
+  if (grid_style[jbody] == DISTRIBUTED) {
     mygrid = atom->darray[index_grid_values][j];
     // Translate local coordinates such that they are relative
     // to the lower corner of the node's level set grid.
@@ -1261,7 +1260,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   }
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
-  if (grid_style[ibody] == GLOBAL) dist *= grid_scale[jbody];
+  if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
   // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
   // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
