@@ -82,7 +82,7 @@ class FixRigidLSDEM : public FixRigid {
   void compute_forces_and_torques() override;
   void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
-  double compute_grid_properties(int *, double, double *, double *, double *, std::string);
+  double compute_grid_properties(int *, double, double *, double *, double[3][3], std::string);
   inline double smeared_heaviside_step(double);
   inline double compute_volume(int *, double, double *, double);
   double compute_surface_area(int *, double, double *);

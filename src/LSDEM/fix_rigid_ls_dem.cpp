@@ -324,7 +324,7 @@ void FixRigidLSDEM::init()
     double delx, dely, delz;
     double **x = atom->x;
     int need_distributed, need_global;
-    double com_temp[3], inertia_temp[6], density, inertia_matrix[3][3], evectors[3][3], scale, scale2, scale3;
+    double com_temp[3], density, inertia_temp[3][3], evectors[3][3], scale, scale2, scale3;
     int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
@@ -355,17 +355,9 @@ void FixRigidLSDEM::init()
         }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
-        density = masstotal[ibody] / grid_vol[ibody];
-
-        for (a = 0; a < 3; a++)
-          inertia_matrix[a][a] = inertia_temp[a] * density;
-        // DvdH: DOES LAMMPS NEED A DIAGONALISED TENSOR OR THE IS THE CURRENT INERTIA TENSOR WITH ORIENTATION NEEDED?  
-        inertia_matrix[0][1] = inertia_matrix[1][0] = inertia_temp[3] * density;
-        inertia_matrix[0][2] = inertia_matrix[2][0] = inertia_temp[4] * density;
-        inertia_matrix[1][2] = inertia_matrix[2][1] = inertia_temp[5] * density;
         
         // Calculate eigen system of inertia tensor
-        int ierror = MathEigen::jacobi3(inertia_matrix, inertia[ibody], evectors, 1);
+        int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
         if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
         // Set grain orientation based on eigenvectors of inertia tensor
@@ -383,15 +375,14 @@ void FixRigidLSDEM::init()
 
         // Scale all relevant quantities by given scaling of grain size
         scale = grid_scale[ibody];
-        grid_stride[ibody] *= scale;
-        grid_min[ibody][0] *= scale;
-        grid_min[ibody][2] *= scale;
-        grid_min[ibody][3] *= scale;
         scale2 = scale*scale;
-        node_area[ibody] *= scale2;
         scale3 = scale*scale2;
+        density = masstotal[ibody] / grid_vol[ibody];
+        grid_stride[ibody] *= scale;
+        MathExtra::scale3(scale, grid_min[ibody]);
+        node_area[ibody] *= scale2;
         grid_vol[ibody] *= scale3;
-        MathExtra::scalar_times3(scale2*scale3, inertia_matrix);
+        MathExtra::scale3(density*scale2*scale3, inertia[ibody]);
       }
 
       // Start handling memory approach
@@ -1042,7 +1033,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
   Compute CoM, moment of inertia, and volume of a grid
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, double *grid_values, double *com_temp, double *inertia_temp, std::string filename)
+double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, double *grid_values, double *com_temp, double inertia_temp[3][3], std::string filename)
 {
   // Volume integration
 
@@ -1082,7 +1073,11 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
 
   // Computing the inertia tensor (a second loop is unavoidable)
   double delx, dely, delz;
-  for (int a = 0; a < 6; a++) inertia_temp[a] = 0.0;
+  for (int a = 0; a < 3; a++) {
+    for (int b = 0; b < 3; b++) {
+      inertia_temp[a][b] = 0.0;
+    }
+  }
   for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
     for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
       for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
@@ -1092,20 +1087,22 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
           delx = ind_x * stride - com_temp[0];
           dely = ind_y * stride - com_temp[1];
           delz = ind_z * stride - com_temp[2];
-          inertia_temp[0] += (dely * dely + delz * delz) * dV;
-          inertia_temp[1] += (delx * delx + delz * delz) * dV;
-          inertia_temp[2] += (delx * delx + dely * dely) * dV;
-          inertia_temp[3] -= delx * dely * dV;
-          inertia_temp[4] -= delx * delz * dV;
-          inertia_temp[5] -= dely * delz * dV;
+          inertia_temp[0][0] += (dely * dely + delz * delz) * dV;
+          inertia_temp[1][1] += (delx * delx + delz * delz) * dV;
+          inertia_temp[2][2] += (delx * delx + dely * dely) * dV;
+          inertia_temp[0][1] -= delx * dely * dV;
+          inertia_temp[0][2] -= delx * delz * dV;
+          inertia_temp[1][2] -= dely * delz * dV;
         }
       }
     }
   }
-
+  inertia_temp[1][0] = inertia_temp[0][1];
+  inertia_temp[2][0] = inertia_temp[0][2];
+  inertia_temp[2][1] = inertia_temp[1][2];
   // Check to see if level set has a non-inertial reference frame
-  double I_diag_norm = sqrt(inertia_temp[0] * inertia_temp[0] + inertia_temp[1] * inertia_temp[1] + inertia_temp[2] * inertia_temp[2]);
-  double I_off_diag_norm = sqrt(2.0 * (inertia_temp[3] * inertia_temp[3] + inertia_temp[4] * inertia_temp[4] + inertia_temp[5] * inertia_temp[5]));
+  double I_diag_norm = sqrt(inertia_temp[0][0] * inertia_temp[0][0] + inertia_temp[1][1] * inertia_temp[1][1] + inertia_temp[2][2] * inertia_temp[2][2]);
+  double I_off_diag_norm = sqrt(2.0 * (inertia_temp[0][1] * inertia_temp[0][1] + inertia_temp[0][2] * inertia_temp[0][2] + inertia_temp[1][2] * inertia_temp[1][2]));
   if (I_off_diag_norm / I_diag_norm > EPSILON_INERTIA)
     error->all(FLERR, "Non-inertial reference frame detected for level set in {}. Intergration of rotational motion will be wrong.", filename);
 
