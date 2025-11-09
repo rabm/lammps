@@ -1237,8 +1237,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   // Computing normal as the gradient of trilinear interpolation
   // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
   // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
-  nx = (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
-  ny = (ls010 - ls000 + x_red * (ls110 - ls100 - ls010 + ls000));
+  nx = ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000);
+  ny = ls010 - ls000 + x_red * (ls110 - ls100 - ls010 + ls000);
 
   if (domain->dimension == 3) { // 3D
     // Level-set values on the grid points in the upper z plane (ind_z+1)
@@ -1261,12 +1261,11 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   }
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
-  if (grid_style[ibody] == GLOBAL) dist *= grid_scale[ibody];
+  if (grid_style[ibody] == GLOBAL) dist *= grid_scale[jbody];
 
   // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
   // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
 
-  utils::logmesg(lmp,"before {} {} {}\n",nx, ny, nz);
   // Get magnitude of discrete gradient for normalisation
   double mag = 1.0/sqrt(nx*nx+ny*ny+nz*nz);
 
@@ -1275,7 +1274,6 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   normal[1] = ny*mag;
   normal[2] = nz*mag;
 
-  utils::logmesg(lmp,"after {} {} {}\n\n",normal[0], normal[1], normal[2]);
   // Rotate normal back to global coordinates
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
