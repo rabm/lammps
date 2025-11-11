@@ -256,15 +256,15 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Use the nodes of the smallest grain.
       if (ivol < jvol || (ivol == jvol && ibody < jbody)) {
         // Grain i is smaller, use nodes of i and level set of j.
-        key = nbody * jtag + ibody;
-        if (min_distances.find(key) != min_distances.end())
-          if (itag == min_distances[key].first)
-            calc_force_of_i_on_j = 1;
-      } else {
-        // Grain j is smaller, use nodes of j and level set of i.
         key = nbody * itag + jbody;
         if (min_distances.find(key) != min_distances.end())
           if (jtag == min_distances[key].first)
+            calc_force_of_i_on_j = 1;
+      } else {
+        // Grain j is smaller, use nodes of j and level set of i.
+        key = nbody * jtag + ibody;
+        if (min_distances.find(key) != min_distances.end())
+          if (itag == min_distances[key].first)
             calc_force_of_j_on_i = 1;
       }
 
