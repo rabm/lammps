@@ -322,7 +322,7 @@ void FixRigidLSDEM::init()
     double *ls_val;
     double delx, dely, delz;
     double **x = atom->x;
-    int need_distributed, need_global;
+    int need_distributed, need_global, need_padding;
     double com_temp[3], density, inertia_temp[3][3], evectors[3][3], scale, scale2, scale3;
     int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
@@ -406,6 +406,7 @@ void FixRigidLSDEM::init()
         for (i = 0; i < atom->nlocal; i++) {
           ibody = body[i];
 
+          need_padding = 0;
           if (pair.second.find(ibody) == pair.second.end())
             continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
@@ -446,6 +447,8 @@ void FixRigidLSDEM::init()
           for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
             for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
               for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
+                index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
+
                 // Shift local cell to global cell
                 ix_global = ix_local + index_grid_min_local[0];
                 iy_global = iy_local + index_grid_min_local[1];
@@ -454,20 +457,21 @@ void FixRigidLSDEM::init()
                 // Explicit bounds check per dimension (safer and clearer)
                 if (ix_global < 0 || ix_global >= nx ||
                     iy_global < 0 || iy_global >= ny ||
-                    iz_global < 0 || iz_global >= nz)
-                  error->all(FLERR, "Level set does not include a large enough buffer for the distributed grid cutoff.");
-
-                index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-                index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
-
-                // Final sanity check (defensive)
-                if (index_global < 0 || index_global >= ntotal)
-                  error->all(FLERR, "Level set does not include a large enough buffer for the distributed grid cutoff.");
-                // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
-                grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody]; 
+                    iz_global < 0 || iz_global >= nz) {
+                  need_padding = 1;
+                  grid_values[i][index_local] = BIG;
+                } else {
+                  // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
+                  index_global = ix_global + iy_global * nx + iz_global * nx * ny;
+                  grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
+                }
               }
             }
           }
+
+          // JBC: This might be deleted with watershed. If we keep it, might consider moving it so it doesn't print too many warnings
+          if (need_padding)
+            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
         }
       }
 
