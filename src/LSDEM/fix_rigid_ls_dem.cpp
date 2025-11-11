@@ -31,6 +31,7 @@
 #include "tokenizer.h"
 
 #include <cmath>
+#include <cfloat> // DBL_MAX
 #include <cstring>
 #include <map>
 #include <set>
@@ -237,17 +238,17 @@ void FixRigidLSDEM::init()
     std::map <std::string, std::set<int>> file_map;
     std::string filename;
     dim = domain->dimension;
-    double max_stride = 0;
     int grid_size_flat, max_grid_size_flat(0);
+    double min_stride = DBL_MAX;
     for (ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]); // Retrieve file name
       read_gridfile(ibody, 0, filename, grid_size, nullptr); // Get only grid sizes (tag 0)
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
-      max_stride = MAX(max_stride, grid_stride[ibody]);
       grid_size_flat = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
       max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
+      min_stride = MIN(min_stride, grid_stride[ibody] * grid_scale[ibody]);
 
       // Store global info
       grid_index[ibody] = -1;
@@ -274,9 +275,9 @@ void FixRigidLSDEM::init()
     // ------------------------------ //
 
     int ntotal;
-    rcell = maxcut / max_stride + 2; // +1 for interpolation +1 for safety
-    // DvdH: doesn't min_stride make more sense since a smaller stride will need a larger radius of cells around the node?
-    warncut = maxcut - max_stride;
+    // All local grids sized on finest grid (fix property/atom requires fixed-size containers)
+    rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
+    warncut = maxcut - min_stride; // Currently unused
 
     for (ibody = 0; ibody < nbody; ibody++)
       grid_nnodes[ibody] = 0;
@@ -289,7 +290,7 @@ void FixRigidLSDEM::init()
       id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
       ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
       if (ntotal > RECOMMENDED_MAX_NGRID)
-        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a max stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, max_stride);
+        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
       modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
 
       int tmp1, tmp2;
