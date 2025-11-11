@@ -237,18 +237,17 @@ void FixRigidLSDEM::init()
     std::map <std::string, std::set<int>> file_map;
     std::string filename;
     dim = domain->dimension;
-    int max_grid_size[3] = {0, 0, 0};
     double max_stride = 0;
+    int grid_size_flat, max_grid_size_flat(0);
     for (ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]); // Retrieve file name
       read_gridfile(ibody, 0, filename, grid_size, nullptr); // Get only grid sizes (tag 0)
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
-      for (a = 0; a < 3; a++)
-        if (grid_size[ibody][a] > max_grid_size[a])
-          max_grid_size[a] = grid_size[ibody][a];
       max_stride = MAX(max_stride, grid_stride[ibody]);
+      grid_size_flat = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
+      max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
 
       // Store global info
       grid_index[ibody] = -1;
@@ -262,7 +261,7 @@ void FixRigidLSDEM::init()
         // If no global instances, add new index
         if (grid_index[ibody] == -1) {
           grid_index[ibody] = index_global;
-          ntotal_global[index_global] = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
+          ntotal_global[index_global] = grid_size_flat;
           index_global += 1;
         }
       } else {
@@ -306,9 +305,8 @@ void FixRigidLSDEM::init()
     // Read and store level sets      //
     // ------------------------------ //
 
-    ntotal = max_grid_size[0] * max_grid_size[1] * max_grid_size[2];
     double *temp_grid_values = nullptr;
-    memory->create(temp_grid_values, ntotal, "rigid/ls/dem:temp_grid_values");
+    memory->create(temp_grid_values, max_grid_size_flat, "rigid/ls/dem:temp_grid_values");
 
     double **grid_values, **grid_min_local;
     if (distributed_flag) {
