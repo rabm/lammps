@@ -341,7 +341,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       v_rel[1] = vyitmp - vyjtmp;
       v_rel[2] = vzitmp - vzjtmp;
 
-      // Relative velocity in normal direction with sign
+      // Relative velocity in normal direction with sign (positive for approach)
       v_rel_n_mag = MathExtra::dot3(v_rel, normal);
 
       // Viscous damping or dashpot (parallel, only repulsive, i.e. no attractive force if v_rel_n_mag < 0)
@@ -360,7 +360,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
         // Maxwell arm (2nd)
         //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
-        //fn_mag -= fn2_mag[i]
+        //fn_mag += fn2_mag[i]
       }
 
       // The pair force vector should point j->i because of repulsion.
@@ -503,9 +503,11 @@ void PairLSDEM::compute(int eflag, int vflag)
       fs_mag = std::min(fs_max, fs_mag_trial);
 
       // Final shear or tangential stress
-      fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
-      fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
-      fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
+      if (fs_mag_trial > EPSILON){
+        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
+      }
 
       // Update saved elastic shear stress and normal
       if (calc_force_of_i_on_j) { // Node of i.
