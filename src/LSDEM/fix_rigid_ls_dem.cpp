@@ -221,7 +221,7 @@ void FixRigidLSDEM::init()
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
     error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
-  maxcut = pair->maxcut; 
+  maxcut = pair->maxcut;
 
   int index_global = 0;
   int distributed_flag = 0;
@@ -354,7 +354,7 @@ void FixRigidLSDEM::init()
         }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
-        
+
         // Calculate eigen system of inertia tensor
         int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
         if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
@@ -368,7 +368,7 @@ void FixRigidLSDEM::init()
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         node_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values);
-        
+
         // Normalise by number of nodes
         node_area[ibody] /= grid_nnodes[ibody];
 
@@ -399,7 +399,7 @@ void FixRigidLSDEM::init()
       if (need_global) {
         for (int n = 0; n < ntotal_global[index_global]; n++)
           // Unscaled grid values of grains stored globally to avoid duplicating memory
-          global_grids[index_global][n] = temp_grid_values[n]; 
+          global_grids[index_global][n] = temp_grid_values[n];
       }
 
       if (need_distributed) {
@@ -958,7 +958,8 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
                           gridfile, grid_corner.size(), dim);
     for (int idim = 0; idim < dim; idim++)
       grid_size_buf[idim + 1] = utils::numeric(FLERR, grid_corner[idim], false, lmp);
-    utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
+    if (which == 0)
+      utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
   }
   MPI_Bcast(grid_shape_buf, dim, MPI_INT, 0, world);
   MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
@@ -974,7 +975,7 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
 
   if (which == 0) {
     // All these quantities are stored per body (grain) because different scaling of the
-    // grain size might be applied later. They are needed at the grain level anyway for 
+    // grain size might be applied later. They are needed at the grain level anyway for
     // most memory distribution methods.
     grid_stride[ibody] = grid_size_buf[0];
     for (int idim = 0; idim < dim; idim++) {
@@ -1120,9 +1121,9 @@ double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double
 {
 // Computation of the surface area as the volume derivative over a thin shell of one grid stride.
   double epsilon, vol_in, vol_out, area;
-  // Value of epsilon below gives the most accurate results. Why? Level set does not have more information 
+  // Value of epsilon below gives the most accurate results. Why? Level set does not have more information
   // than is in the grid, and larger values increase error on the finite-difference approximation.
-  epsilon = 0.5*stride; 
+  epsilon = 0.5*stride;
   vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
   vol_out = compute_volume(grid_size, stride, grid_values, -epsilon);
   // Finite central difference
