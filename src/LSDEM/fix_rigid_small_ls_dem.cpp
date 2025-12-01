@@ -72,6 +72,10 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 /* ----------------------------------------------------------------------
    compute initial fcm and torque on bodies, also initial virial
    reset all particle velocities to be consistent with vcm and omega
+
+     TODO: this is a lot of code duplication. A cleaner way to do that
+           could be to write little helper functions for computing torques from forces
+           and not call it for LSDEM
 ------------------------------------------------------------------------- */
 
 void FixRigidSmallLSDEM::setup(int vflag)
@@ -193,26 +197,7 @@ void FixRigidSmallLSDEM::setup(int vflag)
 
 void FixRigidSmallLSDEM::grow_arrays(int nmax)
 {
-  memory->grow(bodyown,nmax,"rigid/small:bodyown");
-  memory->grow(bodytag,nmax,"rigid/small:bodytag");
-  memory->grow(atom2body,nmax,"rigid/small:atom2body");
-  memory->grow(xcmimage,nmax,"rigid/small:xcmimage");
-  memory->grow(displace,nmax,3,"rigid/small:displace");
-  if (extended) {
-    memory->grow(eflags,nmax,"rigid/small:eflags");
-    if (orientflag) memory->grow(orient,nmax,orientflag,"rigid/small:orient");
-    if (dorientflag) memory->grow(dorient,nmax,3,"rigid/small:dorient");
-  }
-
-  // check for regrow of vatom
-  // must be done whether per-atom virial is accumulated on this step or not
-  //   b/c this is only time grow_array() may be called
-  // need to regrow b/c vatom is calculated before and after atom migration
-
-  if (nmax > maxvatom) {
-    maxvatom = atom->nmax;
-    memory->grow(vatom,maxvatom,6,"fix:vatom");
-  }
+  FixRigidSmall::grow_arrays(nmax);
 }
 
 /* ----------------------------------------------------------------------
@@ -221,43 +206,7 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
 
 void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
 {
-  bodytag[j] = bodytag[i];
-  xcmimage[j] = xcmimage[i];
-  displace[j][0] = displace[i][0];
-  displace[j][1] = displace[i][1];
-  displace[j][2] = displace[i][2];
-
-  if (extended) {
-    eflags[j] = eflags[i];
-    for (int k = 0; k < orientflag; k++)
-      orient[j][k] = orient[i][k];
-    if (dorientflag) {
-      dorient[j][0] = dorient[i][0];
-      dorient[j][1] = dorient[i][1];
-      dorient[j][2] = dorient[i][2];
-    }
-  }
-
-  // must also copy vatom if per-atom virial calculated on this timestep
-  // since vatom is calculated before and after atom migration
-
-  if (vflag_atom)
-    for (int k = 0; k < 6; k++)
-      vatom[j][k] = vatom[i][k];
-
-  // if deleting atom J via delflag and J owns a body, then delete it
-
-  if (delflag && bodyown[j] >= 0) {
-    bodyown[body[nlocal_body-1].ilocal] = bodyown[j];
-    memcpy(&body[bodyown[j]],&body[nlocal_body-1],sizeof(Body));
-    nlocal_body--;
-  }
-
-  // if atom I owns a body, reset I's body.ilocal to loc J
-  // do NOT do this if self-copy (I=J) since I's body is already deleted
-
-  if (bodyown[i] >= 0 && i != j) body[bodyown[i]].ilocal = j;
-  bodyown[j] = bodyown[i];
+  FixRigidSmall::copy_arrays(i, j, delflag);
 }
 
 /* ----------------------------------------------------------------------
@@ -266,49 +215,8 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
 
 int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
 {
-  buf[0] = ubuf(bodytag[i]).d;
-  buf[1] = ubuf(xcmimage[i]).d;
-  buf[2] = displace[i][0];
-  buf[3] = displace[i][1];
-  buf[4] = displace[i][2];
+  int m = FixRigidSmall::pack_exchange(i, buf);buf[0] = ubuf(bodytag[i]).d;
 
-  // extended attribute info
-
-  int m = 5;
-  if (extended) {
-    buf[m++] = eflags[i];
-    for (int j = 0; j < orientflag; j++)
-      buf[m++] = orient[i][j];
-    if (dorientflag) {
-      buf[m++] = dorient[i][0];
-      buf[m++] = dorient[i][1];
-      buf[m++] = dorient[i][2];
-    }
-  }
-
-  // atom not in a rigid body
-
-  if (!bodytag[i]) return m;
-
-  // must also pack vatom if per-atom virial calculated on this timestep
-  // since vatom is calculated before and after atom migration
-
-  if (vflag_atom)
-    for (int k = 0; k < 6; k++)
-      buf[m++] = vatom[i][k];
-
-  // atom does not own its rigid body
-
-  if (bodyown[i] < 0) {
-    buf[m++] = 0;
-    return m;
-  }
-
-  // body info for atom that owns a rigid body
-
-  buf[m++] = 1;
-  memcpy(&buf[m],&body[bodyown[i]],sizeof(Body));
-  m += bodysize;
   return m;
 }
 
@@ -318,56 +226,7 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
 
 int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
 {
-  bodytag[nlocal] = (tagint) ubuf(buf[0]).i;
-  xcmimage[nlocal] = (imageint) ubuf(buf[1]).i;
-  displace[nlocal][0] = buf[2];
-  displace[nlocal][1] = buf[3];
-  displace[nlocal][2] = buf[4];
-
-  // extended attribute info
-
-  int m = 5;
-  if (extended) {
-    eflags[nlocal] = static_cast<int> (buf[m++]);
-    for (int j = 0; j < orientflag; j++)
-      orient[nlocal][j] = buf[m++];
-    if (dorientflag) {
-      dorient[nlocal][0] = buf[m++];
-      dorient[nlocal][1] = buf[m++];
-      dorient[nlocal][2] = buf[m++];
-    }
-  }
-
-  // atom not in a rigid body
-
-  if (!bodytag[nlocal]) {
-    bodyown[nlocal] = -1;
-    return m;
-  }
-
-  // must also unpack vatom if per-atom virial calculated on this timestep
-  // since vatom is calculated before and after atom migration
-
-  if (vflag_atom)
-    for (int k = 0; k < 6; k++)
-      vatom[nlocal][k] = buf[m++];
-
-  // atom does not own its rigid body
-
-  bodyown[nlocal] = static_cast<int> (buf[m++]);
-  if (bodyown[nlocal] == 0) {
-    bodyown[nlocal] = -1;
-    return m;
-  }
-
-  // body info for atom that owns a rigid body
-
-  if (nlocal_body == nmax_body) grow_body();
-  memcpy(&body[nlocal_body],&buf[m],sizeof(Body));
-  m += bodysize;
-  body[nlocal_body].ilocal = nlocal;
-  bodyown[nlocal] = nlocal_body++;
-
+  int m = FixRigidSmall::unpack_exchange(nlocal, buf);
   return m;
 }
 
@@ -379,86 +238,7 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
 int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
                                      int /*pbc_flag*/, int * /*pbc*/)
 {
-  int i,j;
-  double *xcm,*xgc,*vcm,*quat,*omega,*ex_space,*ey_space,*ez_space,*conjqm;
-
-  int m = 0;
-
-  if (commflag == INITIAL) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      xcm = body[bodyown[j]].xcm;
-      buf[m++] = xcm[0];
-      buf[m++] = xcm[1];
-      buf[m++] = xcm[2];
-      xgc = body[bodyown[j]].xgc;
-      buf[m++] = xgc[0];
-      buf[m++] = xgc[1];
-      buf[m++] = xgc[2];
-      vcm = body[bodyown[j]].vcm;
-      buf[m++] = vcm[0];
-      buf[m++] = vcm[1];
-      buf[m++] = vcm[2];
-      quat = body[bodyown[j]].quat;
-      buf[m++] = quat[0];
-      buf[m++] = quat[1];
-      buf[m++] = quat[2];
-      buf[m++] = quat[3];
-      omega = body[bodyown[j]].omega;
-      buf[m++] = omega[0];
-      buf[m++] = omega[1];
-      buf[m++] = omega[2];
-      ex_space = body[bodyown[j]].ex_space;
-      buf[m++] = ex_space[0];
-      buf[m++] = ex_space[1];
-      buf[m++] = ex_space[2];
-      ey_space = body[bodyown[j]].ey_space;
-      buf[m++] = ey_space[0];
-      buf[m++] = ey_space[1];
-      buf[m++] = ey_space[2];
-      ez_space = body[bodyown[j]].ez_space;
-      buf[m++] = ez_space[0];
-      buf[m++] = ez_space[1];
-      buf[m++] = ez_space[2];
-      conjqm = body[bodyown[j]].conjqm;
-      buf[m++] = conjqm[0];
-      buf[m++] = conjqm[1];
-      buf[m++] = conjqm[2];
-      buf[m++] = conjqm[3];
-    }
-
-  } else if (commflag == FINAL) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      vcm = body[bodyown[j]].vcm;
-      buf[m++] = vcm[0];
-      buf[m++] = vcm[1];
-      buf[m++] = vcm[2];
-      omega = body[bodyown[j]].omega;
-      buf[m++] = omega[0];
-      buf[m++] = omega[1];
-      buf[m++] = omega[2];
-      conjqm = body[bodyown[j]].conjqm;
-      buf[m++] = conjqm[0];
-      buf[m++] = conjqm[1];
-      buf[m++] = conjqm[2];
-      buf[m++] = conjqm[3];
-    }
-
-  } else if (commflag == FULL_BODY) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) buf[m++] = 0;
-      else {
-        buf[m++] = 1;
-        memcpy(&buf[m],&body[bodyown[j]],sizeof(Body));
-        m += bodysize;
-      }
-    }
-  }
-
+  int m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
   return m;
 }
 
@@ -470,88 +250,7 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
 
 void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
-  int i,j,last;
-  double *xcm,*xgc,*vcm,*quat,*omega,*ex_space,*ey_space,*ez_space,*conjqm;
-
-  int m = 0;
-  last = first + n;
-
-  if (commflag == INITIAL) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      xcm = body[bodyown[i]].xcm;
-      xcm[0] = buf[m++];
-      xcm[1] = buf[m++];
-      xcm[2] = buf[m++];
-      xgc = body[bodyown[i]].xgc;
-      xgc[0] = buf[m++];
-      xgc[1] = buf[m++];
-      xgc[2] = buf[m++];
-      vcm = body[bodyown[i]].vcm;
-      vcm[0] = buf[m++];
-      vcm[1] = buf[m++];
-      vcm[2] = buf[m++];
-      quat = body[bodyown[i]].quat;
-      quat[0] = buf[m++];
-      quat[1] = buf[m++];
-      quat[2] = buf[m++];
-      quat[3] = buf[m++];
-      omega = body[bodyown[i]].omega;
-      omega[0] = buf[m++];
-      omega[1] = buf[m++];
-      omega[2] = buf[m++];
-      ex_space = body[bodyown[i]].ex_space;
-      ex_space[0] = buf[m++];
-      ex_space[1] = buf[m++];
-      ex_space[2] = buf[m++];
-      ey_space = body[bodyown[i]].ey_space;
-      ey_space[0] = buf[m++];
-      ey_space[1] = buf[m++];
-      ey_space[2] = buf[m++];
-      ez_space = body[bodyown[i]].ez_space;
-      ez_space[0] = buf[m++];
-      ez_space[1] = buf[m++];
-      ez_space[2] = buf[m++];
-      conjqm = body[bodyown[i]].conjqm;
-      conjqm[0] = buf[m++];
-      conjqm[1] = buf[m++];
-      conjqm[2] = buf[m++];
-      conjqm[3] = buf[m++];
-    }
-
-  } else if (commflag == FINAL) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      vcm = body[bodyown[i]].vcm;
-      vcm[0] = buf[m++];
-      vcm[1] = buf[m++];
-      vcm[2] = buf[m++];
-      omega = body[bodyown[i]].omega;
-      omega[0] = buf[m++];
-      omega[1] = buf[m++];
-      omega[2] = buf[m++];
-      conjqm = body[bodyown[i]].conjqm;
-      conjqm[0] = buf[m++];
-      conjqm[1] = buf[m++];
-      conjqm[2] = buf[m++];
-      conjqm[3] = buf[m++];
-    }
-
-  } else if (commflag == FULL_BODY) {
-    for (i = first; i < last; i++) {
-      bodyown[i] = static_cast<int> (buf[m++]);
-      if (bodyown[i] == 0) bodyown[i] = -1;
-      else {
-        j = nlocal_body + nghost_body;
-        if (j == nmax_body) grow_body();
-        memcpy(&body[j],&buf[m],sizeof(Body));
-        m += bodysize;
-        body[j].ilocal = i;
-        bodyown[i] = j;
-        nghost_body++;
-      }
-    }
-  }
+  FixRigidSmall::unpack_forward_comm(n, first, buf);
 }
 
 /* ----------------------------------------------------------------------
@@ -561,75 +260,7 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
 
 int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
 {
-  int i,j,m,last;
-  double *fcm,*torque,*vcm,*angmom,*xcm, *xgc;
-
-  m = 0;
-  last = first + n;
-
-  if (commflag == FORCE_TORQUE) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      fcm = body[bodyown[i]].fcm;
-      buf[m++] = fcm[0];
-      buf[m++] = fcm[1];
-      buf[m++] = fcm[2];
-      torque = body[bodyown[i]].torque;
-      buf[m++] = torque[0];
-      buf[m++] = torque[1];
-      buf[m++] = torque[2];
-    }
-
-  } else if (commflag == VCM_ANGMOM) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      vcm = body[bodyown[i]].vcm;
-      buf[m++] = vcm[0];
-      buf[m++] = vcm[1];
-      buf[m++] = vcm[2];
-      angmom = body[bodyown[i]].angmom;
-      buf[m++] = angmom[0];
-      buf[m++] = angmom[1];
-      buf[m++] = angmom[2];
-    }
-
-  } else if (commflag == XCM_MASS) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      xcm = body[bodyown[i]].xcm;
-      xgc = body[bodyown[i]].xgc;
-      buf[m++] = xcm[0];
-      buf[m++] = xcm[1];
-      buf[m++] = xcm[2];
-      buf[m++] = xgc[0];
-      buf[m++] = xgc[1];
-      buf[m++] = xgc[2];
-      buf[m++] = body[bodyown[i]].mass;
-      buf[m++] = static_cast<double>(body[bodyown[i]].natoms);
-    }
-
-  } else if (commflag == ITENSOR) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      j = bodyown[i];
-      buf[m++] = itensor[j][0];
-      buf[m++] = itensor[j][1];
-      buf[m++] = itensor[j][2];
-      buf[m++] = itensor[j][3];
-      buf[m++] = itensor[j][4];
-      buf[m++] = itensor[j][5];
-    }
-
-  } else if (commflag == DOF) {
-    for (i = first; i < last; i++) {
-      if (bodyown[i] < 0) continue;
-      j = bodyown[i];
-      buf[m++] = counts[j][0];
-      buf[m++] = counts[j][1];
-      buf[m++] = counts[j][2];
-    }
-  }
-
+  int m = FixRigidSmall::pack_reverse_comm(n, first, buf);
   return m;
 }
 
@@ -639,89 +270,7 @@ int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
 
 void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
 {
-  int i,j,k;
-  double *fcm,*torque,*vcm,*angmom,*xcm, *xgc;
-
-  int m = 0;
-
-  if (commflag == FORCE_TORQUE) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      fcm = body[bodyown[j]].fcm;
-      fcm[0] += buf[m++];
-      fcm[1] += buf[m++];
-      fcm[2] += buf[m++];
-      torque = body[bodyown[j]].torque;
-      torque[0] += buf[m++];
-      torque[1] += buf[m++];
-      torque[2] += buf[m++];
-    }
-
-  } else if (commflag == VCM_ANGMOM) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      vcm = body[bodyown[j]].vcm;
-      vcm[0] += buf[m++];
-      vcm[1] += buf[m++];
-      vcm[2] += buf[m++];
-      angmom = body[bodyown[j]].angmom;
-      angmom[0] += buf[m++];
-      angmom[1] += buf[m++];
-      angmom[2] += buf[m++];
-    }
-
-  } else if (commflag == XCM_MASS) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      xcm = body[bodyown[j]].xcm;
-      xgc = body[bodyown[j]].xgc;
-      xcm[0] += buf[m++];
-      xcm[1] += buf[m++];
-      xcm[2] += buf[m++];
-      xgc[0] += buf[m++];
-      xgc[1] += buf[m++];
-      xgc[2] += buf[m++];
-      body[bodyown[j]].mass += buf[m++];
-      body[bodyown[j]].natoms += static_cast<int>(buf[m++]);
-    }
-
-  } else if (commflag == ITENSOR) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      k = bodyown[j];
-      itensor[k][0] += buf[m++];
-      itensor[k][1] += buf[m++];
-      itensor[k][2] += buf[m++];
-      itensor[k][3] += buf[m++];
-      itensor[k][4] += buf[m++];
-      itensor[k][5] += buf[m++];
-    }
-
-  } else if (commflag == DOF) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
-      if (bodyown[j] < 0) continue;
-      k = bodyown[j];
-      counts[k][0] += static_cast<int> (buf[m++]);
-      counts[k][1] += static_cast<int> (buf[m++]);
-      counts[k][2] += static_cast<int> (buf[m++]);
-    }
-  }
-}
-
-/* ----------------------------------------------------------------------
-   grow body data structure
-------------------------------------------------------------------------- */
-
-void FixRigidSmallLSDEM::grow_body()
-{
-  nmax_body += DELTA_BODY;
-  body = (Body *) memory->srealloc(body,nmax_body*sizeof(Body),
-                                   "rigid/small:body");
+  FixRigidSmall::unpack_reverse_comm(n, list, buf);
 }
 
 /* ----------------------------------------------------------------------

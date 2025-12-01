@@ -45,10 +45,22 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
  protected:
   int stored_flag, distributed_flag;
 
-  double maxcut;
+  double **global_grids;
+  double *grid_scale;
+  double maxcut, warncut;
+  int dim, rcell;
+  int subgrid_size[3];     // number of distributed subgrid points in each dimension
 
-  void grow_body();
+  struct BodyLSDEM {
+    int style;             // distributed vs. global memory
+    int grid_index;        // index of body's global memory, -1 if distributed
+    double grid_stride;    // the LS grid stride, assumed equal in all direction
+    double grid_vol;       // volume of LS grid
+    double node_area;      // area associated with each grid node
+    double grid_min[3];    // minimum xyz coordinates of LS grid
+  };
 
+  BodyLSDEM *BodyLSDEM;    // list of rigid bodies, owned and ghost
 };
 
 }    // namespace LAMMPS_NS
