@@ -50,7 +50,7 @@ static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
-  FixRigidSmall(lmp, narg, arg)
+  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr)
 {
   maxcut = -1;
   stored_flag = 0;
@@ -61,12 +61,44 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/small/ls/dem");
 
+  nmax_bodyLS = 0;
+  while (nmax_bodyLS < nlocal_body) nmax_bodyLS += DELTA_BODY;
+  bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
+
+  // set bodyown for owned atoms
+
+  tagint *tag = atom->tag;
+  nlocal_bodyLS = nghost_bodyLS = 0;
+  for (int i = 0; i < atom->nlocal; i++)
+    if (bodytag[i] == tag[i]) {
+      bodyLS[nlocal_bodyLS].ilocal = i;
+      bodyownLS[i] = nlocal_bodyLS++;
+    } else bodyownLS[i] = -1;
+
+  // bodysizeLS = sizeof(BodyLS) in doubles
+
+  bodysizeLS = sizeof(BodyLS) / sizeof(double);
+  if (bodysizeLS*sizeof(double) != sizeof(BodyLS)) bodysizeLS++;
+
+  // increase max comm size needed for LSDEM
+
+  comm_forward += bodysizeLS;
+
 }
 
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 {
+  memory->sfree(bodyLS);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::setup_pre_neighbor()
+{
+  FixRigidSmall::setup_pre_neighbor();
+  nghost_bodyLS = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -190,6 +222,13 @@ void FixRigidSmallLSDEM::setup(int vflag)
   }
 }
 
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::pre_neighbor()
+{
+  FixRigidSmall::pre_neighbor();
+  nghost_bodyLS = 0;
+}
 
 /* ----------------------------------------------------------------------
    allocate local atom-based arrays
@@ -198,6 +237,7 @@ void FixRigidSmallLSDEM::setup(int vflag)
 void FixRigidSmallLSDEM::grow_arrays(int nmax)
 {
   FixRigidSmall::grow_arrays(nmax);
+  memory->grow(bodyownLS, nmax, "rigid/small/ls/dem:bodyownLS");
 }
 
 /* ----------------------------------------------------------------------
@@ -207,6 +247,30 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
 void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
 {
   FixRigidSmall::copy_arrays(i, j, delflag);
+
+  // if deleting atom J via delflag and J owns a body, then delete it
+
+  if (delflag && bodyownLS[j] >= 0) {
+    bodyownLS[bodyLS[nlocal_bodyLS - 1].ilocal] = bodyownLS[j];
+    memcpy(&bodyLS[bodyownLS[j]], &bodyLS[nlocal_bodyLS - 1], sizeof(BodyLS));
+    nlocal_bodyLS--;
+  }
+
+  // if atom I owns a body, reset I's body.ilocal to loc J
+  // do NOT do this if self-copy (I=J) since I's body is already deleted
+
+  if (bodyownLS[i] >= 0 && i != j) bodyLS[bodyownLS[i]].ilocal = j;
+  bodyownLS[j] = bodyownLS[i];
+}
+
+/* ----------------------------------------------------------------------
+   initialize one atom's array values, called when atom is created
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::set_arrays(int i)
+{
+  FixRigidSmall::set_arrays(i);
+  bodyownLS[i] = -1;
 }
 
 /* ----------------------------------------------------------------------
@@ -217,6 +281,22 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
 {
   int m = FixRigidSmall::pack_exchange(i, buf);buf[0] = ubuf(bodytag[i]).d;
 
+  // atom not in a rigid body
+
+  if (!bodytag[i]) return m;
+
+  // atom does not own its rigid body
+
+  if (bodyownLS[i] < 0) {
+    buf[m++] = 0;
+    return m;
+  }
+
+  // body info for atom that owns a rigid body
+
+  buf[m++] = 1;
+  memcpy(&buf[m], &bodyLS[bodyownLS[i]], sizeof(BodyLS));
+  m += bodysizeLS;
   return m;
 }
 
@@ -227,6 +307,29 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
 int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
 {
   int m = FixRigidSmall::unpack_exchange(nlocal, buf);
+
+  // atom not in a rigid body
+
+  if (!bodytag[nlocal]) {
+    bodyownLS[nlocal] = -1;
+    return m;
+  }
+
+  // atom does not own its rigid body
+
+  bodyownLS[nlocal] = static_cast<int> (buf[m++]);
+  if (bodyownLS[nlocal] == 0) {
+    bodyownLS[nlocal] = -1;
+    return m;
+  }
+
+  // body info for atom that owns a rigid body
+
+  if (nlocal_bodyLS == nmax_body) grow_body_ls();
+  memcpy(&bodyLS[nlocal_bodyLS], &buf[m], sizeof(BodyLS));
+  m += bodysizeLS;
+  bodyLS[nlocal_bodyLS].ilocal = nlocal;
+  bodyownLS[nlocal] = nlocal_bodyLS++;
   return m;
 }
 
@@ -239,6 +342,20 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
                                      int /*pbc_flag*/, int * /*pbc*/)
 {
   int m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
+
+  if (commflag == FULL_BODY) {
+    int i, j;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      if (bodyownLS[j] < 0) buf[m++] = 0;
+      else {
+        buf[m++] = 1;
+        memcpy(&buf[m], &bodyLS[bodyownLS[j]], sizeof(BodyLS));
+        m += bodysizeLS;
+      }
+    }
+  }
+
   return m;
 }
 
@@ -251,6 +368,28 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
 void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   FixRigidSmall::unpack_forward_comm(n, first, buf);
+
+  if (commflag == FULL_BODY) {
+    int i, j, last;
+    last = first + n;
+    int m = 0;
+    for (i = first; i < last; i++)
+      if (bodyown[i] != 0) m += bodysize;
+
+    for (i = first; i < last; i++) {
+      bodyownLS[i] = static_cast<int> (buf[m++]);
+      if (bodyownLS[i] == 0) bodyownLS[i] = -1;
+      else {
+        j = nlocal_bodyLS + nghost_bodyLS;
+        if (j == nmax_bodyLS) grow_body_ls();
+        memcpy(&bodyLS[j],&buf[m],sizeof(BodyLS));
+        m += bodysizeLS;
+        bodyLS[j].ilocal = i;
+        bodyownLS[i] = j;
+        nghost_bodyLS++;
+      }
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -273,6 +412,18 @@ void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
   FixRigidSmall::unpack_reverse_comm(n, list, buf);
 }
 
+
+/* ----------------------------------------------------------------------
+   grow bodyLS data structure
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::grow_body_ls()
+{
+  nmax_bodyLS += DELTA_BODY;
+  bodyLS = (BodyLS *) memory->srealloc(bodyLS, nmax_bodyLS * sizeof(BodyLS),
+                                   "rigid/small/ls/dem:bodyLS");
+}
+
 /* ----------------------------------------------------------------------
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
@@ -281,6 +432,7 @@ double FixRigidSmallLSDEM::memory_usage()
 {
   int nmax = atom->nmax;
   double bytes = FixRigidSmall::memory_usage();
-  // todo
+  bytes += (double)nmax * sizeof(int);
+  bytes += (double)nmax_body * sizeof(BodyLS);
   return bytes;
 }

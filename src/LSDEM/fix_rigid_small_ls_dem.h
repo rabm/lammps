@@ -32,6 +32,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
+  void set_arrays(int) override;
 
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
@@ -39,6 +40,9 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void unpack_forward_comm(int, int, double *) override;
   int pack_reverse_comm(int, int, double *) override;
   void unpack_reverse_comm(int, int *, double *) override;
+
+  void setup_pre_neighbor() override;
+  void pre_neighbor() override;
 
   double memory_usage() override;
 
@@ -51,7 +55,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension
 
-  struct BodyLSDEM {
+  struct BodyLS {
+    int ilocal;            // index of owning atom, duplicate from Body
     int style;             // distributed vs. global memory
     int grid_index;        // index of body's global memory, -1 if distributed
     double grid_stride;    // the LS grid stride, assumed equal in all direction
@@ -60,7 +65,21 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     double grid_min[3];    // minimum xyz coordinates of LS grid
   };
 
-  BodyLSDEM *BodyLSDEM;    // list of rigid bodies, owned and ghost
+  BodyLS *bodyLS;          // list of rigid bodies, owned and ghost
+  int nlocal_bodyLS;       // # of owned rigid bodies
+  int nghost_bodyLS;       // # of ghost rigid bodies
+  int nmax_bodyLS;         // max # of bodies that body can hold
+  int bodysizeLS;          // sizeof(BodyLS) in doubles
+
+  // per-atom quantities
+  // only defined for owned atoms, except bodyown for own+ghost
+
+  int *bodyownLS;           // mirror of bodyown
+
+  // local methods
+
+  void grow_body_ls();
+
 };
 
 }    // namespace LAMMPS_NS
