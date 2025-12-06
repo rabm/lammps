@@ -20,6 +20,7 @@
 #include "force.h"
 #include "group.h"
 #include "input.h"
+#include "ls_dem_extra.h"
 #include "math_const.h"
 #include "math_eigen.h"
 #include "math_extra.h"
@@ -40,6 +41,7 @@ using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
+using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 
@@ -47,54 +49,6 @@ static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
 static constexpr double EPSILON_INERTIA = 1.0e-3; // 0.1%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
 static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
-
-inline double FixRigidLSDEM::smeared_heaviside_step(double x)
-{
-  // A function that smoothly transition from 0 to 1 when x goes from -1 to 1.
-  // For x < -1, the function should be 0. For x > 1, the function should be 1.
-  // See Kawamoto et al. (2016).
-  if (x <= -1){ // Outside and far away from boundary
-    return 0.0;
-  }else if (x >= 1){ // Inside and far away from boundary
-    return 1.0;
-  }else{ // Close to boundary
-    return 0.5 * (1.0 + x + sin(MY_PI * x) / MY_PI);
-  }
-}
-
-inline double FixRigidLSDEM::compute_volume(int *grid_size, double stride, double *grid_values, double epsilon)
-{
-  // Volume integration without centre of mass (re)computation and level-set offset epsilon
-
-  // This is the reference distance values that determines the smearing with of
-  // the Heaviside step function. Current expression is the half-diagional of the
-  // grid cell divided by a smearing constant.
-  double smearCoeff = 1.5;
-  double ls_ref = 1.0;
-  if (smearCoeff != 0)
-    ls_ref = sqrt(0.75) * stride / smearCoeff;
-
-  // Initialise volume and centre of mass
-  double volume = 0.0;
-  // Cell volume, temporary grid points, integration volume.
-  double volume_cell = stride * stride;
-  if (domain->dimension == 3) volume_cell *= stride;
-
-  // Integration
-  double dV, ls_val;
-  for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
-    for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
-      for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]] + epsilon;
-        dV = smeared_heaviside_step( -ls_val / ls_ref ) * volume_cell;
-        if (dV > 0.0) {
-          volume += dV;
-        }
-      }
-    }
-  }
-  return volume;
-}
 
 //TODO: Should we have a flag (or child classes) for different memory distribution strategies?
 //      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
@@ -194,6 +148,7 @@ void FixRigidLSDEM::init()
   double **grain_omega = atom->darray[index_ls_dem_omega];
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody, i, a;
+  int dimension = domain->dimension;
 
   for (i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
@@ -237,7 +192,6 @@ void FixRigidLSDEM::init()
     // Read grid dimensions for all bodies
     std::map <std::string, std::set<int>> file_map;
     std::string filename;
-    dim = domain->dimension;
     int grid_size_flat, max_grid_size_flat(0);
     double min_stride = DBL_MAX;
     for (ibody = 0; ibody < nbody; ibody++) {
@@ -286,7 +240,7 @@ void FixRigidLSDEM::init()
 
     if (distributed_flag) {
       for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?) DvdH: I think +1 is not needed, but result should be cast to int?
-      if (dim == 2) subgrid_size[2] = 1;
+      if (dimension == 2) subgrid_size[2] = 1;
       id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
       ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
       if (ntotal > RECOMMENDED_MAX_NGRID)
@@ -320,7 +274,7 @@ void FixRigidLSDEM::init()
     // DvdH: The LS grid should ALWAYS be axis-aligned. Something else should be giving an orientation to which we rotate just after loading.
 
     double *ls_val;
-    double delx, dely, delz;
+    double delx, dely, delz, area;
     double **x = atom->x;
     int need_distributed, need_global, need_padding;
     double com_temp[3], density, inertia_temp[3][3], evectors[3][3], scale, scale2, scale3;
@@ -345,10 +299,10 @@ void FixRigidLSDEM::init()
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
         // A misalignment would mean that the forces and rotations are applied to the wrong point in
         // space, leading to integration issues.
-        if( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
+        if ( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
                   (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
                   (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
-        ){
+        ) {
           error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
             grid_min[ibody][0],grid_min[ibody][1],grid_min[ibody][2],com_temp[0],com_temp[1],com_temp[2]);
         }
@@ -367,7 +321,11 @@ void FixRigidLSDEM::init()
         }
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
-        node_area[ibody] = compute_surface_area(grid_size[ibody], grid_stride[ibody], temp_grid_values);
+        area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
+        // Test for physical realism
+        if (!((area > 0.0) && std::isfinite(area)))
+          error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
+        node_area[ibody] = area;
 
         // Normalise by number of nodes
         node_area[ibody] /= grid_nnodes[ibody];
@@ -437,7 +395,7 @@ void FixRigidLSDEM::init()
           // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
           index_grid_min_local[0] = ix_node - rcell;
           index_grid_min_local[1] = iy_node - rcell;
-          index_grid_min_local[2] = (dim == 3) ? iz_node - rcell : 0;
+          index_grid_min_local[2] = (dimension == 3) ? iz_node - rcell : 0;
 
           // Location of local grid minimum relative to CoM
           grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
@@ -1061,7 +1019,7 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
     for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
       for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
         ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
-        dV = smeared_heaviside_step( -ls_val / ls_ref ) * volume_cell;
+        dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
         if (dV > 0.0) {
           volume += dV;
           com_temp[0] += ind_x * stride * dV;
@@ -1086,7 +1044,7 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
     for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
       for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
         ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
-        dV = smeared_heaviside_step( -ls_val / ls_ref ) * volume_cell;
+        dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
         if (dV > 0.0) {
           delx = ind_x * stride - com_temp[0];
           dely = ind_y * stride - com_temp[1];
@@ -1111,29 +1069,6 @@ double FixRigidLSDEM::compute_grid_properties(int *grid_size, double stride, dou
     error->all(FLERR, "Non-inertial reference frame detected for level set in {}. Intergration of rotational motion will be wrong.", filename);
 
   return volume;
-}
-
-/* --------------------------------------------------------------------------------------
-   Improved surface area calculation w.r.t. Duriez and Galusinski (2025) Comp. Phys. Comm.
---------------------------------------------------------------------------------------- */
-
-double FixRigidLSDEM::compute_surface_area(int *grid_size, double stride, double *grid_values)
-{
-// Computation of the surface area as the volume derivative over a thin shell of one grid stride.
-  double epsilon, vol_in, vol_out, area;
-  // Value of epsilon below gives the most accurate results. Why? Level set does not have more information
-  // than is in the grid, and larger values increase error on the finite-difference approximation.
-  epsilon = 0.5*stride;
-  vol_in = compute_volume(grid_size, stride, grid_values, epsilon);
-  vol_out = compute_volume(grid_size, stride, grid_values, -epsilon);
-  // Finite central difference
-  area = (vol_out - vol_in) / (2.0 * epsilon);
-
-  // Test for physical realism
-  if ( !( (area > 0.0) && std::isfinite(area) ) )
-    error->all(FLERR, "Surface area calculation returns nonesense, giving {} from volumes inside {} and outside {}.",area,vol_in,vol_out);
-
-	return area;
 }
 
 /* ----------------------------------------------------------------------

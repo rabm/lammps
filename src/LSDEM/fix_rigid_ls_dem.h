@@ -67,7 +67,7 @@ class FixRigidLSDEM : public FixRigid {
   int **grid_size;              // size of each grid
   int subgrid_size[3];          // number of distributed subgrid points in each dimension
   int *grid_style;              // distributed vs. global memory
-  int *grid_index;              // index of body's global memory, -1 otherwise
+  int *grid_index;              // index of body's global memory, -1 distributed
   double **grid_min;            // minimum xyz coordinates of LS grid
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
   double *grid_vol;
@@ -83,9 +83,6 @@ class FixRigidLSDEM : public FixRigid {
   void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
   double compute_grid_properties(int *, double, double *, double *, double[3][3], std::string);
-  inline double smeared_heaviside_step(double);
-  inline double compute_volume(int *, double, double *, double);
-  double compute_surface_area(int *, double, double *);
 };
 
 }    // namespace LAMMPS_NS

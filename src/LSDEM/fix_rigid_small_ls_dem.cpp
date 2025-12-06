@@ -22,6 +22,7 @@
 #include "group.h"
 #include "hashlittle.h"
 #include "input.h"
+#include "ls_dem_extra.h"
 #include "math_const.h"
 #include "math_eigen.h"
 #include "math_extra.h"
@@ -45,7 +46,12 @@ using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
 
-static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
+enum {GLOBAL, DISTRIBUTED};
+
+static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
+static constexpr double EPSILON_INERTIA = 1.0e-3; // 0.1%
+static constexpr int MAX_ITERATIONS = 100; // For surface area integration
+static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
 
 /* ---------------------------------------------------------------------- */
 
@@ -78,12 +84,11 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   // bodysizeLS = sizeof(BodyLS) in doubles
 
   bodysizeLS = sizeof(BodyLS) / sizeof(double);
-  if (bodysizeLS*sizeof(double) != sizeof(BodyLS)) bodysizeLS++;
+  if (bodysizeLS * sizeof(double) != sizeof(BodyLS)) bodysizeLS++;
 
   // increase max comm size needed for LSDEM
 
   comm_forward += bodysizeLS;
-
 }
 
 /* ---------------------------------------------------------------------- */
