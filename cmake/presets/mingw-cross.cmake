@@ -1,8 +1,6 @@
 set(WIN_PACKAGES
   AMOEBA
   ASPHERE
-  ATC
-  AWPMD
   BOCS
   BODY
   BPM
@@ -60,7 +58,6 @@ set(WIN_PACKAGES
   PERI
   PHONON
   PLUGIN
-  POEMS
   PTM
   QEQ
   QTB
@@ -91,7 +88,7 @@ endif()
 set(DOWNLOAD_VORO ON CACHE BOOL "" FORCE)
 set(DOWNLOAD_EIGEN3 ON CACHE BOOL "" FORCE)
 set(LAMMPS_MEMALIGN "0" CACHE STRING "" FORCE)
-set(CMAKE_TUNE_FLAGS "-Wno-missing-include-dirs" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-include-dirs" CACHE STRING "" FORCE)
 set(CMAKE_EXE_LINKER_FLAGS "-Wl,--enable-stdcall-fixup,--as-needed,-lssp" CACHE STRING "" FORCE)
 set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--enable-stdcall-fixup,--as-needed,-lssp" CACHE STRING "" FORCE)
 set(BUILD_TOOLS ON CACHE BOOL "" FORCE)

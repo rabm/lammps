@@ -60,7 +60,7 @@ static constexpr int MAXLINE = 1024;
 using namespace LAMMPS_NS;
 
 static const char cite_ml_rann_package[] =
-  "ML-RANN package: doi:10.1016/j.commatsci.2020.110207\n\n"
+  "ML-RANN package: https://doi.org/10.1016/j.commatsci.2020.110207\n\n"
   "@Article{Nitol2021,\n"
   " author = {Nitol, Mashroor S and Dickel, Doyl E and Barrett, Christopher D},\n"
   " title = {Artificial Neural Network Potential for Pure Zinc},\n"
@@ -302,8 +302,8 @@ void PairRANN::coeff(int narg, char **arg)
   int i,j;
   deallocate();//clear allocation from any previous coeff
   map = new int[atom->ntypes+1];
-  if (narg != 3 + atom->ntypes) error->one(FLERR,"Incorrect args for pair coefficients");
-  if (strcmp(arg[0],"*") != 0 || strcmp(arg[1],"*") != 0) error->one(FLERR,"Incorrect args for pair coefficients");
+  if (narg != 3 + atom->ntypes) error->one(FLERR,"Incorrect args for pair coefficients" + utils::errorurl(21));
+  if (strcmp(arg[0],"*") != 0 || strcmp(arg[1],"*") != 0) error->one(FLERR,"Incorrect args for pair coefficients" + utils::errorurl(21));
   nelements = -1;
   read_file(arg[2]);
   // read args that map atom types to elements in potential file
@@ -338,7 +338,7 @@ void PairRANN::coeff(int narg, char **arg)
       }
     }
   }
-  if (count == 0) error->one(FLERR,"Incorrect args for pair coefficients");
+  if (count == 0) error->one(FLERR,"Incorrect args for pair coefficients" + utils::errorurl(21));
   for (i=0;i<nelementsp;i++) {
     for (j=0;j<fingerprintperelement[i];j++) {
       fingerprints[i][j]->allocate();
@@ -532,7 +532,7 @@ void PairRANN::read_fingerprint_constants(std::vector<std::string> line,std::vec
     if (found) {break;}
   }
   if (!found) {error->one(filename,linenum-1,"cannot define constants for unknown fingerprint");}
-  fingerprints[i][i1]->fullydefined=fingerprints[i][i1]->parse_values(line[nwords-1],line1);
+  fingerprints[i][i1]->fullydefined=fingerprints[i][i1]->parse_values(line[nwords-1],line1); // NOLINT
   delete[] atomtypes;
 }
 
@@ -1271,7 +1271,7 @@ void PairRANN::errorf(const char *file, int line, const char * message) {
 }
 
 int PairRANN::factorial(int n) {
-  return round(MathSpecial::factorial(n));
+  return round(MathSpecial::factorial(n)); // NOLINT
 }
 
 RANN::Fingerprint *PairRANN::create_fingerprint(const char *style)

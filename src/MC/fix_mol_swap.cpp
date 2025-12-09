@@ -87,8 +87,7 @@ FixMolSwap::FixMolSwap(LAMMPS *lmp, int narg, char **arg) :
   if (seed <= 0) error->all(FLERR,"Illegal fix mol/swap command");
   if (temperature <= 0.0) error->all(FLERR,"Illegal fix mol/swap command");
   if (ke_flag && atom->rmass)
-    error->all(FLERR,"Cannot conserve kinetic energy with fix mol/swap "
-               "unless per-type masses");
+    error->all(FLERR,"Cannot conserve kinetic energy with fix mol/swap unless per-type masses");
 
   beta = 1.0/(force->boltz*temperature);
 
@@ -139,7 +138,7 @@ void FixMolSwap::init()
 {
   // c_pe = compute used to calculate before/after potential energy
 
-  auto id_pe = (char *) "thermo_pe";
+  auto *id_pe = (char *) "thermo_pe";
   int ipe = modify->find_compute(id_pe);
   c_pe = modify->compute[ipe];
 
@@ -488,7 +487,7 @@ void FixMolSwap::write_restart(FILE *fp)
 void FixMolSwap::restart(char *buf)
 {
   int n = 0;
-  auto list = (double *) buf;
+  auto *list = (double *) buf;
 
   seed = static_cast<int> (list[n++]);
   random->reset(seed);

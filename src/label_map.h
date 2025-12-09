@@ -23,17 +23,19 @@ namespace LAMMPS_NS {
 class LabelMap : protected Pointers {
   friend class AtomVec;
   friend class DumpCustom;
+  friend class DumpExtXYZ;
   friend class DumpXYZ;
   friend class ReadData;
 
  public:
   LabelMap(LAMMPS *lmp, int, int, int, int, int);
-  ~LabelMap();
+  ~LabelMap() override;
 
   void modify_lmap(int, char **);              // labelmap command in the input script
   void merge_lmap(LabelMap *, int);            // copy another lmap into this one
   void create_lmap2lmap(LabelMap *, int);      // index mapping between two lmaps
   int find(const std::string &, int) const;    // find numeric type of type label
+  const std::string &find(int, int) const;     // find type label for numeric type
   bool is_complete(int) const;                 // check if all types are assigned
 
   // input/output for atom class label map
@@ -42,10 +44,11 @@ class LabelMap : protected Pointers {
   void read_restart(FILE *fp);
   void write_restart(FILE *);
 
- protected:
+protected:
   int natomtypes, nbondtypes, nangletypes, ndihedraltypes, nimpropertypes;
   std::vector<std::string> typelabel, btypelabel, atypelabel;
   std::vector<std::string> dtypelabel, itypelabel;
+
   std::unordered_map<std::string, int> typelabel_map;
   std::unordered_map<std::string, int> btypelabel_map;
   std::unordered_map<std::string, int> atypelabel_map;

@@ -106,14 +106,16 @@ class Compute : protected Pointers {
   // KOKKOS host/device flag and data masks
 
   ExecutionSpace execution_space;
-  unsigned int datamask_read, datamask_modify;
+  uint64_t datamask_read, datamask_modify;
 
   int copymode, kokkosable;
 
   Compute(class LAMMPS *, int, char **);
   ~Compute() override;
   void modify_params(int, char **);
+  virtual int modify_param(int, char **) { return 0; }
   virtual void reset_extra_dof();
+  virtual void post_constructor() {}
 
   void init_flags();
   virtual void init() = 0;

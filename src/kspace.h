@@ -125,7 +125,7 @@ class KSpace : protected Pointers {
   // KOKKOS host/device flag and data masks
 
   ExecutionSpace execution_space;
-  unsigned int datamask_read, datamask_modify;
+  uint64_t datamask_read, datamask_modify;
   int copymode;
 
   int compute_flag;       // 0 if skip compute()
@@ -141,7 +141,7 @@ class KSpace : protected Pointers {
   void triclinic_check();
   void modify_params(int, char **);
   void *extract(const char *);
-  void compute_dummy(int, int);
+  void compute_dummy(int eflag, int vflag, int alloc = 1);
 
   // triclinic
 

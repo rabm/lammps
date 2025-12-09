@@ -58,11 +58,10 @@ class ComputeTempKokkos : public ComputeTemp {
 
   typedef s_CTEMP CTEMP;
   typedef DeviceType device_type;
-  typedef CTEMP value_type;
   typedef ArrayTypes<DeviceType> AT;
+  typedef CTEMP value_type;
 
   ComputeTempKokkos(class LAMMPS *, int, char **);
-
   double compute_scalar() override;
   void compute_vector() override;
 
@@ -75,14 +74,14 @@ class ComputeTempKokkos : public ComputeTemp {
   void operator()(TagComputeTempVector<RMASS>, const int&, CTEMP&) const;
 
  protected:
-  typename AT::t_v_array_randomread v;
-  typename AT::t_float_1d_randomread rmass;
-  typename AT::t_float_1d_randomread mass;
+  typename AT::t_kkfloat_1d_3_randomread v;
+  typename AT::t_kkfloat_1d_randomread rmass;
+  typename AT::t_kkfloat_1d_randomread mass;
   typename AT::t_int_1d_randomread type;
   typename AT::t_int_1d_randomread mask;
 };
 
-}
+}    // namespace LAMMPS_NS
 
 #endif
 #endif

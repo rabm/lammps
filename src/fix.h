@@ -135,7 +135,7 @@ class Fix : protected Pointers {
   int fuse_integrate_flag;     // 1 if can fuse initial integrate with final integrate
   int sort_device;             // 1 if sort on Device
   ExecutionSpace execution_space;
-  unsigned int datamask_read, datamask_modify;
+  uint64_t datamask_read, datamask_modify;
 
   Fix(class LAMMPS *, int, char **);
   ~Fix() override;
@@ -263,6 +263,8 @@ class Fix : protected Pointers {
   virtual void *extract(const char *, int &) { return nullptr; }
 
   virtual double memory_usage() { return 0.0; }
+
+  void set_copymode(int value) { copymode = value; }
 
  protected:
   int instance_me;    // which Fix class instantiation I am

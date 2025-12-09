@@ -42,6 +42,7 @@ struct TagComputeTempDeformRestoreBias{};
 template<class DeviceType>
 class ComputeTempDeformKokkos: public ComputeTempDeform {
  public:
+
   struct s_CTEMP {
     double t0, t1, t2, t3, t4, t5;
     KOKKOS_INLINE_FUNCTION
@@ -61,9 +62,9 @@ class ComputeTempDeformKokkos: public ComputeTempDeform {
   };
 
   typedef s_CTEMP CTEMP;
-  typedef CTEMP value_type;
   typedef DeviceType device_type;
   typedef ArrayTypes<DeviceType> AT;
+  typedef CTEMP value_type;
 
   ComputeTempDeformKokkos(class LAMMPS *, int, char **);
   double compute_scalar() override;
@@ -87,22 +88,21 @@ class ComputeTempDeformKokkos: public ComputeTempDeform {
   void operator()(TagComputeTempDeformRestoreBias, const int &i) const;
 
  protected:
-  typename ArrayTypes<DeviceType>::t_x_array_randomread x;
-  typename ArrayTypes<DeviceType>::t_v_array v;
-  typename ArrayTypes<DeviceType>::t_v_array vbiasall;
-  typename ArrayTypes<DeviceType>::t_float_1d_randomread rmass;
-  typename ArrayTypes<DeviceType>::t_float_1d_randomread mass;
-  typename ArrayTypes<DeviceType>::t_int_1d_randomread type;
-  typename ArrayTypes<DeviceType>::t_int_1d_randomread mask;
+  typename AT::t_kkfloat_1d_3_lr_randomread x;
+  typename AT::t_kkfloat_1d_3 v;
+  typename AT::t_kkfloat_1d_3 vbiasall;
+  typename AT::t_kkfloat_1d_randomread rmass;
+  typename AT::t_kkfloat_1d_randomread mass;
+  typename AT::t_int_1d_randomread type;
+  typename AT::t_int_1d_randomread mask;
 
   class DomainKokkos *domainKK;
 
   Few<double, 6> h_rate, h_ratelo;
 
-  };
+};
 
-}
+}    // namespace LAMMPS_NS
 
 #endif
 #endif
-

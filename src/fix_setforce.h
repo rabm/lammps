@@ -39,6 +39,8 @@ class FixSetForce : public Fix {
 
   double memory_usage() override;
 
+  enum { NONE, CONSTANT, EQUAL, ATOM };
+
  protected:
   double xvalue, yvalue, zvalue;
   int varflag;
