@@ -379,7 +379,7 @@ void FixRigidLSDEM::init()
           delz = x[i][2] - grain_com[i][2];
 
           // Account for PBCs
-          domain->minimum_image(delx, dely, delz);
+          domain->minimum_image(FLERR, delx, dely, delz);
 
           // Location of atom/node relative to entire grain grid minimum.
           delx -= grid_min[ibody][0];
@@ -1045,7 +1045,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double delz = x[i][2] - grain_com[j][2];
 
   // Account for PBCs
-  domain->minimum_image(delx, dely, delz);
+  domain->minimum_image(FLERR, delx, dely, delz);
 
   // Apply quaternion rotation to move into local reference frame of grain j grid.
   // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.

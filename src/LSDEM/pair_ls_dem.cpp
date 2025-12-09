@@ -427,9 +427,9 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Account for spin. This is an approximation using the half-step angular velocities.
         // We furthermore decide to rotate around the new normal to avoid introducing an
         // erronous out-of-plane rotation.
-        spin_norm = 0.5*dt*( 
-          (iomegax + jomegax)*normal[0] + 
-          (iomegay + jomegay)*normal[1] + 
+        spin_norm = 0.5*dt*(
+          (iomegax + jomegax)*normal[0] +
+          (iomegay + jomegay)*normal[1] +
           (iomegaz + jomegaz)*normal[2]); // 0.5*dt*(omegai+omegaj) \dot n
         k[0] += spin_norm*normal[0];
         k[1] += spin_norm*normal[1];
@@ -602,7 +602,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         fpair[1] *= areaj;
         fpair[2] *= areaj;
       }
-      
+
       // Force on grain i
       f[i][0] += fpair[0];
       f[i][1] += fpair[1];
@@ -613,7 +613,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       lever[1] = contact_point[1] - icomy;
       lever[2] = contact_point[2] - icomz;
       // Account for PBCs
-      domain->minimum_image(lever);
+      domain->minimum_image(FLERR, lever);
 
       // Compute torque
       MathExtra::cross3(lever, fpair, torque_pair);
@@ -633,7 +633,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         lever[0] = contact_point[0] - jcomx;
         lever[1] = contact_point[1] - jcomy;
         lever[2] = contact_point[2] - jcomz;
-        domain->minimum_image(lever);
+        domain->minimum_image(FLERR, lever);
 
         MathExtra::cross3(lever, fpair, torque_pair);
 

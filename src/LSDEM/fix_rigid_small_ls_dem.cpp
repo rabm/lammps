@@ -20,7 +20,6 @@
 #include "error.h"
 #include "force.h"
 #include "group.h"
-#include "hashlittle.h"
 #include "input.h"
 #include "ls_dem_extra.h"
 #include "math_const.h"
