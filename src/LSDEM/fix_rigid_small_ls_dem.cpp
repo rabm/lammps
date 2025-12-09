@@ -91,6 +91,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   if (!atom->omega_flag)
     error->all(FLERR, "Fix rigid/ls/dem requires atom attribute omega");
+
+  if (langflag)
+    error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
 }
 
 /* ---------------------------------------------------------------------- */

@@ -76,9 +76,12 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(grid_nnodes, nbody, "rigid/ls/dem:grid_nnodes");
 
-
+  dim = domain->dimension;
   if (!atom->omega_flag)
     error->all(FLERR, "Fix rigid/ls/dem requires atom attribute omega");
+
+  if (langflag)
+    error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -472,20 +475,13 @@ void FixRigidLSDEM::setup(int vflag)
 
   if (domain->dimension == 2) enforce2d();
 
-  // zero langextra in case Langevin thermostat not used
-  // no point to calling post_force() here since langextra
-  // is only added to fcm/torque in final_integrate()
-
-  int ibody, i, n;
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) langextra[ibody][i] = 0.0;
-
   // virial setup before call to set_v
 
   v_init(vflag);
 
   // set velocities from angmom & omega
 
+  int ibody;
   for (ibody = 0; ibody < nbody; ibody++)
     MathExtra::angmom_to_omega(angmom[ibody], ex_space[ibody], ey_space[ibody],
                                ez_space[ibody], inertia[ibody], omega[ibody]);
@@ -494,6 +490,7 @@ void FixRigidLSDEM::setup(int vflag)
 
   // guesstimate virial as 2x the set_v contribution
 
+  int n, i;
   int nlocal = atom->nlocal;
   if (vflag_global)
     for (n = 0; n < 6; n++) virial[n] *= 2.0;
