@@ -89,6 +89,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   // increase max comm size needed for LSDEM
 
   comm_forward += bodysizeLS;
+
+  if (!atom->omega_flag)
+    error->all(FLERR, "Fix rigid/ls/dem requires atom attribute omega");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -117,7 +120,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
 void FixRigidSmallLSDEM::setup(int vflag)
 {
-  int i,n,ibody;
+  int i, n, ibody;
 
   // error if maxextent > comm->cutghost
   // NOTE: could just warn if an override flag set
@@ -125,77 +128,19 @@ void FixRigidSmallLSDEM::setup(int vflag)
   //       for atom types in rigid bodies - need a more careful test
   // must check here, not in init, b/c neigh/comm values set after fix init
 
-  double cutghost = MAX(neighbor->cutneighmax,comm->cutghostuser);
+  double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
   if (maxextent > cutghost)
-    error->all(FLERR,"Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
+    error->all(FLERR, "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
 
   //check(1);
 
   // sum fcm, torque across all rigid bodies
-  // fcm = force on COM
-  // torque = torque around COM
 
-  double **x = atom->x;
-  double **f = atom->f;
-  int nlocal = atom->nlocal;
-
-  double *xcm,*fcm,*tcm;
-  double dx,dy,dz;
-  double unwrap[3];
-
-  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
-    fcm = body[ibody].fcm;
-    fcm[0] = fcm[1] = fcm[2] = 0.0;
-    tcm = body[ibody].torque;
-    tcm[0] = tcm[1] = tcm[2] = 0.0;
-  }
-
-  for (i = 0; i < nlocal; i++) {
-    if (atom2body[i] < 0) continue;
-    Body *b = &body[atom2body[i]];
-
-    fcm = b->fcm;
-    fcm[0] += f[i][0];
-    fcm[1] += f[i][1];
-    fcm[2] += f[i][2];
-
-    domain->unmap(x[i],xcmimage[i],unwrap);
-    xcm = b->xcm;
-    dx = unwrap[0] - xcm[0];
-    dy = unwrap[1] - xcm[1];
-    dz = unwrap[2] - xcm[2];
-
-    tcm = b->torque;
-    tcm[0] += dy * f[i][2] - dz * f[i][1];
-    tcm[1] += dz * f[i][0] - dx * f[i][2];
-    tcm[2] += dx * f[i][1] - dy * f[i][0];
-  }
-
-  // extended particles add their rotation/torque to angmom/torque of body
-
-  if (extended) {
-    double **torque = atom->torque;
-
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
-      if (eflags[i] & TORQUE) {
-        tcm = b->torque;
-        tcm[0] += torque[i][0];
-        tcm[1] += torque[i][1];
-        tcm[2] += torque[i][2];
-      }
-    }
-  }
+  compute_forces_and_torques();
 
   // enforce 2d body forces and torques
 
   if (domain->dimension == 2) enforce2d();
-
-  // reverse communicate fcm, torque of all bodies
-
-  commflag = FORCE_TORQUE;
-  comm->reverse_comm(this,6);
 
   // virial setup before call to set_v
 
@@ -205,12 +150,12 @@ void FixRigidSmallLSDEM::setup(int vflag)
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     Body *b = &body[ibody];
-    MathExtra::angmom_to_omega(b->angmom,b->ex_space,b->ey_space,
-                               b->ez_space,b->inertia,b->omega);
+    MathExtra::angmom_to_omega(b->angmom, b->ex_space, b->ey_space,
+                               b->ez_space, b->inertia, b->omega);
   }
 
   commflag = FINAL;
-  comm->forward_comm(this,10);
+  comm->forward_comm(this, 10);
 
   // set velocity/rotation of atoms in rigid bodues
 
@@ -218,6 +163,7 @@ void FixRigidSmallLSDEM::setup(int vflag)
 
   // guesstimate virial as 2x the set_v contribution
 
+  int nlocal = atom->nlocal;
   if (vflag_global)
     for (n = 0; n < 6; n++) virial[n] *= 2.0;
   if (vflag_atom) {
@@ -233,6 +179,84 @@ void FixRigidSmallLSDEM::pre_neighbor()
 {
   FixRigidSmall::pre_neighbor();
   nghost_bodyLS = 0;
+}
+
+
+/* ----------------------------------------------------------------------
+   Calculation of the forces and torques for LS-DEM grains
+
+   Forces apply at the contact point between a surface atom and a level-set.
+   There is no LAMMPS structure for it so forces are applied on nearest atoms
+   Torques computed from forces applied at the atom position would be off.
+   To avoid this miscalculation:
+     1. exact torques are applied on (extended) atoms in pair_ls_dem
+     2. torques are not computed from forces on atoms (unlike Fix Rigid)
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::compute_forces_and_torques()
+{
+  int i, ibody;
+
+  //check(3);
+
+  // sum over atoms to get force and torque on rigid body
+
+  double **x = atom->x;
+  double **f = atom->f;
+  int nlocal = atom->nlocal;
+  double *fcm,*tcm;
+
+  for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
+    fcm = body[ibody].fcm;
+    fcm[0] = fcm[1] = fcm[2] = 0.0;
+    tcm = body[ibody].torque;
+    tcm[0] = tcm[1] = tcm[2] = 0.0;
+  }
+
+  for (i = 0; i < nlocal; i++) {
+    if (atom2body[i] < 0) continue;
+    Body *b = &body[atom2body[i]];
+
+    fcm = b->fcm;
+    fcm[0] += f[i][0];
+    fcm[1] += f[i][1];
+    fcm[2] += f[i][2];
+  }
+
+  // extended particles add their torque to torque of body
+
+  if (extended) {
+    double **torque = atom->torque;
+
+    for (i = 0; i < nlocal; i++) {
+      if (atom2body[i] < 0) continue;
+
+      if (eflags[i] & TORQUE) {
+        tcm = body[atom2body[i]].torque;
+        tcm[0] += torque[i][0];
+        tcm[1] += torque[i][1];
+        tcm[2] += torque[i][2];
+      }
+    }
+  }
+
+  // reverse communicate fcm, torque of all bodies
+
+  commflag = FORCE_TORQUE;
+  comm->reverse_comm(this,6);
+
+  // add gravity force to COM of each body
+
+  if (id_gravity) {
+    double mass;
+    for (ibody = 0; ibody < nlocal_body; ibody++) {
+      mass = body[ibody].mass;
+      fcm = body[ibody].fcm;
+      fcm[0] += gvec[0] * mass;
+      fcm[1] += gvec[1] * mass;
+      fcm[2] += gvec[2] * mass;
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------

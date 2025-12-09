@@ -78,6 +78,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   // local methods
 
+  void compute_forces_and_torques() override;
   void grow_body_ls();
 
 };

@@ -50,10 +50,6 @@ static constexpr double EPSILON_INERTIA = 1.0e-3; // 0.1%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
 static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
 
-//TODO: Should we have a flag (or child classes) for different memory distribution strategies?
-//      a) all procs store grids, b) sub grids for each atom, c) hash table for each atom
-//      then benchmark across different limits? Few large grains, lots of small grains, jamming vs. flow...
-
 /* ---------------------------------------------------------------------- */
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
@@ -79,6 +75,10 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(grid_nnodes, nbody, "rigid/ls/dem:grid_nnodes");
+
+
+  if (!atom->omega_flag)
+    error->all(FLERR, "Fix rigid/ls/dem requires atom attribute omega");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -466,62 +466,7 @@ void FixRigidLSDEM::init()
 
 void FixRigidLSDEM::setup(int vflag)
 {
-  int i,n,ibody;
-
-  // fcm = force on center-of-mass of each rigid body
-
-  double **f = atom->f;
-  int nlocal = atom->nlocal;
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-
-  for (i = 0; i < nlocal; i++) {
-    if (body[i] < 0) continue;
-    ibody = body[i];
-    sum[ibody][0] += f[i][0];
-    sum[ibody][1] += f[i][1];
-    sum[ibody][2] += f[i][2];
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    fcm[ibody][0] = all[ibody][0];
-    fcm[ibody][1] = all[ibody][1];
-    fcm[ibody][2] = all[ibody][2];
-  }
-
-  // torque = torque on each rigid body
-
-  double **x = atom->x;
-
-  for (ibody = 0; ibody < nbody; ibody++)
-    for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
-
-  // extended particles add their torque to torque of body
-
-  if (extended) {
-    double **torque_one = atom->torque;
-
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-      if (eflags[i] & TORQUE) {
-        sum[ibody][0] += torque_one[i][0];
-        sum[ibody][1] += torque_one[i][1];
-        sum[ibody][2] += torque_one[i][2];
-      }
-    }
-  }
-
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
-
-  for (ibody = 0; ibody < nbody; ibody++) {
-    torque[ibody][0] = all[ibody][0];
-    torque[ibody][1] = all[ibody][1];
-    torque[ibody][2] = all[ibody][2];
-  }
+  compute_forces_and_torques();
 
   // enforce 2d body forces and torques
 
@@ -531,6 +476,7 @@ void FixRigidLSDEM::setup(int vflag)
   // no point to calling post_force() here since langextra
   // is only added to fcm/torque in final_integrate()
 
+  int ibody, i, n;
   for (ibody = 0; ibody < nbody; ibody++)
     for (i = 0; i < 6; i++) langextra[ibody][i] = 0.0;
 
@@ -541,13 +487,14 @@ void FixRigidLSDEM::setup(int vflag)
   // set velocities from angmom & omega
 
   for (ibody = 0; ibody < nbody; ibody++)
-    MathExtra::angmom_to_omega(angmom[ibody],ex_space[ibody],ey_space[ibody],
-                               ez_space[ibody],inertia[ibody],omega[ibody]);
+    MathExtra::angmom_to_omega(angmom[ibody], ex_space[ibody], ey_space[ibody],
+                               ez_space[ibody], inertia[ibody], omega[ibody]);
 
   set_v();
 
   // guesstimate virial as 2x the set_v contribution
 
+  int nlocal = atom->nlocal;
   if (vflag_global)
     for (n = 0; n < 6; n++) virial[n] *= 2.0;
   if (vflag_atom) {
@@ -567,7 +514,7 @@ void FixRigidLSDEM::setup(int vflag)
         apply_grav[ibody] = 0;
     }
 
-    MPI_Allreduce(MPI_IN_PLACE,apply_grav,nbody,MPI_INT,MPI_MIN,world);
+    MPI_Allreduce(MPI_IN_PLACE, apply_grav, nbody, MPI_INT, MPI_MIN, world);
   }
 }
 
@@ -692,7 +639,6 @@ void FixRigidLSDEM::compute_forces_and_torques()
   double **f = atom->f;
   int nlocal = atom->nlocal;
 
-
   for (ibody = 0; ibody < nbody; ibody++)
     for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
 
@@ -705,7 +651,9 @@ void FixRigidLSDEM::compute_forces_and_torques()
     sum[ibody][2] += f[i][2];
   }
 
-  if (extended) { // TODO: check and error out if particle not extended? Or no check at all (checked somewhere else, e.g., in init() ?
+  // extended particles add their torque to torque of body
+
+  if (extended) {
     double **torque_one = atom->torque;
 
     for (i = 0; i < nlocal; i++) {
@@ -720,7 +668,7 @@ void FixRigidLSDEM::compute_forces_and_torques()
     }
   }
 
-  MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
+  MPI_Allreduce(sum[0], all[0], 6 * nbody, MPI_DOUBLE, MPI_SUM, world);
 
   // No Langevin thermostat forces included
 
@@ -738,9 +686,9 @@ void FixRigidLSDEM::compute_forces_and_torques()
   if (id_gravity) {
     for (ibody = 0; ibody < nbody; ibody++) {
       if (apply_grav[ibody]) {
-        fcm[ibody][0] += gvec[0]*masstotal[ibody];
-        fcm[ibody][1] += gvec[1]*masstotal[ibody];
-        fcm[ibody][2] += gvec[2]*masstotal[ibody];
+        fcm[ibody][0] += gvec[0] * masstotal[ibody];
+        fcm[ibody][1] += gvec[1] * masstotal[ibody];
+        fcm[ibody][2] += gvec[2] * masstotal[ibody];
       }
     }
   }
