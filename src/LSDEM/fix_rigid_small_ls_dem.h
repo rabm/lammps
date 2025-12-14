@@ -28,7 +28,12 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
  public:
   FixRigidSmallLSDEM(class LAMMPS *, int, char **);
   ~FixRigidSmallLSDEM() override;
+  int setmask() override;
+  void post_constructor() override;
+  void init() override;
   void setup(int) override;
+  void setup_pre_force(int) override;
+  void pre_force(int) override;
 
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
@@ -48,6 +53,17 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
  protected:
   int stored_flag, distributed_flag;
+  int comm_flag2;
+  char *id_fix, *id_fix2;
+  int index_ls_dem_com;
+  int index_ls_dem_quat;
+  int index_ls_dem_omega;
+  int index_ls_dem_n;
+  int index_ls_dem_fs;
+  int index_ls_dem_touch_id;
+  int index_ls_dem_fn1;
+  int index_ls_dem_fs1;
+  int index_ls_dem_size;
 
   double **global_grids;
   double *grid_scale;

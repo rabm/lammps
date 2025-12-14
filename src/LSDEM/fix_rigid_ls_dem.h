@@ -76,13 +76,12 @@ class FixRigidLSDEM : public FixRigid {
 
   double **global_grids;
   double *grid_scale;
-  double maxcut, warncut;
-  int dim, rcell;
+  double maxcut;
+  int rcell;
 
   void compute_forces_and_torques() override;
   void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
-  double compute_grid_properties(int *, double, double *, double *, double[3][3], std::string);
 };
 
 }    // namespace LAMMPS_NS

@@ -19,6 +19,7 @@ namespace LSDEMExtra {
   double smeared_heaviside_step(double);
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);
+  double compute_grid_properties(int *, double, double *, double *, double[3][3], int);
 
 }
 
