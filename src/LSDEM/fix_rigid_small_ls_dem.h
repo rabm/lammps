@@ -51,6 +51,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   double memory_usage() override;
 
+  inline bodyLS* get_bodyLS_array() { return bodyLS; };
+
  protected:
   int stored_flag, distributed_flag;
   int comm_flag2;

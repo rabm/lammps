@@ -68,6 +68,8 @@ class FixRigidSmall : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
+  inline double* get_atom2body_array() { return atom2body; };
+
  protected:
   double dtv, dtf, dtq;
   double *step_respa;

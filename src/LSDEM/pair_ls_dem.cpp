@@ -18,6 +18,7 @@
 #include "domain.h"
 #include "error.h"
 #include "fix_rigid_ls_dem.h"
+#include "fix_rigid_small_ls_dem.h"
 #include "force.h"
 #include "math_const.h"
 #include "math_extra.h"
@@ -38,7 +39,7 @@ using namespace MathConst;
 /* ---------------------------------------------------------------------- */
 
 PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), etan(nullptr), etat(nullptr), cut(nullptr),
- decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr) // gamma(nullptr),
+ decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr), fix_rigid_small(nullptr) // gamma(nullptr),
 {
   writedata = 1;
   single_enable = 0;
@@ -118,10 +119,19 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **grain_omega = atom->darray[index_ls_dem_omega]; // Need angular velocity for spin correction
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
-  int *body = fix_rigid->get_body_array();
-  int nbody = fix_rigid->get_nbody();
-  double *grain_vol = fix_rigid->get_vol_array();
-  double *node_area = fix_rigid->get_area_array();
+  int *mybody, nbody;
+  double *grain_vol, *node_area;
+  BodyLS *bodyLS;
+  if (fix_rigid) { // How is nbody updated during fix pour?
+    mybody = fix_rigid->get_body_array();
+    nbody = fix_rigid->get_nbody();
+    grain_vol = fix_rigid->get_vol_array();
+    node_area = fix_rigid->get_area_array();
+  } else {
+    mybody = fix_rigid_small->get_atom2body_array();
+    bodyLS = fix_rigid_small->get_bodyLS_array();
+    nbody = fix_rigid_small->get_nbody();
+  }
 
   inum = list->inum;
   allnum = inum + list->gnum;
@@ -137,7 +147,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    ibody = body[i];
+    ibody = mybody[i];
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -152,7 +162,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      jbody = body[j];
+      jbody = mybody[j];
       jtag = tag[j];
 
       // Separation distance between the two nodes
@@ -212,8 +222,13 @@ void PairLSDEM::compute(int eflag, int vflag)
     iomegay = grain_omega[i][1];
     iomegaz = grain_omega[i][2];
 
-    ivol = grain_vol[ibody];
-    areai = node_area[ibody];
+    if (fix_rigid) {
+      ivol = grain_vol[ibody];
+      areai = node_area[ibody];
+    } else {
+      ivol = bodyLS[ibody].volume;
+      areai = bodyLS[ibody].node_area;
+    }
 
     itag = tag[i];
     jlist = firstneigh[i];
@@ -242,8 +257,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       jomegay = grain_omega[j][1];
       jomegaz = grain_omega[j][2];
 
-      jvol = grain_vol[jbody];
-      areaj = node_area[jbody];
+      if (fix_rigid) {
+        jvol = grain_vol[jbody];
+        areaj = node_area[jbody];
+      } else {
+        jvol = bodyLS[jbody].volume;
+        areaj = bodyLS[jbody].node_area;
+      }
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
@@ -276,7 +296,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (calc_force_of_i_on_j) { // Use node of i.
         // Level set is by definition negative inside the particle,
         // so swap the sign to get the overlap distance.
-        u = - fix_rigid->get_ls_value(i, j, normal);
+        if (fix_rigid)
+          u = - fix_rigid->get_ls_value(i, j, normal);
+        else
+          u = - fix_rigid_small->get_ls_value(i, j, normal);
         // The normal is also swapped and points away from j, correct signs. Already in global coordinates.
         MathExtra::negate3(normal);
 
@@ -285,7 +308,10 @@ void PairLSDEM::compute(int eflag, int vflag)
         contact_point[1] = yitmp - 0.5 * u * normal[1];
         contact_point[2] = zitmp - 0.5 * u * normal[2];
       } else { // Use node of j.
-        u = - fix_rigid->get_ls_value(j, i, normal);
+        if (fix_rigid)
+          u = - fix_rigid->get_ls_value(j, i, normal);
+        else
+          u = - fix_rigid_small->get_ls_value(j, i, normal);
         // The normal points towards j, no correction needed. Already in global coordinates.
 
         // Contact point
@@ -816,10 +842,14 @@ void PairLSDEM::setup()
   // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
   // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
 
-  auto fixlist = modify->get_fix_by_style("rigid/ls/dem");
-  if (fixlist.size() != 1)
-  error->all(FLERR, "Must have one, and only one, instance of fix rigid/ls/dem for pair LS-DEM.");
-  fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist.front());
+  auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
+  auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
+
+  if (fixlist1.size() + fixlist2.size() != 1)
+    error->all(FLERR, "Must have one, and only one, instance of fix rigid/ls/dem or fix rigid/small/ls/dem for pair LS-DEM.");
+
+  if (fixlist1.size() == 1) fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
+  if (fixlist2.size() == 1) fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
 
   int tmp1, tmp2;
   index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);

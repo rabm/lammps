@@ -143,8 +143,6 @@ void FixRigidSmallLSDEM::init()
 {
   FixRigidSmall::init();
 
-  /*
-
   // For updating center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
   double **grain_quat = atom->darray[index_ls_dem_quat];

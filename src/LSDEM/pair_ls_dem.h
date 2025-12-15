@@ -23,6 +23,7 @@ PairStyle(ls/dem,PairLSDEM);
 #include "pair.h"
 
 #include "fix_rigid_ls_dem.h"
+#include "fix_rigid_small_ls_dem.h"
 
 namespace LAMMPS_NS {
 
@@ -59,6 +60,7 @@ class PairLSDEM : public Pair {
   int index_ls_dem_fs1;
 
   class FixRigidLSDEM *fix_rigid;
+  class FixRigidSmallLSDEM *fix_rigid_small;
 
   void allocate();
 };

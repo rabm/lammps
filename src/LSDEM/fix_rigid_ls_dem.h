@@ -47,6 +47,7 @@ class FixRigidLSDEM : public FixRigid {
   inline int get_nbody() { return nbody; };
 
   double get_ls_value(int, int, double*);
+  inline int get_nbody() { return nbody; };
 
  protected:
   int stored_flag, distributed_flag;
