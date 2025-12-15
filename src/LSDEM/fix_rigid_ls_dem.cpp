@@ -694,6 +694,31 @@ void FixRigidLSDEM::compute_forces_and_torques()
 }
 
 /* ----------------------------------------------------------------------
+   write out restart info for mass, COM, inertia tensor, image flags to file
+   identical format to inpfile option, so info can be read in when restarting
+   only proc 0 writes list of global bodies to file
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::write_restart_file(const char *file)
+{
+  if (comm->me) return;
+
+  FixRigid::write_restart_file(file); // Todo, save LS DEM data
+}
+
+/* ----------------------------------------------------------------------
+   memory usage of local atom-based arrays
+------------------------------------------------------------------------- */
+
+double FixRigidLSDEM::memory_usage()
+{
+  int nmax = atom->nmax;
+  double bytes = FixRigid::memory_usage();
+  // todo
+  return bytes;
+}
+
+/* ----------------------------------------------------------------------
    one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
@@ -782,31 +807,6 @@ void FixRigidLSDEM::read_gridfile_names(char **gridfiles)
 
   if (comm->me == 0) fclose(fp);
   delete[] buffer;
-}
-
-/* ----------------------------------------------------------------------
-   write out restart info for mass, COM, inertia tensor, image flags to file
-   identical format to inpfile option, so info can be read in when restarting
-   only proc 0 writes list of global bodies to file
-------------------------------------------------------------------------- */
-
-void FixRigidLSDEM::write_restart_file(const char *file)
-{
-  if (comm->me) return;
-
-  FixRigid::write_restart_file(file); // Todo, save LS DEM data
-}
-
-/* ----------------------------------------------------------------------
-   memory usage of local atom-based arrays
-------------------------------------------------------------------------- */
-
-double FixRigidLSDEM::memory_usage()
-{
-  int nmax = atom->nmax;
-  double bytes = FixRigid::memory_usage();
-  // todo
-  return bytes;
 }
 
 /* ----------------------------------------------------------------------

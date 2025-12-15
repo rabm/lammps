@@ -51,7 +51,22 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   double memory_usage() override;
 
-  inline bodyLS* get_bodyLS_array() { return bodyLS; };
+  struct BodyLS {
+    int ilocal;            // index of owning atom, duplicate from Body
+    int style;             // distributed vs. global memory
+    int grid_index;        // index of body's global memory, -1 if distributed
+    int grid_size[3];      // size of each grid
+    double grid_stride;    // the LS grid stride, assumed equal in all direction
+    double grid_vol;       // volume of LS grid
+    double node_area;      // area associated with each grid node
+    double grid_min[3];    // minimum xyz coordinates of LS grid
+  };
+
+  inline int* get_atom2body_array() { return atom2body; };
+  inline int get_nbody() { return nbody; };
+  inline BodyLS* get_bodyLS_array() { return bodyLS; };
+
+  double get_ls_value(int, int, double*);
 
  protected:
   int stored_flag, distributed_flag;
@@ -73,15 +88,6 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension
 
-  struct BodyLS {
-    int ilocal;            // index of owning atom, duplicate from Body
-    int style;             // distributed vs. global memory
-    int grid_index;        // index of body's global memory, -1 if distributed
-    double grid_stride;    // the LS grid stride, assumed equal in all direction
-    double grid_vol;       // volume of LS grid
-    double node_area;      // area associated with each grid node
-    double grid_min[3];    // minimum xyz coordinates of LS grid
-  };
 
   BodyLS *bodyLS;          // list of rigid bodies, owned and ghost
   int nlocal_bodyLS;       // # of owned rigid bodies

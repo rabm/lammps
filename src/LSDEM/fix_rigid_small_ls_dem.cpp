@@ -151,8 +151,10 @@ void FixRigidSmallLSDEM::init()
   int ibody, i, a;
   int dimension = domain->dimension;
 
+  /*
+
   for (i = 0; i < atom->nlocal; i++) {
-    ibody = body[i];
+    ibody = atom2body[i];
     if (ibody == -1)
       error->all(FLERR, "Cannot mix LS DEM and regular DEM grains");
     grain_com[i][0] = xcm[ibody][0];
@@ -174,8 +176,8 @@ void FixRigidSmallLSDEM::init()
   // Copy maximum cutoff from pair style
   // This will determine radius of level set around nodes in the distributed case.
   // TBD: Some (automatic?) optimisation.
-  if (!utils::strmatch(force->pair_style,"^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
+  if (!utils::strmatch(force->pair_style, "^ls/dem"))
+    error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
@@ -876,4 +878,11 @@ double FixRigidSmallLSDEM::memory_usage()
   bytes += (double)nmax * sizeof(int);
   bytes += (double)nmax_body * sizeof(BodyLS);
   return bytes;
+}
+/* ----------------------------------------------------------------------
+   Find the value of node (atom) i in j's LS grid.
+------------------------------------------------------------------------- */
+
+double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
+{
 }

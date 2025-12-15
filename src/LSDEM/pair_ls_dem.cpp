@@ -121,7 +121,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   int *mybody, nbody;
   double *grain_vol, *node_area;
-  BodyLS *bodyLS;
+  FixRigidSmallLSDEM::BodyLS *bodyLS;
   if (fix_rigid) { // How is nbody updated during fix pour?
     mybody = fix_rigid->get_body_array();
     nbody = fix_rigid->get_nbody();
@@ -214,7 +214,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     vyitmp = v[i][1];
     vzitmp = v[i][2];
     itype = type[i];
-    ibody = body[i];
+    ibody = mybody[i];
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
@@ -226,7 +226,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       ivol = grain_vol[ibody];
       areai = node_area[ibody];
     } else {
-      ivol = bodyLS[ibody].volume;
+      ivol = bodyLS[ibody].grid_vol;
       areai = bodyLS[ibody].node_area;
     }
 
@@ -247,7 +247,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
-      jbody = body[j];
+      jbody = mybody[j];
       jtag = tag[j];
       jtype = type[j];
       jcomx = grain_com[j][0];
@@ -261,7 +261,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         jvol = grain_vol[jbody];
         areaj = node_area[jbody];
       } else {
-        jvol = bodyLS[jbody].volume;
+        jvol = bodyLS[jbody].grid_vol;
         areaj = bodyLS[jbody].node_area;
       }
 

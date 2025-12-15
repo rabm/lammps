@@ -47,7 +47,6 @@ class FixRigidLSDEM : public FixRigid {
   inline int get_nbody() { return nbody; };
 
   double get_ls_value(int, int, double*);
-  inline int get_nbody() { return nbody; };
 
  protected:
   int stored_flag, distributed_flag;
@@ -81,8 +80,8 @@ class FixRigidLSDEM : public FixRigid {
   int rcell;
 
   void compute_forces_and_torques() override;
-  void read_gridfile_names(char **);
   void read_gridfile(int, int, std::string, int **, double *);
+  void read_gridfile_names(char **);
 };
 
 }    // namespace LAMMPS_NS
