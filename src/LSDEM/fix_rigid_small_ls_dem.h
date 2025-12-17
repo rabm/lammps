@@ -56,6 +56,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     int style;             // distributed vs. global memory
     int grid_index;        // index of body's global memory, -1 if distributed
     int grid_size[3];      // size of each grid
+    int grid_style;        // grid storage style
+    double grid_scale;     // scale factor for grid values
     double grid_stride;    // the LS grid stride, assumed equal in all direction
     double grid_vol;       // volume of LS grid
     double node_area;      // area associated with each grid node
@@ -82,8 +84,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int index_ls_dem_fs1;
   int index_ls_dem_size;
 
+  int index_grid_values;
+  int index_grid_min;
+
   double **global_grids;
-  double *grid_scale;
   double maxcut, warncut;
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension

@@ -950,7 +950,6 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_quat = atom->darray[index_ls_dem_quat];
 
   int jbody = body[j];
-  double dist, nx, ny, nz(0.0);
   double strideinv = 1.0 / grid_stride[jbody];
 
   // Calculate position of node i in node j's grid using:
@@ -1008,77 +1007,11 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double y_red = x_local[1] * strideinv;
   double z_red = x_local[2] * strideinv;
 
-  // Calculate index from relative coordinate, being careful with integer division.
-  int ind_x = int(x_red);
-  int ind_y = int(y_red);
-  int ind_z = int(z_red); // Should always be zero in 2D.
-
-  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
-  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ((ind_x < 0 || ind_x >= (nrow - 1)) || (ind_y < 0 || ind_y >= (ncol - 1)) ||
-      ((domain->dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
-    //error->one(FLERR, "Contacting node {} is outside of node {}'s LS grid", atom->tag[i], atom->tag[j]);
-    return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
-
-  // The normalised coordinates within the current grid cell.
-  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  x_red = x_red - static_cast<double>(ind_x);
-  y_red = y_red - static_cast<double>(ind_y);
-  z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
-
-  //  Interpolate
-  int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
-
-  // Level-set values on the grid points in the lower z plane (ind_z)
-  double ls000 = mygrid[my_index];
-  double ls100 = mygrid[my_index + 1];
-  double ls010 = mygrid[my_index + ncol];
-  double ls110 = mygrid[my_index + 1 + ncol];
-
-  // Bi-linear interpolation in the lower z plane (ind_z)
-  double lsxy0 = ls000 + y_red * (ls010 - ls000) +
-                 x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
-  dist = lsxy0;
-
-  // Computing normal as the gradient of trilinear interpolation
-  // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
-  // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
-  nx = ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000);
-  ny = ls010 - ls000 + x_red * (ls110 - ls100 - ls010 + ls000);
-
-  if (domain->dimension == 3) { // 3D
-    // Level-set values on the grid points in the upper z plane (ind_z+1)
-    double ls001 = mygrid[my_index + ncol * nrow];
-    double ls101 = mygrid[my_index + 1 + ncol * nrow];
-    double ls011 = mygrid[my_index + ncol + ncol * nrow];
-    double ls111 = mygrid[my_index + 1 + ncol + ncol * nrow];
-
-    // Bi-linear interpolation in the upper z plane (ind_z+1)
-    double lsxy1 = ls001 + y_red * (ls011 - ls001) +
-                   x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
-
-    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-    dist = z_red * (lsxy1 - lsxy0) + lsxy0;
-    nx *= 1 - z_red;
-    nx += z_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
-    ny *= 1 - z_red;
-    ny += z_red * (ls011 - ls001 + x_red * (ls111 - ls101 - ls011 + ls001));
-    nz = lsxy1 - lsxy0;
-  }
+  int dim = domain->dimension;
+  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
-
-  // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
-  // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
-
-  // Get magnitude of discrete gradient for normalisation
-  double mag = 1.0/sqrt(nx*nx+ny*ny+nz*nz);
-
-  // Assign normal
-  normal[0] = nx*mag;
-  normal[1] = ny*mag;
-  normal[2] = nz*mag;
 
   // Rotate normal back to global coordinates
   MathExtra::quatrotvec(grain_quat[j], normal, normal);

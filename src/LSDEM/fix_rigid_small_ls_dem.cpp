@@ -44,6 +44,7 @@ using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
 using namespace RigidConst;
+using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 enum {REGULAR, PREFORCE};
@@ -880,9 +881,62 @@ double FixRigidSmallLSDEM::memory_usage()
   return bytes;
 }
 /* ----------------------------------------------------------------------
-   Find the value of node (atom) i in j's LS grid.
+   Find the value of node (atom) i in j's LS grid
+   see FixRigidLSDEM for context and explanation
 ------------------------------------------------------------------------- */
 
 double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
 {
+  double **x = atom->x;
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+
+  int jbody = atom2body[j];
+  double strideinv = 1.0 / bodyLS[jbody].grid_stride;
+
+  double delx = x[i][0] - grain_com[j][0];
+  double dely = x[i][1] - grain_com[j][1];
+  double delz = x[i][2] - grain_com[j][2];
+  domain->minimum_image(FLERR, delx, dely, delz);
+
+  double x_local[3];
+  double dx[3] = {delx, dely, delz};
+  double grain_quat_conj[4];
+  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
+  MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
+
+  int ncol, nrow, nslice;
+  double *mygrid;
+  if (bodyLS[jbody].grid_style == DISTRIBUTED) {
+    mygrid = atom->darray[index_grid_values][j];
+    double **local_grid_min = atom->darray[index_grid_min];
+    x_local[0] -= local_grid_min[j][0];
+    x_local[1] -= local_grid_min[j][1];
+    x_local[2] -= local_grid_min[j][2];
+
+    ncol = subgrid_size[0];
+    nrow = subgrid_size[1];
+    nslice = subgrid_size[2];
+  } else {
+    mygrid = global_grids[bodyLS[jbody].grid_index];
+    x_local[0] -= bodyLS[jbody].grid_min[0];
+    x_local[1] -= bodyLS[jbody].grid_min[1];
+    x_local[2] -= bodyLS[jbody].grid_min[2];
+
+    ncol = bodyLS[jbody].grid_size[0];
+    nrow = bodyLS[jbody].grid_size[1];
+    nslice = bodyLS[jbody].grid_size[2];
+  }
+
+  double x_red = x_local[0] * strideinv;
+  double y_red = x_local[1] * strideinv;
+  double z_red = x_local[2] * strideinv;
+
+  int dim = domain->dimension;
+  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal);
+
+  if (bodyLS[jbody].grid_style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+
+  return dist;
 }
