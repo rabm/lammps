@@ -29,6 +29,7 @@
 #include "modify.h"
 #include "molecule.h"
 #include "neighbor.h"
+#include "pair_ls_dem.h"
 #include "respa.h"
 #include "rigid_const.h"
 #include "tokenizer.h"
@@ -36,8 +37,10 @@
 #include "variable.h"
 
 #include <cmath>
+#include <cfloat>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <utility>
 
 using namespace LAMMPS_NS;
@@ -92,7 +95,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   comm_flag2 = REGULAR;
 
   if (!atom->omega_flag)
-    error->all(FLERR, "Fix rigid/ls/dem requires atom attribute omega");
+    error->all(FLERR, "Fix rigid/small/ls/dem requires atom attribute omega");
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
@@ -152,24 +155,22 @@ void FixRigidSmallLSDEM::init()
   int ibody, i, a;
   int dimension = domain->dimension;
 
-  /*
-
   for (i = 0; i < atom->nlocal; i++) {
     ibody = atom2body[i];
     if (ibody == -1)
       error->all(FLERR, "Cannot mix LS DEM and regular DEM grains");
-    grain_com[i][0] = xcm[ibody][0];
-    grain_com[i][1] = xcm[ibody][1];
-    grain_com[i][2] = xcm[ibody][2];
+    grain_com[i][0] = body[ibody].xcm[0];
+    grain_com[i][1] = body[ibody].xcm[1];
+    grain_com[i][2] = body[ibody].xcm[2];
 
-    grain_quat[i][0] = quat[ibody][0];
-    grain_quat[i][1] = quat[ibody][1];
-    grain_quat[i][2] = quat[ibody][2];
-    grain_quat[i][3] = quat[ibody][3];
+    grain_quat[i][0] = body[ibody].quat[0];
+    grain_quat[i][1] = body[ibody].quat[1];
+    grain_quat[i][2] = body[ibody].quat[2];
+    grain_quat[i][3] = body[ibody].quat[3];
 
-    grain_omega[i][0] = omega[ibody][0];
-    grain_omega[i][1] = omega[ibody][1];
-    grain_omega[i][2] = omega[ibody][2];
+    grain_omega[i][0] = body[ibody].omega[0];
+    grain_omega[i][1] = body[ibody].omega[1];
+    grain_omega[i][2] = body[ibody].omega[2];
 
     touch_id[i] = -1;
   }
@@ -200,26 +201,26 @@ void FixRigidSmallLSDEM::init()
     double min_stride = DBL_MAX;
     for (ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]); // Retrieve file name
-      read_gridfile(ibody, 0, filename, grid_size, nullptr); // Get only grid sizes (tag 0)
+      read_gridfile(ibody, 0, filename, nullptr); // Get only grid sizes (tag 0)
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
-      grid_size_flat = grid_size[ibody][0] * grid_size[ibody][1] * grid_size[ibody][2];
+      grid_size_flat = bodyLS[ibody].grid_size[0] * bodyLS[ibody].grid_size[1] * bodyLS[ibody].grid_size[2];
       max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
-      min_stride = MIN(min_stride, grid_stride[ibody] * grid_scale[ibody]);
+      min_stride = MIN(min_stride, bodyLS[ibody].grid_stride * bodyLS[ibody].grid_scale);
 
       // Store global info
-      grid_index[ibody] = -1;
-      if (grid_style[ibody] == GLOBAL) {
+      bodyLS[ibody].grid_index = -1;
+      if (bodyLS[ibody].grid_style == GLOBAL) {
         // Copy from prior entry if it exists
         if (file_map.find(filename) != file_map.end())
           for (const auto& jbody : file_map[filename])
-            if (grid_index[jbody] != -1)
-              grid_index[ibody] = grid_index[jbody];
+            if (bodyLS[jbody].grid_index != -1)
+              bodyLS[ibody].grid_index = bodyLS[jbody].grid_index;
 
         // If no global instances, add new index
-        if (grid_index[ibody] == -1) {
-          grid_index[ibody] = index_global;
+        if (bodyLS[ibody].grid_index == -1) {
+          bodyLS[ibody].grid_index = index_global;
           ntotal_global[index_global] = grid_size_flat;
           index_global += 1;
         }
@@ -237,9 +238,11 @@ void FixRigidSmallLSDEM::init()
     rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
 
     for (ibody = 0; ibody < nbody; ibody++)
-      grid_nnodes[ibody] = 0;
-    for (i = 0; i < atom->nlocal; i++)
-      grid_nnodes[body[i]] += 1;
+      bodyLS[ibody].grid_nnodes = 0;
+    for (i = 0; i < atom->nlocal; i++) {
+      ibody = atom2body[i];
+      bodyLS[ibody].grid_nnodes += 1;
+    }
 
     if (distributed_flag) {
       for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?) DvdH: I think +1 is not needed, but result should be cast to int?
@@ -272,10 +275,6 @@ void FixRigidSmallLSDEM::init()
       grid_min_local = atom->darray[index_grid_min];
     }
 
-    // TODO: DOES THIS ONLY WORK WHEN GRAINS ARE AXIS-ALIGNED ?
-    //       I.E. WE MUST TELL THE USERS NOT TO ROTATE ANYTHING BEFORE RIGID IS DONE ?
-    // DvdH: The LS grid should ALWAYS be axis-aligned. Something else should be giving an orientation to which we rotate just after loading.
-
     double *ls_val;
     double delx, dely, delz, area;
     double **x = atom->x;
@@ -285,8 +284,7 @@ void FixRigidSmallLSDEM::init()
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
-      // DvdH: Why is ibody here -1?
-      read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
+      read_gridfile(-1, 1, filename, temp_grid_values);
 
       // Compute grain properties per unique grid
       for (ibody = 0; ibody < nbody; ibody++) {
@@ -297,66 +295,66 @@ void FixRigidSmallLSDEM::init()
           continue;
 
         // Compute properties from the level-set grid
-        grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, dimension);
-        if (grid_vol[ibody] < 0)
+        bodyLS[ibody].grid_vol = compute_grid_properties(bodyLS[ibody].grid_size, bodyLS[ibody].grid_stride, temp_grid_values, com_temp, inertia_temp, dimension);
+        if (bodyLS[ibody].grid_vol < 0)
           error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
 
 
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
         // A misalignment would mean that the forces and rotations are applied to the wrong point in
         // space, leading to integration issues.
-        if ( sqrt( (grid_min[ibody][0]+com_temp[0])*(grid_min[ibody][0]+com_temp[0])+
-                  (grid_min[ibody][1]+com_temp[1])*(grid_min[ibody][1]+com_temp[1])+
-                  (grid_min[ibody][2]+com_temp[2])*(grid_min[ibody][2]+com_temp[2])) > (0.5 * grid_stride[ibody])
+        if ( sqrt( (bodyLS[ibody].grid_min[0]+com_temp[0])*(bodyLS[ibody].grid_min[0]+com_temp[0])+
+                  (bodyLS[ibody].grid_min[1]+com_temp[1])*(bodyLS[ibody].grid_min[1]+com_temp[1])+
+                  (bodyLS[ibody].grid_min[2]+com_temp[2])*(bodyLS[ibody].grid_min[2]+com_temp[2])) > (0.5 * bodyLS[ibody].grid_stride)
         ) {
           error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
-            grid_min[ibody][0],grid_min[ibody][1],grid_min[ibody][2],com_temp[0],com_temp[1],com_temp[2]);
+            bodyLS[ibody].grid_min[0],bodyLS[ibody].grid_min[1],bodyLS[ibody].grid_min[2],com_temp[0],com_temp[1],com_temp[2]);
         }
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
 
         // Calculate eigen system of inertia tensor
-        int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
+        int ierror = MathEigen::jacobi3(inertia_temp, body[ibody].inertia, evectors, 1);
         if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
         // Set grain orientation based on eigenvectors of inertia tensor
         for (a = 0; a < 3; a++) {
-          ex_space[ibody][a] = evectors[a][0];
-          ey_space[ibody][a] = evectors[a][1];
-          ez_space[ibody][a] = evectors[a][2];
+          body[ibody].ex_space[a] = evectors[a][0];
+          body[ibody].ey_space[a] = evectors[a][1];
+          body[ibody].ez_space[a] = evectors[a][2];
         }
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
-        area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
+        area = compute_surface_area(dimension, bodyLS[ibody].grid_size, bodyLS[ibody].grid_stride, temp_grid_values);
         // Test for physical realism
         if (!((area > 0.0) && std::isfinite(area)))
           error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
-        node_area[ibody] = area;
+        bodyLS[ibody].node_area = area;
 
         // Normalise by number of nodes
-        node_area[ibody] /= grid_nnodes[ibody];
+        bodyLS[ibody].node_area /= bodyLS[ibody].grid_nnodes;
 
         // Scale all relevant quantities by given scaling of grain size
-        scale = grid_scale[ibody];
+        scale = bodyLS[ibody].grid_scale;
         scale2 = scale*scale;
         scale3 = scale*scale2;
-        density = masstotal[ibody] / grid_vol[ibody];
-        grid_stride[ibody] *= scale;
-        MathExtra::scale3(scale, grid_min[ibody]);
-        node_area[ibody] *= scale2;
-        grid_vol[ibody] *= scale3;
-        MathExtra::scale3(density*scale2*scale3, inertia[ibody]);
+        density = body[ibody].mass / bodyLS[ibody].grid_vol;
+        bodyLS[ibody].grid_stride *= scale;
+        MathExtra::scale3(scale, bodyLS[ibody].grid_min);
+        bodyLS[ibody].node_area *= scale2;
+        bodyLS[ibody].grid_vol *= scale3;
+        MathExtra::scale3(density*scale2*scale3, body[ibody].inertia);
       }
 
       // Start handling memory approach
       need_distributed = 0; // Save relevant grid snippet at node, regardless of duplicity
       need_global = 0;  // Save the entire grid as a shared memory stucture between grains with the same grid
       for (const auto& jbody : file_map[filename]) {
-        if (grid_style[jbody] == DISTRIBUTED) {
+        if (bodyLS[jbody].grid_style == DISTRIBUTED) {
           need_distributed = 1;
-        } else if (grid_style[jbody] == GLOBAL) {
+        } else if (bodyLS[jbody].grid_style == GLOBAL) {
           need_global = 1;
-          index_global = grid_index[jbody];
+          index_global = bodyLS[jbody].grid_index;
         }
       }
 
@@ -368,15 +366,15 @@ void FixRigidSmallLSDEM::init()
 
       if (need_distributed) {
         for (i = 0; i < atom->nlocal; i++) {
-          ibody = body[i];
+          ibody = atom2body[i];
 
           need_padding = 0;
           if (pair.second.find(ibody) == pair.second.end())
             continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
-          nx = grid_size[ibody][0];
-          ny = grid_size[ibody][1];
-          nz = grid_size[ibody][2];
+          nx = bodyLS[ibody].grid_size[0];
+          ny = bodyLS[ibody].grid_size[1];
+          nz = bodyLS[ibody].grid_size[2];
           ntotal = nx * ny * nz;
 
           // Location of atom/node relative to CoM
@@ -388,12 +386,12 @@ void FixRigidSmallLSDEM::init()
           domain->minimum_image(FLERR, delx, dely, delz);
 
           // Location of atom/node relative to entire grain grid minimum.
-          delx -= grid_min[ibody][0];
-          dely -= grid_min[ibody][1];
-          delz -= grid_min[ibody][2];
+          delx -= bodyLS[ibody].grid_min[0];
+          dely -= bodyLS[ibody].grid_min[1];
+          delz -= bodyLS[ibody].grid_min[2];
 
           // Index of atom/node in entire grain grid.
-          double stride = grid_stride[ibody];
+          double stride = bodyLS[ibody].grid_stride;
           ix_node = int(delx / stride);
           iy_node = int(dely / stride);
           iz_node = int(delz / stride);
@@ -404,9 +402,9 @@ void FixRigidSmallLSDEM::init()
           index_grid_min_local[2] = (dimension == 3) ? iz_node - rcell : 0;
 
           // Location of local grid minimum relative to CoM
-          grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
-          grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
-          grid_min_local[i][2] = index_grid_min_local[2] * stride + grid_min[ibody][2];
+          grid_min_local[i][0] = index_grid_min_local[0] * stride + bodyLS[ibody].grid_min[0];
+          grid_min_local[i][1] = index_grid_min_local[1] * stride + bodyLS[ibody].grid_min[1];
+          grid_min_local[i][2] = index_grid_min_local[2] * stride + bodyLS[ibody].grid_min[2];
 
           for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
             for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
@@ -427,7 +425,7 @@ void FixRigidSmallLSDEM::init()
                 } else {
                   // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
                   index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-                  grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
+                  grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
                 }
               }
             }
@@ -452,8 +450,6 @@ void FixRigidSmallLSDEM::init()
       index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
     }
   }
-
-  */
 }
 
 /* ----------------------------------------------------------------------
@@ -880,6 +876,211 @@ double FixRigidSmallLSDEM::memory_usage()
   bytes += (double)nmax_body * sizeof(BodyLS);
   return bytes;
 }
+
+
+/* ----------------------------------------------------------------------
+   one-time reading of file names for LS grid
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::read_gridfile_names(char **gridfiles)
+{
+  tagint id;
+  int nchunk, eofflag, nlines;
+  FILE *fp;
+  char *eof, *start, *next, *buf;
+  char line[MAXLINE] = {'\0'};
+
+  int nlocal = atom->nlocal;
+
+  std::unordered_map<tagint,int> hash;
+  for (int i = 0; i < nlocal; i++)
+    if (bodyown[i] >= 0) hash[atom->molecule[i]] = bodyown[i];
+
+  if (comm->me == 0) {
+    fp = fopen(inpfile,"r");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid/small/ls/dem infile {}: {}", inpfile, utils::getsyserror());
+    while (true) {
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/small/ls/dem infile");
+      start = &line[strspn(line, " \t\n\v\f\r")];
+      if (*start != '\0' && *start != '#') break;
+    }
+    nlines = utils::inumeric(FLERR, utils::trim(line), true, lmp);
+    if (nlines == 0) fclose(fp);
+  }
+  MPI_Bcast(&nlines, 1, MPI_INT, 0, world);
+
+  if (nlines == 0) return;
+  else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
+
+  auto buffer = new char[CHUNK * MAXLINE];
+  int nread = 0;
+  int me = comm->me;
+  while (nread < nlines) {
+    nchunk = MIN(nlines - nread, CHUNK);
+    eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
+    if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/small/ls/dem infile");
+
+    buf = buffer;
+    next = strchr(buf, '\n');
+    *next = '\0';
+    int nwords = utils::count_words(utils::trim_comment(buf));
+    *next = '\n';
+
+    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
+      error->all(FLERR, "Incorrect rigid body format in fix rigid/small/ls/dem file");
+
+    for (int i = 0; i < nchunk; i++) {
+      next = strchr(buf,'\n');
+      *next = '\0';
+
+      try {
+        ValueTokenizer values(buf);
+        id = values.next_tagint();
+
+        if (id <= 0 || id > maxmol)
+          error->all(FLERR,"Invalid rigid body molecude ID {} in fix {} file", id, style);
+
+        if (hash.find(id) == hash.end()) {
+          buf = next + 1;
+          continue;
+        }
+        int m = hash[id];
+
+        values.skip(19);
+        bodyLS[m].grid_style = values.next_int();
+        if (bodyLS[m].grid_style != 0 && bodyLS[m].grid_style != 1)
+          throw TokenizerException("invalid_rigid memory model ", std::to_string(bodyLS[m].grid_style));
+
+        bodyLS[m].grid_scale = values.next_double();
+        strcpy(gridfiles[m], values.next_string().data());
+      } catch (TokenizerException &e) {
+        error->all(FLERR, "Invalid fix rigid/small/ls/dem infile: {}", e.what());
+      }
+      buf = next + 1;
+    }
+    nread += nchunk;
+  }
+
+  if (comm->me == 0) fclose(fp);
+  delete[] buffer;
+}
+
+/* ----------------------------------------------------------------------
+   read per rigid body level-set grid values from user-provided file
+   files gridfiles to read from stored previously by readfile() function
+   first line = grid_sizex grid_sizey grid_sizez
+   followed by grid_sizex * grid_sizey * grid_sizez lines of level set values at the grid points
+   which = 0, read only the size of the level-set grid
+   which = 1, read the values of the level-set grid
+   for context, see function in FixRigidLSDEM
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::read_gridfile(int ibody, int which, std::string filename, double *grid_values)
+{
+  int dim = domain->dimension;
+  int grid_shape_buf[dim];
+  double grid_size_buf[dim + 1];
+  int nchunk, eofflag;
+  FILE *fp;
+  char *eof, *start, *next, *buf;
+  char line[MAXLINE] = {'\0'};
+
+  int nlines = 1;
+  const char* gridfile = filename.c_str();
+  if (comm->me == 0) {
+    fp = fopen(gridfile, "r");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid/small/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
+    while (true) {
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/small/ls/dem gridfile");
+      start = &line[strspn(line, " \t\n\v\f\r")];
+      if (*start != '\0' && *start != '#') break;
+    }
+    auto grid_shape = utils::split_words(line);
+    if (grid_shape.size() != dim)
+      error->one(FLERR, "Fix rigid/small/ls/dem gridfile {} has {} dimensions but simulation is {}D",
+                          gridfile, grid_shape.size(), dim);
+    for (int idim = 0; idim < dim; idim++)
+      grid_shape_buf[idim] = utils::inumeric(FLERR, grid_shape[idim], false, lmp);
+
+    eof = fgets(line, MAXLINE, fp);
+    if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/small/ls/dem gridfile");
+    grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+    if (grid_size_buf[0] <= 0.0)
+      error->one(FLERR, "Grid stride for rigid/small/ls/dem gridfile {} must be positive", gridfile);
+
+    eof = fgets(line, MAXLINE, fp);
+    if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/small/ls/dem gridfile");
+    auto grid_corner = utils::split_words(line);
+    if (grid_corner.size() != dim)
+      error->one(FLERR, "Fix rigid/small/ls/dem gridfile {} specifies {} grid corner cooridnates but simulation is {}D",
+                          gridfile, grid_corner.size(), dim);
+    for (int idim = 0; idim < dim; idim++)
+      grid_size_buf[idim + 1] = utils::numeric(FLERR, grid_corner[idim], false, lmp);
+    if (which == 0)
+      utils::logmesg(lmp, "Reading ls/dem grid data for body {} from file {}\n", ibody, gridfile);
+  }
+  MPI_Bcast(grid_shape_buf, dim, MPI_INT, 0, world);
+  MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
+
+  for (int idim = 0; idim < dim; idim++)
+    nlines *= grid_shape_buf[idim];
+
+  if (nlines == 0) return;
+  else if (nlines < 0) error->all(FLERR, "Fix rigid/small/ls/dem gridfile has incorrect format");
+
+  if (which == 0) {
+    bodyLS[ibody].grid_stride = grid_size_buf[0];
+    for (int idim = 0; idim < dim; idim++) {
+      bodyLS[ibody].grid_min[idim] = grid_size_buf[idim + 1];
+      bodyLS[ibody].grid_size[idim] = (int) grid_shape_buf[idim];
+    }
+
+    if (dim == 2) {
+      bodyLS[ibody].grid_min[2] = 0.0;
+      bodyLS[ibody].grid_size[2] = 1;
+    }
+
+  } else {
+    auto buffer = new char[CHUNK * MAXLINE];
+    int nread = 0;
+    int me = comm->me;
+    while (nread < nlines) {
+      nchunk = MIN(nlines-nread, CHUNK);
+      eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
+      if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/small/ls/dem gridfile");
+
+      buf = buffer;
+      next = strchr(buf, '\n');
+      *next = '\0';
+      int nwords = utils::count_words(utils::trim_comment(buf));
+      *next = '\n';
+
+      if (nwords != 1)
+        error->all(FLERR, "LSDEM gridfile format requires one entry per line");
+
+      for (int i = 0; i < nchunk; i++) {
+        next = strchr(buf, '\n');
+        *next = '\0';
+
+        try {
+          ValueTokenizer values(buf);
+          grid_values[nread + i] = values.next_double();
+        } catch (TokenizerException &e) {
+          error->all(FLERR, "Invalid fix rigid/small/ls/dem gridfile: {}", e.what());
+        }
+        buf = next + 1;
+      }
+      nread += nchunk;
+    }
+    delete[] buffer;
+  }
+  if (comm->me == 0) fclose(fp);
+}
+
 /* ----------------------------------------------------------------------
    Find the value of node (atom) i in j's LS grid
    see FixRigidLSDEM for context and explanation

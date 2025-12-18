@@ -57,6 +57,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     int grid_index;        // index of body's global memory, -1 if distributed
     int grid_size[3];      // size of each grid
     int grid_style;        // grid storage style
+    int grid_nnodes;       // number of nodes in grid
     double grid_scale;     // scale factor for grid values
     double grid_stride;    // the LS grid stride, assumed equal in all direction
     double grid_vol;       // volume of LS grid
@@ -92,7 +93,6 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension
 
-
   BodyLS *bodyLS;          // list of rigid bodies, owned and ghost
   int nlocal_bodyLS;       // # of owned rigid bodies
   int nghost_bodyLS;       // # of ghost rigid bodies
@@ -107,8 +107,9 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // local methods
 
   void compute_forces_and_torques() override;
+  void read_gridfile(int, int, std::string, double *);
+  void read_gridfile_names(char **);
   void grow_body_ls();
-
 };
 
 }    // namespace LAMMPS_NS

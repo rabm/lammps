@@ -724,7 +724,8 @@ double FixRigidLSDEM::memory_usage()
 
 void FixRigidLSDEM::read_gridfile_names(char **gridfiles)
 {
-  int nchunk, id, eofflag, nlines;
+  tagint id;
+  int nchunk, eofflag, nlines;
   FILE *fp;
   char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
@@ -779,7 +780,7 @@ void FixRigidLSDEM::read_gridfile_names(char **gridfiles)
 
       try {
         ValueTokenizer values(buf);
-        id = values.next_int();
+        id = values.next_tagint();
         if (rstyle == MOLECULE) {
           if (id <= 0 || id > maxmol)
             throw TokenizerException("invalid rigid molecule ID ", std::to_string(id));
