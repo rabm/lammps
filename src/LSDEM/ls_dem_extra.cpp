@@ -19,6 +19,7 @@
 #include "rigid_ls_dem_const.h"
 
 #include <cmath>
+#include <vector>
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -116,61 +117,91 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
   if (smearCoeff != 0)
     ls_ref = sqrt(0.75) * stride / smearCoeff;
 
-  // Cell volume, temporary grid points, integration volume.
-  double volume_cell = stride * stride;
-  if (dimension == 3) volume_cell *= stride;
+  // Preallocate storage for smeared Heaviside values so we don't recompute.
+  const int nx = grid_size[0];
+  const int ny = grid_size[1];
+  const int nz = grid_size[2];
+  const int n_cells = nx * ny * nz;
+  std::vector<double> heaviside_vals(n_cells);
 
-  // Integration
-  double dV, ls_val;
-  double volume = 0.0;
+  // Volume integration
+  double h, ls_val;
+  int idx;
+  double volume = 0.0; // In voxel units
   for (int a = 0; a < 3; a++) com_temp[a] = 0.0;
-  for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
-    for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
-      for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
-        dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
-        if (dV > 0.0) {
-          volume += dV;
-          com_temp[0] += ind_x * stride * dV;
-          com_temp[1] += ind_y * stride * dV;
-          com_temp[2] += ind_z * stride * dV;
+  for (int ind_x = 0; ind_x < nx; ind_x++) {
+    for (int ind_y = 0; ind_y < ny; ind_y++) {
+      for (int ind_z = 0; ind_z < nz; ind_z++) {
+        idx = ind_x + ind_y * nx + ind_z * nx * ny;
+        ls_val = grid_values[idx];
+        h = smeared_heaviside_step(-ls_val / ls_ref);
+        heaviside_vals[idx] = h;
+        if (h > 0.0) {
+          volume += h;
+          com_temp[0] += ind_x * h;
+          com_temp[1] += ind_y * h;
+          com_temp[2] += ind_z * h;
         }
       }
     }
   }
-  com_temp[0] /= volume;
+  com_temp[0] /= volume; // Still all in voxel units
   com_temp[1] /= volume;
   com_temp[2] /= volume;
 
   // Computing the inertia tensor (a second loop is unavoidable)
-  double delx, dely, delz;
+  double delx, dely, delz, delxx, delyy, delzz;
   for (int a = 0; a < 3; a++) {
     for (int b = 0; b < 3; b++) {
       inertia_temp[a][b] = 0.0;
     }
   }
-  for (int ind_x = 0; ind_x < grid_size[0]; ind_x++) {
-    for (int ind_y = 0; ind_y < grid_size[1]; ind_y++) {
-      for (int ind_z = 0; ind_z < grid_size[2]; ind_z++) {
-        ls_val = grid_values[ind_x + ind_y * grid_size[0] + ind_z * grid_size[0] * grid_size[1]];
-        dV = smeared_heaviside_step(-ls_val / ls_ref) * volume_cell;
-        if (dV > 0.0) {
-          delx = ind_x * stride - com_temp[0];
-          dely = ind_y * stride - com_temp[1];
-          delz = ind_z * stride - com_temp[2];
-          inertia_temp[0][0] += (dely * dely + delz * delz) * dV;
-          inertia_temp[1][1] += (delx * delx + delz * delz) * dV;
-          inertia_temp[2][2] += (delx * delx + dely * dely) * dV;
-          inertia_temp[0][1] -= delx * dely * dV;
-          inertia_temp[0][2] -= delx * delz * dV;
-          inertia_temp[1][2] -= dely * delz * dV;
+  for (int ind_x = 0; ind_x < nx; ind_x++) {
+    for (int ind_y = 0; ind_y < ny; ind_y++) {
+      for (int ind_z = 0; ind_z < nz; ind_z++) {
+        idx = ind_x + ind_y * nx + ind_z * nx * ny;
+        ls_val = grid_values[idx];
+        h = heaviside_vals[idx];
+        if (h > 0.0) {
+          delx = ind_x - com_temp[0];
+          dely = ind_y - com_temp[1];
+          delz = ind_z - com_temp[2];
+          delxx = delx*delx;
+          delyy = dely*dely;
+          delzz = delz*delz;
+          inertia_temp[0][0] += (delyy + delzz) * h;
+          inertia_temp[1][1] += (delxx + delzz) * h;
+          inertia_temp[2][2] += (delxx + delyy) * h;
+          inertia_temp[0][1] -= delx * dely * h;
+          inertia_temp[0][2] -= delx * delz * h;
+          inertia_temp[1][2] -= dely * delz * h;
         }
       }
     }
   }
+
+  // Cell volume
+  double volume_cell = stride * stride;
+  if (dimension == 3) volume_cell *= stride;
+
+  // Back to real units
+  volume *= volume_cell;
+  com_temp[0] /= stride;
+  com_temp[1] /= stride;
+  com_temp[2] /= stride;
+  double Iscale = volume_cell*stride*stride; // Works in both 2D and 3D
+  inertia_temp[0][0] *= Iscale;
+  inertia_temp[1][1] *= Iscale;
+  inertia_temp[2][2] *= Iscale;
+  inertia_temp[0][1] *= Iscale;
+  inertia_temp[0][2] *= Iscale;
+  inertia_temp[1][2] *= Iscale;
+
+  // Populate other half of inertia tensor
   inertia_temp[1][0] = inertia_temp[0][1];
   inertia_temp[2][0] = inertia_temp[0][2];
   inertia_temp[2][1] = inertia_temp[1][2];
+
   // Check to see if level set has a non-inertial reference frame
   double I_diag_norm = sqrt(inertia_temp[0][0] * inertia_temp[0][0] + inertia_temp[1][1] * inertia_temp[1][1] + inertia_temp[2][2] * inertia_temp[2][2]);
   double I_off_diag_norm = sqrt(2.0 * (inertia_temp[0][1] * inertia_temp[0][1] + inertia_temp[0][2] * inertia_temp[0][2] + inertia_temp[1][2] * inertia_temp[1][2]));
@@ -185,7 +216,7 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
 -------------------------------------------------------------------------*/
 
 double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int nrow, int nslice,
-                                 double x_red, double y_red, double z_red, double normal[3])
+                                 double x_red, double y_red, double z_red, double normal[3], double stride)
 {
   double dist, nx, ny, nz(0.0);
 
@@ -200,20 +231,29 @@ double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int n
       ((dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
     return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
 
+  //  Interpolate
+  int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
+
+  // Level-set value of lower corner
+  double ls000 = mygrid[my_index];
+
+  // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
+  // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
+  // so 2.0 is safe.
+  if (ls000 > 2.0*stride){
+    return ls000;
+  }
+
+  // Rest of the level-set values on the grid points in the lower z plane (ind_z)
+  double ls100 = mygrid[my_index + 1];
+  double ls010 = mygrid[my_index + ncol];
+  double ls110 = mygrid[my_index + 1 + ncol]; // move this and // Interpolate upwards, add short circuit!!
+
   // The normalised coordinates within the current grid cell.
   // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
   x_red = x_red - static_cast<double>(ind_x);
   y_red = y_red - static_cast<double>(ind_y);
   z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
-
-  //  Interpolate
-  int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
-
-  // Level-set values on the grid points in the lower z plane (ind_z)
-  double ls000 = mygrid[my_index];
-  double ls100 = mygrid[my_index + 1];
-  double ls010 = mygrid[my_index + ncol];
-  double ls110 = mygrid[my_index + 1 + ncol];
 
   // Bi-linear interpolation in the lower z plane (ind_z)
   double lsxy0 = ls000 + y_red * (ls010 - ls000) +

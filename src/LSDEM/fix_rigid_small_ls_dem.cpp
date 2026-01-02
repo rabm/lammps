@@ -1093,7 +1093,8 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_quat = atom->darray[index_ls_dem_quat];
 
   int jbody = atom2body[j];
-  double strideinv = 1.0 / bodyLS[jbody].grid_stride;
+  double jstride = bodyLS[jbody].grid_stride;
+  double strideinv = 1.0 / jstride;
 
   double delx = x[i][0] - grain_com[j][0];
   double dely = x[i][1] - grain_com[j][1];
@@ -1134,7 +1135,7 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
   double z_red = x_local[2] * strideinv;
 
   int dim = domain->dimension;
-  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal);
+  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
 
   if (bodyLS[jbody].grid_style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);

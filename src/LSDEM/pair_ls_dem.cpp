@@ -300,24 +300,11 @@ void PairLSDEM::compute(int eflag, int vflag)
           u = - fix_rigid->get_ls_value(i, j, normal);
         else
           u = - fix_rigid_small->get_ls_value(i, j, normal);
-        // The normal is also swapped and points away from j, correct signs. Already in global coordinates.
-        MathExtra::negate3(normal);
-
-        // Contact point
-        contact_point[0] = xitmp - 0.5 * u * normal[0];
-        contact_point[1] = yitmp - 0.5 * u * normal[1];
-        contact_point[2] = zitmp - 0.5 * u * normal[2];
       } else { // Use node of j.
         if (fix_rigid)
           u = - fix_rigid->get_ls_value(j, i, normal);
         else
           u = - fix_rigid_small->get_ls_value(j, i, normal);
-        // The normal points towards j, no correction needed. Already in global coordinates.
-
-        // Contact point
-        contact_point[0] = xjtmp - 0.5 * u * normal[0];
-        contact_point[1] = yjtmp - 0.5 * u * normal[1];
-        contact_point[2] = zjtmp - 0.5 * u * normal[2];
       }
 
       // No adhesion, cohesion, or ranged forces.
@@ -345,7 +332,26 @@ void PairLSDEM::compute(int eflag, int vflag)
             n[j][2] = 0.0;
           }
         }
+        // Skip force calculation
         continue;
+      } else { // Physical contact!!
+        // Compute contact point, correct normal if needed
+        if (calc_force_of_i_on_j) { // Use node of i.
+          // The normal is also swapped and points away from j, correct signs. Already in global coordinates.
+          MathExtra::negate3(normal);
+
+          // Contact point
+          contact_point[0] = xitmp - 0.5 * u * normal[0];
+          contact_point[1] = yitmp - 0.5 * u * normal[1];
+          contact_point[2] = zitmp - 0.5 * u * normal[2];
+        } else { // Use node of j.
+          // The normal points towards j, no correction needed. Already in global coordinates.
+
+          // Contact point
+          contact_point[0] = xjtmp - 0.5 * u * normal[0];
+          contact_point[1] = yjtmp - 0.5 * u * normal[1];
+          contact_point[2] = zjtmp - 0.5 * u * normal[2];
+        }
       }
 
       ///////////////////

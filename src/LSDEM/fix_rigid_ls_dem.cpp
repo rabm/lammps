@@ -951,7 +951,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double **grain_quat = atom->darray[index_ls_dem_quat];
 
   int jbody = body[j];
-  double strideinv = 1.0 / grid_stride[jbody];
+  double jstride = grid_stride[jbody];
+  double strideinv = 1.0 / jstride;
 
   // Calculate position of node i in node j's grid using:
   //   x[i][0-2] = location of i
@@ -1009,7 +1010,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double z_red = x_local[2] * strideinv;
 
   int dim = domain->dimension;
-  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal);
+  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];

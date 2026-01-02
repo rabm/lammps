@@ -20,7 +20,7 @@ namespace LSDEMExtra {
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);
   double compute_grid_properties(int *, double, double *, double *, double[3][3], int);
-  double interpolate_LS(int, double *, int, int, int, double, double, double, double[3]);
+  double interpolate_LS(int, double *, int, int, int, double, double, double, double[3], double);
 }
 
 #endif
