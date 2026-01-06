@@ -73,6 +73,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   nmax_bodyLS = 0;
   while (nmax_bodyLS < nlocal_body) nmax_bodyLS += DELTA_BODY;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
+  memory->grow(bodyownLS, atom->nmax, "rigid/small/ls/dem:bodyownLS");
+  atom->add_callback(Atom::GROW);
 
   // set bodyown for owned atoms
 
@@ -91,7 +93,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   // increase max comm size needed for LSDEM
 
-  comm_forward += bodysizeLS;
+  comm_forward += 1 + bodysizeLS;
   comm_flag2 = REGULAR;
 
   if (!atom->omega_flag)
@@ -105,6 +107,10 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 {
+  // unregister callbacks to this fix from Atom class
+
+  if (modify->get_fix_by_id(id)) atom->delete_callback(id,Atom::GROW);
+
   memory->sfree(bodyLS);
 
   // delete global memory data
@@ -116,7 +122,7 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 
 int FixRigidSmallLSDEM::setmask()
 {
-  int mask = FixRigidSmallLSDEM::setmask();
+  int mask = FixRigidSmall::setmask();
   mask |= PRE_FORCE;
   return mask;
 }
@@ -141,11 +147,71 @@ void FixRigidSmallLSDEM::post_constructor()
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
 }
 
+/* ----------------------------------------------------------------------
+   compute initial fcm and torque on bodies, also initial virial
+   reset all particle velocities to be consistent with vcm and omega
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::setup(int vflag)
+{
+  int i, n, ibody;
+
+  // error if maxextent > comm->cutghost
+  // NOTE: could just warn if an override flag set
+  // NOTE: this could fail for comm multi mode if user sets a wrong cutoff
+  //       for atom types in rigid bodies - need a more careful test
+  // must check here, not in init, b/c neigh/comm values set after fix init
+
+  double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
+  if (maxextent > cutghost)
+    error->all(FLERR, "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
+
+  //check(1);
+
+  // sum fcm, torque across all rigid bodies
+
+  compute_forces_and_torques();
+
+  // enforce 2d body forces and torques
+
+  if (domain->dimension == 2) enforce2d();
+
+  // virial setup before call to set_v
+
+  v_init(vflag);
+
+  // compute and forward communicate vcm and omega of all bodies
+
+  for (ibody = 0; ibody < nlocal_body; ibody++) {
+    Body *b = &body[ibody];
+    MathExtra::angmom_to_omega(b->angmom, b->ex_space, b->ey_space,
+                               b->ez_space, b->inertia, b->omega);
+  }
+
+  commflag = FINAL;
+  comm->forward_comm(this, 10);
+
+  // set velocity/rotation of atoms in rigid bodues
+
+  set_v();
+
+  // guesstimate virial as 2x the set_v contribution
+
+  int nlocal = atom->nlocal;
+  if (vflag_global)
+    for (n = 0; n < 6; n++) virial[n] *= 2.0;
+  if (vflag_atom) {
+    for (i = 0; i < nlocal; i++)
+      for (n = 0; n < 6; n++)
+        vatom[i][n] *= 2.0;
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::init()
+void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
-  FixRigidSmall::init();
+  FixRigidSmall::setup_pre_neighbor();
 
   // For updating center of mass
   double **grain_com = atom->darray[index_ls_dem_com];
@@ -299,7 +365,6 @@ void FixRigidSmallLSDEM::init()
         if (bodyLS[ibody].grid_vol < 0)
           error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
 
-
         // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
         // A misalignment would mean that the forces and rotations are applied to the wrong point in
         // space, leading to integration issues.
@@ -450,77 +515,7 @@ void FixRigidSmallLSDEM::init()
       index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
     }
   }
-}
 
-/* ----------------------------------------------------------------------
-   compute initial fcm and torque on bodies, also initial virial
-   reset all particle velocities to be consistent with vcm and omega
-
-     TODO: this is a lot of code duplication. A cleaner way to do that
-           could be to write little helper functions for computing torques from forces
-           and not call it for LSDEM
-------------------------------------------------------------------------- */
-
-void FixRigidSmallLSDEM::setup(int vflag)
-{
-  int i, n, ibody;
-
-  // error if maxextent > comm->cutghost
-  // NOTE: could just warn if an override flag set
-  // NOTE: this could fail for comm multi mode if user sets a wrong cutoff
-  //       for atom types in rigid bodies - need a more careful test
-  // must check here, not in init, b/c neigh/comm values set after fix init
-
-  double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
-  if (maxextent > cutghost)
-    error->all(FLERR, "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
-
-  //check(1);
-
-  // sum fcm, torque across all rigid bodies
-
-  compute_forces_and_torques();
-
-  // enforce 2d body forces and torques
-
-  if (domain->dimension == 2) enforce2d();
-
-  // virial setup before call to set_v
-
-  v_init(vflag);
-
-  // compute and forward communicate vcm and omega of all bodies
-
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    Body *b = &body[ibody];
-    MathExtra::angmom_to_omega(b->angmom, b->ex_space, b->ey_space,
-                               b->ez_space, b->inertia, b->omega);
-  }
-
-  commflag = FINAL;
-  comm->forward_comm(this, 10);
-
-  // set velocity/rotation of atoms in rigid bodues
-
-  set_v();
-
-  // guesstimate virial as 2x the set_v contribution
-
-  int nlocal = atom->nlocal;
-  if (vflag_global)
-    for (n = 0; n < 6; n++) virial[n] *= 2.0;
-  if (vflag_atom) {
-    for (i = 0; i < nlocal; i++)
-      for (n = 0; n < 6; n++)
-        vatom[i][n] *= 2.0;
-  }
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixRigidSmallLSDEM::setup_pre_neighbor()
-{
-  FixRigidSmall::setup_pre_neighbor();
   nghost_bodyLS = 0;
 }
 
@@ -738,14 +733,18 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
 {
   int m, i, j;
   if (comm_flag2 != PREFORCE) {
-    m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
+    m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
 
     if (commflag == FULL_BODY) {
+      // Communicate all of bodyownLS first so it can be used to calculate how much parent class communictes
       for (i = 0; i < n; i++) {
         j = list[i];
         if (bodyownLS[j] < 0) buf[m++] = 0;
-        else {
-          buf[m++] = 1;
+        else buf[m++] = 1;
+      }
+      for (i = 0; i < n; i++) {
+        j = list[i];
+        if (bodyownLS[j] >= 0) {
           memcpy(&buf[m], &bodyLS[bodyownLS[j]], sizeof(BodyLS));
           m += bodysizeLS;
         }
@@ -785,23 +784,26 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
 void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   int m, i, j, last;
+  last = first + n;
+  m = 0;
 
   if (comm_flag2 != PREFORCE) {
     FixRigidSmall::unpack_forward_comm(n, first, buf);
 
     if (commflag == FULL_BODY) {
-      last = first + n;
-      m = 0;
-      for (i = first; i < last; i++)
-        if (bodyown[i] != 0) m += bodysize;
-
+      // calculate amount of data sent by parent
       for (i = first; i < last; i++) {
         bodyownLS[i] = static_cast<int> (buf[m++]);
-        if (bodyownLS[i] == 0) bodyownLS[i] = -1;
-        else {
+        if (bodyownLS[i] != 0) m += bodysize;
+      }
+
+      for (i = first; i < last; i++) {
+        if (bodyownLS[i] == 0) {
+          bodyownLS[i] = -1;
+        } else {
           j = nlocal_bodyLS + nghost_bodyLS;
           if (j == nmax_bodyLS) grow_body_ls();
-          memcpy(&bodyLS[j],&buf[m],sizeof(BodyLS));
+          memcpy(&bodyLS[j], &buf[m], sizeof(BodyLS));
           m += bodysizeLS;
           bodyLS[j].ilocal = i;
           bodyownLS[i] = j;
@@ -813,8 +815,7 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
     double **grain_com = atom->darray[index_ls_dem_com];
     double **grain_quat = atom->darray[index_ls_dem_quat];
     double **grain_omega = atom->darray[index_ls_dem_omega];
-    m = 0;
-    last = first + n;
+
     for (i = first; i < last; i++) {
       grain_com[i][0] = buf[m++];
       grain_com[i][1] = buf[m++];
