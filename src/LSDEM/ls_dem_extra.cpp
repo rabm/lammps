@@ -160,7 +160,6 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
     for (int ind_y = 0; ind_y < ny; ind_y++) {
       for (int ind_z = 0; ind_z < nz; ind_z++) {
         idx = ind_x + ind_y * nx + ind_z * nx * ny;
-        ls_val = grid_values[idx];
         h = heaviside_vals[idx];
         if (h > 0.0) {
           delx = ind_x - com_temp[0];
@@ -186,9 +185,9 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
 
   // Back to real units
   volume *= volume_cell;
-  com_temp[0] /= stride;
-  com_temp[1] /= stride;
-  com_temp[2] /= stride;
+  com_temp[0] *= stride;
+  com_temp[1] *= stride;
+  com_temp[2] *= stride;
   double Iscale = volume_cell*stride*stride; // Works in both 2D and 3D
   inertia_temp[0][0] *= Iscale;
   inertia_temp[1][1] *= Iscale;
