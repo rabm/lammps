@@ -32,6 +32,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void post_constructor() override;
   void setup(int) override;
   void setup_pre_force(int) override;
+  void initial_integrate(int) override;
   void pre_force(int) override;
 
   void grow_arrays(int) override;

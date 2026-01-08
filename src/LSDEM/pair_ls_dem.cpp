@@ -140,7 +140,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   firstneigh = list->firstneigh;
 
   // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
-  // Loop over local+ghost atoms to find closest neighbors
+  // Loop over local + ghost atoms to find closest neighbors
   for (ii = 0; ii < allnum; ii++) {
     // Loop through local nodes
     i = ilist[ii];

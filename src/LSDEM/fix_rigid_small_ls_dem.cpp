@@ -531,8 +531,38 @@ void FixRigidSmallLSDEM::setup_pre_force(int vflag)
 void FixRigidSmallLSDEM::pre_force(int vflag)
 {
   comm_flag2 = PREFORCE;
-  comm->forward_comm(this, 10);
+  comm->forward_comm(this, 11);
   comm_flag2 = REGULAR;
+}
+
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::initial_integrate(int vflag)
+{
+  FixRigidSmall::initial_integrate(vflag);
+
+  double **grain_com = atom->darray[index_ls_dem_com];
+  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_omega = atom->darray[index_ls_dem_omega];
+
+  int ibody;
+  for (int i = 0; i < atom->nlocal; i++) {
+    ibody = atom2body[i];
+    Body *b = &body[ibody];
+
+    grain_com[i][0] = b->xcm[0];
+    grain_com[i][1] = b->xcm[1];
+    grain_com[i][2] = b->xcm[2];
+    grain_quat[i][0] = b->quat[0];
+    grain_quat[i][1] = b->quat[1];
+    grain_quat[i][2] = b->quat[2];
+    grain_quat[i][3] = b->quat[3];
+
+    grain_omega[i][0] = b->omega[0];
+    grain_omega[i][1] = b->omega[1];
+    grain_omega[i][2] = b->omega[2];
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -758,6 +788,8 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
     for (i = 0; i < n; i++) {
       j = list[i];
 
+      buf[m++] = ubuf(atom2body[j]).d;
+
       buf[m++] = grain_com[j][0];
       buf[m++] = grain_com[j][1];
       buf[m++] = grain_com[j][2];
@@ -817,6 +849,9 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
     double **grain_omega = atom->darray[index_ls_dem_omega];
 
     for (i = first; i < last; i++) {
+
+      atom2body[i] = ubuf(buf[m++]).i;
+
       grain_com[i][0] = buf[m++];
       grain_com[i][1] = buf[m++];
       grain_com[i][2] = buf[m++];
