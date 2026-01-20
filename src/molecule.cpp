@@ -16,6 +16,7 @@
 #include "atom.h"
 #include "atom_vec.h"
 #include "atom_vec_body.h"
+#include "atom_vec_ls_dem.h"
 #include "body.h"
 #include "comm.h"
 #include "domain.h"
@@ -55,9 +56,9 @@ Molecule::Molecule(LAMMPS *lmp) :
     dihedral_atom4(nullptr), num_improper(nullptr), improper_type(nullptr), improper_atom1(nullptr),
     improper_atom2(nullptr), improper_atom3(nullptr), improper_atom4(nullptr), nspecial(nullptr),
     special(nullptr), shake_flag(nullptr), shake_atom(nullptr), shake_type(nullptr),
-    avec_body(nullptr), ibodyparams(nullptr), dbodyparams(nullptr), fragmentmask(nullptr),
-    dx(nullptr), dxcom(nullptr), dxbody(nullptr), quat_external(nullptr), fp(nullptr),
-    count(nullptr)
+    avec_body(nullptr), ibodyparams(nullptr), dbodyparams(nullptr), avec_ls_dem(nullptr),
+    fragmentmask(nullptr), dx(nullptr), dxcom(nullptr), dxbody(nullptr), quat_external(nullptr),
+    fp(nullptr), count(nullptr)
 {
   // parse args until reach unknown arg (next file)
 
@@ -544,6 +545,14 @@ void Molecule::from_json(const std::string &molid, const json &moldata)
     itensor[5] = double(moldata["inertia"][5]) * scale5;
   }
 
+  if (moldata.contains("quat") && (moldata["quat"].size() == 4)) {
+    quatflag = quatflag_user = 1;
+    quat[0] = double(moldata["quat"][0]);
+    quat[1] = double(moldata["quat"][1]);
+    quat[2] = double(moldata["quat"][2]);
+    quat[3] = double(moldata["quat"][3]);
+  }
+
   if (moldata.contains("body")) {
     avec_body = dynamic_cast<AtomVecBody *>(atom->style_match("body"));
     if (!avec_body)
@@ -560,6 +569,15 @@ void Molecule::from_json(const std::string &molid, const json &moldata)
                  "\"doubles\" sections",
                  id);
     }
+  }
+
+  if (moldata.contains("lsdem") && (moldata["lsdem"].size() == 1)) {
+    avec_ls_dem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
+    if (!avec_ls_dem)
+      error->all(FLERR, Error::NOLASTLINE,
+                 "Molecule template {}: lsdem molecule data requires atom style ls/dem", id);
+    lsdemflag = 1;
+    grid_index = int(moldata["lsdem"][0]);
   }
 
   // checks. No checks for < 0 needed since size() is at least 0
@@ -1869,7 +1887,12 @@ json Molecule::to_json() const
     moldata["inertia"][4] = itensor[4];
     moldata["inertia"][5] = itensor[5];
   }
-
+  if (quatflag_user) {
+    moldata["quat"][0] = quat[0];
+    moldata["quat"][1] = quat[1];
+    moldata["quat"][2] = quat[2];
+    moldata["quat"][3] = quat[3];
+  }
   // fields with format
   if (xflag) {
     moldata["coords"]["format"] = {"atom-id", "x", "y", "z"};
@@ -2431,6 +2454,13 @@ void Molecule::read(int flag)
         com[2] *= sizescale;
         if ((domain->dimension == 2) && (com[2] != 0.0))
           error->all(FLERR, fileiarg, "Molecule file z center-of-mass must be 0.0 for 2d systems");
+      } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+\\f+\\s+quat\\s*$")) {
+        quatflag = quatflag_user = 1;
+        quat[0] = values.next_double();
+        quat[1] = values.next_double();
+        quat[2] = values.next_double();
+        quat[3] = values.next_double();
+        nwant = 5;
       } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+inertia\\s*$")) {
         inertiaflag = inertiaflag_user = 1;
         itensor[0] = values.next_double();
@@ -2454,6 +2484,12 @@ void Molecule::read(int flag)
         nibody = values.next_int();
         ndbody = values.next_int();
         nwant = 3;
+      } else if (values.matches("^\\s*\\d+\\s+\\d+\\s+lsdem\\s*$")) {
+        lsdemflag = 1;
+        avec_ls_dem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
+        if (!avec_ls_dem) error->all(FLERR, fileiarg, "Molecule file requires atom style ls/dem");
+        grid_index = values.next_int();
+        nwant = 2;
       } else if (values.matches("^\\s*\\d+\\s+\\S+\\s+types\\s*$")) {
         error->all(FLERR, fileiarg, "Found data file header keyword '{}' in molecule file", text);
       } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+[xyz]lo\\s+[xyz]hi\\s*$")) {
@@ -3905,7 +3941,9 @@ void Molecule::check_attributes()
   if (muflag && !atom->mu_flag) mismatch = 1;
   if (radiusflag && !atom->radius_flag) mismatch = 1;
   if (rmassflag && !atom->rmass_flag) mismatch = 1;
+  if (quatflag && !atom->quat_flag) mismatch = 1;
   if (bodyflag && !atom->body_flag) mismatch = 1;
+  if (lsdemflag && !atom->grid_index_flag) mismatch = 1;
 
   if (mismatch && (comm->me == 0))
     error->warning(FLERR, "Molecule attributes do not match system attributes"
@@ -3976,8 +4014,10 @@ void Molecule::initialize()
   shakeflag = shakeflagflag = shakeatomflag = shaketypeflag = 0;
   bodyflag = ibodyflag = dbodyflag = 0;
 
-  centerflag = massflag = comflag = inertiaflag = 0;
-  massflag_user = comflag_user = inertiaflag_user = specialflag_user = 0;
+  lsdemflag = 0;
+
+  centerflag = massflag = comflag = inertiaflag = quatflag = 0;
+  massflag_user = comflag_user = inertiaflag_user = quatflag_user = specialflag_user = 0;
   tag_require = 0;
 
   x = nullptr;
@@ -4235,12 +4275,13 @@ void Molecule::stats()
                    "  {} molecules\n"
                    "  {} fragments\n"
                    "  {} bodies\n"
+                   "  {} lsdem\n"
                    "  {} atoms with max type {}\n"
                    "  {} bonds with max type {}\n"
                    "  {} angles with max type {}\n"
                    "  {} dihedrals with max type {}\n"
                    "  {} impropers with max type {}\n",
-                   id, title, nmolecules, nfragments, bodyflag, natoms, ntypes, nbonds, nbondtypes,
+                   id, title, nmolecules, nfragments, bodyflag, lsdemflag, natoms, ntypes, nbonds, nbondtypes,
                    nangles, nangletypes, ndihedrals, ndihedraltypes, nimpropers, nimpropertypes);
 }
 
@@ -4259,7 +4300,9 @@ void Molecule::print(FILE *fp)
   if (nfragments) utils::print(fp, "  {} fragments\n", nfragments);
   if (massflag_user) utils::print(fp, "  {} mass\n", masstotal);
   if (bodyflag) utils::print(fp, "  {} {} body\n", nibody, ndbody);
+  if (lsdemflag) utils::print(fp, "  {} lsdem\n", grid_index);
   if (comflag_user) utils::print(fp, "  {} {} {} com\n", com[0], com[1], com[2]);
+  if (quatflag_user) utils::print(fp, "  {} {} {} {} quat\n", quat[0], quat[1], quat[2], quat[3]);
   if (inertiaflag_user)
     utils::print(fp, "  {} {} {} {} {} {} inertia\n", itensor[0], itensor[1], itensor[2],
                  itensor[3], itensor[4], itensor[5]);
@@ -4531,6 +4574,11 @@ void Molecule::print(FILE *fp)
       }
       utils::print(fp, " {}\n", dbodyparams[idx]);
     }
+  }
+
+  if (lsdemflag) {
+    fputs("\nLSDEM Grid Index\n\n", fp);
+    utils::print(fp, " {}\n", grid_index);
   }
 }
 // clang-format off

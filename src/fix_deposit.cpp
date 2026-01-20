@@ -571,6 +571,7 @@ void FixDeposit::pre_exchange()
         atom->v[n][2] = vnew[2];
         if (mode == MOLECULE) {
           onemols[imol]->quat_external = quat;
+          onemols[imol]->com_external = coord;
           atom->add_molecule_atom(onemols[imol],m,n,maxtag_all);
         }
         modify->create_attribute(n);

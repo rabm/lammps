@@ -26,6 +26,7 @@ class Molecule : protected Pointers {
   int nset;    // if first in set, # of molecules in this set
                // else 0 if not first in set
   int last;    // 1 if last molecule in set, else 0
+  int myindex; // index of this molecule in atom->molecules;
 
   std::string title;    // title string of the molecule file
   int fileiarg;         // argument index of the current file. For error messages
@@ -51,14 +52,15 @@ class Molecule : protected Pointers {
   int nspecialflag, specialflag;
   int shakeflag, shakeflagflag, shakeatomflag, shaketypeflag;
   int bodyflag, ibodyflag, dbodyflag;
+  int lsdemflag;
 
   // 1 if attribute defined or computed, 0 if not
 
-  int centerflag, massflag, comflag, inertiaflag;
+  int centerflag, massflag, comflag, inertiaflag, quatflag;
 
   // 1 if attribute defined in input, 0 if computed
 
-  int massflag_user, comflag_user, inertiaflag_user, specialflag_user;
+  int massflag_user, comflag_user, inertiaflag_user, quatflag_user, specialflag_user;
 
   // 1 if molecule fields require atom IDs
 
@@ -101,6 +103,11 @@ class Molecule : protected Pointers {
   int *ibodyparams;    // integer and double body params
   double *dbodyparams;
 
+  class AtomVecLSDEM *avec_ls_dem;
+  std::string grid_file;         // filename of LS grid
+  int grid_style;                // style of LS grid storage
+  double grid_scale;             // scale factor for LS grid
+
   // fragment info
 
   int **fragmentmask;    // nfragments by natoms
@@ -127,6 +134,7 @@ class Molecule : protected Pointers {
 
   double *quat_external;    // orientation imposed by external class
                             // e.g. FixPour or CreateAtoms
+  double *com_external;     // COM position imposed by external class
 
   Molecule(class LAMMPS *);
   ~Molecule() override;

@@ -181,6 +181,11 @@ Atom::Atom(LAMMPS *_lmp) : Pointers(_lmp), atom_style(nullptr), avec(nullptr), a
   uCond = uMech = uChem = uCG = uCGnew = nullptr;
   duChem = dpdTheta = nullptr;
 
+  // LSDEM package
+
+  xcom = nullptr;
+  grid_index = nullptr;
+
   // MESO package
 
   cc = cc_flux = nullptr;
@@ -522,6 +527,11 @@ void Atom::peratom_create()
   add_peratom("uCGnew",&uCGnew,DOUBLE,0);
   add_peratom("duChem",&duChem,DOUBLE,0);
 
+  // LSDEM package
+
+  add_peratom("xcom",&xcom,DOUBLE,3);
+  add_peratom("grid_index",&grid_index,INT,0);
+
   // MESO package
 
   add_peratom("edpd_cv",&edpd_cv,DOUBLE,0);
@@ -658,6 +668,7 @@ void Atom::set_atomflag_defaults()
   dpd_flag = edpd_flag = tdpd_flag = 0;
   sp_flag = 0;
   x0_flag = 0;
+  xcom_flag = grid_index_flag = 0;
   smd_flag = damage_flag = 0;
   mesont_flag = 0;
   contact_radius_flag = smd_data_9_flag = smd_stress_flag = 0;
@@ -2166,6 +2177,7 @@ void Atom::add_molecule(int narg, char **arg)
     molecules[nmolecule]->command(narg,arg,index);
     molecules[nmolecule]->nset = 0;
     molecules[nmolecule-ifile+1]->nset++;
+    molecules[nmolecule]->myindex = nmolecule;
     nmolecule++;
     if (molecules[nmolecule-1]->last) break;
     ifile++;
@@ -2244,6 +2256,20 @@ void Atom::add_molecule_atom(Molecule *onemol, int iatom, int ilocal, tagint off
     onemol->avec_body->data_body(ilocal,onemol->nibody,onemol->ndbody,
                                  onemol->ibodyparams,onemol->dbodyparams);
     onemol->avec_body->set_quat(ilocal,onemol->quat_external);
+  }
+  if (onemol->lsdemflag) {
+    grid_index[ilocal] = onemol->myindex;
+    if (onemol->comflag) {
+      xcom[ilocal][0] = onemol->com_external[0];
+      xcom[ilocal][1] = onemol->com_external[1];
+      xcom[ilocal][2] = onemol->com_external[2];
+    }
+    if (onemol->quatflag) {
+      quat[ilocal][0] = onemol->quat_external[0];
+      quat[ilocal][1] = onemol->quat_external[1];
+      quat[ilocal][2] = onemol->quat_external[2];
+      quat[ilocal][3] = onemol->quat_external[3];
+    }
   }
 
   // initialize custom per-atom properties to zero if present
@@ -3164,6 +3190,11 @@ void *Atom::extract(const char *name)
     return (void *) eff_plastic_strain_rate;
   if (strcmp(name, "damage") == 0) return (void *) damage;
 
+  // LSDEM package
+
+  if (strcmp(name, "xcom") == 0) return (void *) xcom;
+  if (strcmp(name, "grid_index") == 0) return (void *) grid_index;
+
   // DPD-REACT package
 
   if (strcmp(name,"dpdTheta") == 0) return (void *) dpdTheta;
@@ -3328,6 +3359,11 @@ int Atom::extract_datatype(const char *name)
   if (strcmp(name, "eff_plastic_strain_rate") == 0) return LAMMPS_DOUBLE;
   if (strcmp(name, "damage") == 0) return LAMMPS_DOUBLE;
 
+  // LSDEM package
+
+  if (strcmp(name, "xcom") == 0) return LAMMPS_DOUBLE_2D;
+  if (strcmp(name, "grid_index") == 0) return LAMMPS_INT;
+
   // DPD-REACT package
 
   if (strcmp(name,"dpdTheta") == 0) return LAMMPS_DOUBLE;
@@ -3439,6 +3475,11 @@ int Atom::extract_size(const char *name, int type)
       if (strcmp(name,"fm") == 0) return nlocal;
       if (strcmp(name,"fm_long") == 0) return nlocal;
 
+      // LSDEM package
+
+      if (strcmp(name, "xcom") == 0) return nall;
+      if (strcmp(name, "grid_index") == 0) return nall;
+
       // SPH package
 
       if (strcmp(name,"vest") == 0) return nall;
@@ -3468,6 +3509,10 @@ int Atom::extract_size(const char *name, int type)
       if (strcmp(name,"sp") == 0) return 4;
       if (strcmp(name,"fm") == 0) return 3;
       if (strcmp(name,"fm_long") == 0) return 3;
+
+      // LSDEM package
+
+      if (strcmp(name, "xcom") == 0) return 3;
 
       // SPH package
 

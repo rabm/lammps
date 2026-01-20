@@ -67,9 +67,6 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
 
-  if (!inpfile)
-    error->all(FLERR, "Must specify infile with level set for fix rigid/small/ls/dem");
-
   nmax_bodyLS = 0;
   while (nmax_bodyLS < nlocal_body) nmax_bodyLS += DELTA_BODY;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
@@ -134,17 +131,23 @@ void FixRigidSmallLSDEM::post_constructor()
   // Store positional information of grain on all atoms
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d2_ls_dem_omega 3 d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+    "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
-  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
-  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_omega = atom->find_custom("ls_dem_omega", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::init()
+{
+  FixRigidSmall::init();
+  if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag || !atom->grid_index_flag)
+    error->all(FLERR, "Fix rigid/small/ls/dem requires atom attributes xcom, omega, quat, and grid_index");
 }
 
 /* ----------------------------------------------------------------------
@@ -214,9 +217,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
   FixRigidSmall::setup_pre_neighbor();
 
   // For updating center of mass
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
+  double **grain_omega = atom->omega;
+  int *grid_index = atom->grid_index;
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody, i, a;
   int dimension = domain->dimension;
@@ -258,7 +262,22 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     char **gridfiles;
     memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
     memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
-    read_gridfile_names(gridfiles);
+
+    if (inpfile) {
+      read_gridfile_names(gridfiles);
+    } else {
+      Molecule *onemol;
+      for (i = 0; i < atom->nlocal; i++) {
+        if (bodyownLS[i] == -1) continue;
+        onemol = atom->molecules[grid_index[i]];
+        if (onemol->grid_file.empty())
+          error->all(FLERR, "Molecule {} is missing a level set grid file", onemol->id);
+        ibody = atom2body[i];
+        strcpy(gridfiles[ibody], onemol->grid_file.c_str());
+        bodyLS[ibody].grid_style = onemol->grid_style;
+        bodyLS[ibody].grid_scale = onemol->grid_scale;
+      }
+    }
 
     // Read grid dimensions for all bodies
     std::map <std::string, std::set<int>> file_map;
@@ -424,9 +443,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       }
 
       if (need_global) {
-        for (int n = 0; n < ntotal_global[index_global]; n++)
+        for (int n = 0; n < ntotal_global[index_global]; n++) {
           // Unscaled grid values of grains stored globally to avoid duplicating memory
           global_grids[index_global][n] = temp_grid_values[n];
+        }
       }
 
       if (need_distributed) {
@@ -531,7 +551,7 @@ void FixRigidSmallLSDEM::setup_pre_force(int vflag)
 void FixRigidSmallLSDEM::pre_force(int vflag)
 {
   comm_flag2 = PREFORCE;
-  comm->forward_comm(this, 11);
+  comm->forward_comm(this, 1);
   comm_flag2 = REGULAR;
 }
 
@@ -542,9 +562,9 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
 {
   FixRigidSmall::initial_integrate(vflag);
 
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
+  double **grain_omega = atom->omega;
 
   int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
@@ -594,6 +614,7 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
 
   double **x = atom->x;
   double **f = atom->f;
+  double **torque = atom->torque;
   int nlocal = atom->nlocal;
   double *fcm,*tcm;
 
@@ -612,23 +633,11 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
     fcm[0] += f[i][0];
     fcm[1] += f[i][1];
     fcm[2] += f[i][2];
-  }
 
-  // extended particles add their torque to torque of body
-
-  if (extended) {
-    double **torque = atom->torque;
-
-    for (i = 0; i < nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-
-      if (eflags[i] & TORQUE) {
-        tcm = body[atom2body[i]].torque;
-        tcm[0] += torque[i][0];
-        tcm[1] += torque[i][1];
-        tcm[2] += torque[i][2];
-      }
-    }
+    tcm = b->torque;
+    tcm[0] += torque[i][0];
+    tcm[1] += torque[i][1];
+    tcm[2] += torque[i][2];
   }
 
   // reverse communicate fcm, torque of all bodies
@@ -691,6 +700,101 @@ void FixRigidSmallLSDEM::set_arrays(int i)
 {
   FixRigidSmall::set_arrays(i);
   bodyownLS[i] = -1;
+}
+
+/* ----------------------------------------------------------------------
+   initialize a molecule inserted by another fix, e.g. deposit or pour
+   called when molecule is created
+   nlocalprev = # of atoms on this proc before molecule inserted
+   tagprev = atom ID previous to new atoms in the molecule
+   xgeom = geometric center of new molecule
+   vcm = COM velocity of new molecule
+   quat = rotation of new molecule (around geometric center)
+          relative to template in Molecule class
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
+                                 double *xgeom, double *vcm, double *quat)
+{
+  int m;
+  double ctr2com[3],ctr2com_rotate[3];
+  double rotmat[3][3];
+
+  // increment total # of rigid bodies
+
+  nbody++;
+
+  // loop over atoms I added for the new body
+
+  int nlocal = atom->nlocal;
+  if (nlocalprev == nlocal) return;
+
+  tagint *tag = atom->tag;
+
+  for (int i = nlocalprev; i < nlocal; i++) {
+    bodytag[i] = tagprev + onemols[imol]->comatom;
+    if (tag[i]-tagprev == onemols[imol]->comatom) bodyown[i] = nlocal_body;
+
+    m = tag[i] - tagprev-1;
+    displace[i][0] = onemols[imol]->dxbody[m][0];
+    displace[i][1] = onemols[imol]->dxbody[m][1];
+    displace[i][2] = onemols[imol]->dxbody[m][2];
+
+    if (extended) {
+      eflags[i] = 0;
+      if (onemols[imol]->radiusflag) {
+        eflags[i] |= SPHERE;
+        eflags[i] |= OMEGA;
+        eflags[i] |= TORQUE;
+      }
+    }
+
+    if (bodyown[i] >= 0) {
+      if (nlocal_body == nmax_body) grow_body();
+      Body *b = &body[nlocal_body];
+      b->mass = onemols[imol]->masstotal;
+      b->natoms = onemols[imol]->natoms;
+      b->xgc[0] = xgeom[0];
+      b->xgc[1] = xgeom[1];
+      b->xgc[2] = xgeom[2];
+
+      // new COM = Q (onemols[imol]->xcm - onemols[imol]->center) + xgeom
+      // Q = rotation matrix associated with quat
+
+      MathExtra::quat_to_mat(quat,rotmat);
+      MathExtra::sub3(onemols[imol]->com,onemols[imol]->center,ctr2com);
+      MathExtra::matvec(rotmat,ctr2com,ctr2com_rotate);
+      MathExtra::add3(ctr2com_rotate,xgeom,b->xcm);
+
+      b->vcm[0] = vcm[0];
+      b->vcm[1] = vcm[1];
+      b->vcm[2] = vcm[2];
+      b->inertia[0] = onemols[imol]->inertia[0];
+      b->inertia[1] = onemols[imol]->inertia[1];
+      b->inertia[2] = onemols[imol]->inertia[2];
+
+      // final quat is product of insertion quat and original quat
+      // true even if insertion rotation was not around COM
+
+      MathExtra::quatquat(quat,onemols[imol]->quat,b->quat);
+      MathExtra::q_to_exyz(b->quat,b->ex_space,b->ey_space,b->ez_space);
+
+      MathExtra::transpose_matvec(b->ex_space,b->ey_space,b->ez_space,
+                                  ctr2com_rotate,b->xgc_body);
+      b->xgc_body[0] *= -1;
+      b->xgc_body[1] *= -1;
+      b->xgc_body[2] *= -1;
+
+      b->angmom[0] = b->angmom[1] = b->angmom[2] = 0.0;
+      b->omega[0] = b->omega[1] = b->omega[2] = 0.0;
+      b->conjqm[0] = b->conjqm[1] = b->conjqm[2] = b->conjqm[3] = 0.0;
+
+      b->image = ((imageint) IMGMAX << IMG2BITS) |
+        ((imageint) IMGMAX << IMGBITS) | IMGMAX;
+      b->ilocal = i;
+      nlocal_body++;
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -781,27 +885,10 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
       }
     }
   } else {
-    double **grain_com = atom->darray[index_ls_dem_com];
-    double **grain_quat = atom->darray[index_ls_dem_quat];
-    double **grain_omega = atom->darray[index_ls_dem_omega];
     m = 0;
     for (i = 0; i < n; i++) {
       j = list[i];
-
       buf[m++] = ubuf(atom2body[j]).d;
-
-      buf[m++] = grain_com[j][0];
-      buf[m++] = grain_com[j][1];
-      buf[m++] = grain_com[j][2];
-
-      buf[m++] = grain_quat[j][0];
-      buf[m++] = grain_quat[j][1];
-      buf[m++] = grain_quat[j][2];
-      buf[m++] = grain_quat[j][3];
-
-      buf[m++] = grain_omega[j][0];
-      buf[m++] = grain_omega[j][1];
-      buf[m++] = grain_omega[j][2];
     }
   }
   return m;
@@ -844,27 +931,8 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
       }
     }
   } else {
-    double **grain_com = atom->darray[index_ls_dem_com];
-    double **grain_quat = atom->darray[index_ls_dem_quat];
-    double **grain_omega = atom->darray[index_ls_dem_omega];
-
-    for (i = first; i < last; i++) {
-
+    for (i = first; i < last; i++)
       atom2body[i] = ubuf(buf[m++]).i;
-
-      grain_com[i][0] = buf[m++];
-      grain_com[i][1] = buf[m++];
-      grain_com[i][2] = buf[m++];
-
-      grain_quat[i][0] = buf[m++];
-      grain_quat[i][1] = buf[m++];
-      grain_quat[i][2] = buf[m++];
-      grain_quat[i][3] = buf[m++];
-
-      grain_omega[i][0] = buf[m++];
-      grain_omega[i][1] = buf[m++];
-      grain_omega[i][2] = buf[m++];
-    }
   }
 }
 
@@ -930,7 +998,8 @@ void FixRigidSmallLSDEM::read_gridfile_names(char **gridfiles)
 
   std::unordered_map<tagint,int> hash;
   for (int i = 0; i < nlocal; i++)
-    if (bodyown[i] >= 0) hash[atom->molecule[i]] = bodyown[i];
+    if (bodyown[i] >= 0)
+      hash[atom->molecule[i]] = bodyown[i];
 
   if (comm->me == 0) {
     fp = fopen(inpfile,"r");
@@ -1125,8 +1194,8 @@ void FixRigidSmallLSDEM::read_gridfile(int ibody, int which, std::string filenam
 double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
 {
   double **x = atom->x;
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
 
   int jbody = atom2body[j];
   double jstride = bodyLS[jbody].grid_stride;

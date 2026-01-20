@@ -1570,9 +1570,11 @@ void CreateAtoms::get_xmol(double *center)
 
   MathExtra::quat_to_mat(quatone, rotmat);
 
-  // onemol->quat_external is used by atom->add_moleclue_atom()
+  // onemol->quat_external is used by atom->add_molecule_atom()
+  //   ditto for com position
 
   onemol->quat_external = quatone;
+  onemol->com_external = center;
 
   int natoms = onemol->natoms;
   double xnew[3];

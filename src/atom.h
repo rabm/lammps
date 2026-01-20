@@ -137,6 +137,11 @@ class Atom : protected Pointers {
   double *dpdTheta;
   int nspecies_dpd;
 
+  // LS-DEM package
+
+  double **xcom;
+  int *grid_index;
+
   // MESO package
 
   double **cc, **cc_flux;           // cc = chemical concentration
@@ -214,6 +219,10 @@ class Atom : protected Pointers {
   int smd_flag, damage_flag;
   int contact_radius_flag, smd_data_9_flag, smd_stress_flag;
   int eff_plastic_strain_flag, eff_plastic_strain_rate_flag;
+
+  // LSDEM package
+
+  int xcom_flag, grid_index_flag;
 
   // AMOEBA package
 

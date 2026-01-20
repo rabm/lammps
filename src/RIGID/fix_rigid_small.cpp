@@ -367,6 +367,8 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
 
       // fix rigid/small uses center, masstotal, COM, inertia of molecule
 
+      printf("Setting up molecule %d\n",i);
+
       onemols[i]->compute_center();
       onemols[i]->compute_mass();
       onemols[i]->compute_com();
@@ -1761,6 +1763,7 @@ void FixRigidSmall::setup_bodies_static()
   if (atom->radius_flag || atom->ellipsoid_flag || atom->line_flag ||
       atom->tri_flag || atom->mu_flag) {
     int flag = 0;
+
     for (i = 0; i < nlocal; i++) {
       if (bodytag[i] == 0) continue;
       if (radius && radius[i] > 0.0) flag = 1;
@@ -2881,6 +2884,7 @@ void FixRigidSmall::set_molecule(int nlocalprev, tagint tagprev, int imol,
     if (bodyown[i] >= 0) {
       if (nlocal_body == nmax_body) grow_body();
       Body *b = &body[nlocal_body];
+      printf("Setting masstotal %g\n",onemols[imol]->masstotal);
       b->mass = onemols[imol]->masstotal;
       b->natoms = onemols[imol]->natoms;
       b->xgc[0] = xgeom[0];

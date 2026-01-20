@@ -115,8 +115,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   double dt = update->dt;
 
   // Grain quantities
-  double **grain_com = atom->darray[index_ls_dem_com]; // Need CoM for torques
-  double **grain_omega = atom->darray[index_ls_dem_omega]; // Need angular velocity for spin correction
+  double **grain_com = atom->xcom;
+  double **grain_omega = atom->omega;
   std::unordered_map<int, std::pair<int, double>> min_distances;
 
   int *mybody, nbody;
@@ -306,6 +306,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         else
           u = - fix_rigid_small->get_ls_value(j, i, normal);
       }
+
 
       // No adhesion, cohesion, or ranged forces.
       if (u <= 0) {
@@ -826,7 +827,10 @@ void PairLSDEM::coeff(int narg, char **arg)
 void PairLSDEM::init_style()
 {
   if (comm->ghost_velocity == 0)
-    error->all(FLERR, "Pair LS/DEM requires ghost atoms store velocity");
+    error->all(FLERR, "Pair ls/dem requires ghost atoms store velocity");
+
+  if (!atom->xcom_flag || !atom->omega_flag)
+    error->all(FLERR, "Pair ls/dem requires atom attributes xcom and omega");
 
   neighbor->add_request(this, NeighConst::REQ_GHOST);
 }
@@ -858,15 +862,11 @@ void PairLSDEM::setup()
   if (fixlist2.size() == 1) fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
 
   int tmp1, tmp2;
-  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
-  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_omega = atom->find_custom("ls_dem_omega", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
-  index_ls_dem_node_area = atom->find_custom("ls_dem_node_area", tmp1, tmp2);
 }
 
 /* ----------------------------------------------------------------------

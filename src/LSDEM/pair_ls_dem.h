@@ -47,12 +47,7 @@ class PairLSDEM : public Pair {
  protected:
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1; //, **gamma
 
-  int index_ls_grid;
-  int index_ls_dem_com;
-  int index_ls_dem_quat;
-  int index_ls_dem_omega;
   int index_ls_dem_vol;
-  int index_ls_dem_node_area;
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;

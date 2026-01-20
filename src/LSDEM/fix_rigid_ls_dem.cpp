@@ -55,7 +55,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr), grid_nnodes(nullptr)
 {
-  comm_forward = 11;
+  comm_forward = 1;
   maxcut = -1;
   stored_flag = 0;
   distributed_flag = 0;
@@ -126,12 +126,9 @@ void FixRigidLSDEM::post_constructor()
   // Store positional information of grain on all atoms
   id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
   modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_com 3 d2_ls_dem_quat 4 d2_ls_dem_omega 3 d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+    "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
-  index_ls_dem_com = atom->find_custom("ls_dem_com", tmp1, tmp2);
-  index_ls_dem_quat = atom->find_custom("ls_dem_quat", tmp1, tmp2);
-  index_ls_dem_omega = atom->find_custom("ls_dem_omega", tmp1, tmp2);
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
@@ -145,10 +142,13 @@ void FixRigidLSDEM::init()
 {
   FixRigid::init();
 
+  if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag || !atom->grid_index_flag)
+    error->all(FLERR, "Fix rigid/ls/dem requires atom attributes xcom, omega, quat, and grid_index");
+
   // For updating center of mass
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
+  double **grain_omega = atom->omega;
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody, i, a;
   int dimension = domain->dimension;
@@ -537,13 +537,14 @@ void FixRigidLSDEM::initial_integrate(int vflag)
 {
   FixRigid::initial_integrate(vflag);
 
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
+  double **grain_omega = atom->omega;
 
   int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = body[i];
+
     grain_com[i][0] = xcm[ibody][0];
     grain_com[i][1] = xcm[ibody][1];
     grain_com[i][2] = xcm[ibody][2];
@@ -564,27 +565,11 @@ void FixRigidLSDEM::initial_integrate(int vflag)
 int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
 {
   int i, j, m;
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
 
   m = 0;
   for (i = 0; i < n; i++) {
     j = list[i];
     buf[m++] = ubuf(body[j]).d;
-
-    buf[m++] = grain_com[j][0];
-    buf[m++] = grain_com[j][1];
-    buf[m++] = grain_com[j][2];
-
-    buf[m++] = grain_quat[j][0];
-    buf[m++] = grain_quat[j][1];
-    buf[m++] = grain_quat[j][2];
-    buf[m++] = grain_quat[j][3];
-
-    buf[m++] = grain_omega[j][0];
-    buf[m++] = grain_omega[j][1];
-    buf[m++] = grain_omega[j][2];
   }
   return m;
 }
@@ -594,28 +579,11 @@ int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag
 void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
 {
   int i, m, last;
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
-  double **grain_omega = atom->darray[index_ls_dem_omega];
 
   m = 0;
   last = first + n;
-  for (i = first; i < last; i++) {
+  for (i = first; i < last; i++)
     body[i] = (int) ubuf(buf[m++]).i;
-
-    grain_com[i][0] = buf[m++];
-    grain_com[i][1] = buf[m++];
-    grain_com[i][2] = buf[m++];
-
-    grain_quat[i][0] = buf[m++];
-    grain_quat[i][1] = buf[m++];
-    grain_quat[i][2] = buf[m++];
-    grain_quat[i][3] = buf[m++];
-
-    grain_omega[i][0] = buf[m++];
-    grain_omega[i][1] = buf[m++];
-    grain_omega[i][2] = buf[m++];
-  }
 }
 
 /* ----------------------------------------------------------------------
@@ -636,10 +604,13 @@ void FixRigidLSDEM::compute_forces_and_torques()
   // sum over atoms to get force and torque on rigid body
 
   double **f = atom->f;
+  double **torque_one = atom->torque;
   int nlocal = atom->nlocal;
 
   for (ibody = 0; ibody < nbody; ibody++)
     for (i = 0; i < 6; i++) sum[ibody][i] = 0.0;
+
+  // all particles add forces/torques to body
 
   for (i = 0; i < nlocal; i++) {
     if (body[i] < 0) continue;
@@ -648,23 +619,9 @@ void FixRigidLSDEM::compute_forces_and_torques()
     sum[ibody][0] += f[i][0];
     sum[ibody][1] += f[i][1];
     sum[ibody][2] += f[i][2];
-  }
-
-  // extended particles add their torque to torque of body
-
-  if (extended) {
-    double **torque_one = atom->torque;
-
-    for (i = 0; i < nlocal; i++) {
-      if (body[i] < 0) continue;
-      ibody = body[i];
-
-      if (eflags[i] & TORQUE) {
-        sum[ibody][3] += torque_one[i][0];
-        sum[ibody][4] += torque_one[i][1];
-        sum[ibody][5] += torque_one[i][2];
-      }
-    }
+    sum[ibody][3] += torque_one[i][0];
+    sum[ibody][4] += torque_one[i][1];
+    sum[ibody][5] += torque_one[i][2];
   }
 
   MPI_Allreduce(sum[0], all[0], 6 * nbody, MPI_DOUBLE, MPI_SUM, world);
@@ -947,8 +904,8 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
 double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 {
   double **x = atom->x;
-  double **grain_com = atom->darray[index_ls_dem_com];
-  double **grain_quat = atom->darray[index_ls_dem_quat];
+  double **grain_com = atom->xcom;
+  double **grain_quat = atom->quat;
 
   int jbody = body[j];
   double jstride = grid_stride[jbody];

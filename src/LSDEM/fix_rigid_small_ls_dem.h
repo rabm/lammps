@@ -30,6 +30,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   ~FixRigidSmallLSDEM() override;
   int setmask() override;
   void post_constructor() override;
+  void init() override;
   void setup(int) override;
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
@@ -38,6 +39,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
   void set_arrays(int) override;
+  void set_molecule(int, tagint, int, double *, double *, double *) override;
 
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
@@ -75,9 +77,6 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int stored_flag, distributed_flag;
   int comm_flag2;
   char *id_fix, *id_fix2;
-  int index_ls_dem_com;
-  int index_ls_dem_quat;
-  int index_ls_dem_omega;
   int index_ls_dem_n;
   int index_ls_dem_fs;
   int index_ls_dem_touch_id;
