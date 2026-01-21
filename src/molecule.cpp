@@ -56,7 +56,7 @@ Molecule::Molecule(LAMMPS *lmp) :
     dihedral_atom4(nullptr), num_improper(nullptr), improper_type(nullptr), improper_atom1(nullptr),
     improper_atom2(nullptr), improper_atom3(nullptr), improper_atom4(nullptr), nspecial(nullptr),
     special(nullptr), shake_flag(nullptr), shake_atom(nullptr), shake_type(nullptr),
-    avec_body(nullptr), ibodyparams(nullptr), dbodyparams(nullptr), avec_ls_dem(nullptr),
+    avec_body(nullptr), ibodyparams(nullptr), dbodyparams(nullptr), avec_lsdem(nullptr),
     fragmentmask(nullptr), dx(nullptr), dxcom(nullptr), dxbody(nullptr), quat_external(nullptr),
     fp(nullptr), count(nullptr)
 {
@@ -571,14 +571,9 @@ void Molecule::from_json(const std::string &molid, const json &moldata)
     }
   }
 
-  if (moldata.contains("lsdem") && (moldata["lsdem"].size() == 1)) {
-    avec_ls_dem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
-    if (!avec_ls_dem)
-      error->all(FLERR, Error::NOLASTLINE,
-                 "Molecule template {}: lsdem molecule data requires atom style ls/dem", id);
-    lsdemflag = 1;
-    grid_index = int(moldata["lsdem"][0]);
-  }
+  if (moldata.contains("lsdem"))
+    error->all(FLERR, Error::NOLASTLINE,
+                 "Molecule template {}: lsdem molecule data does not support JSON yet", id);
 
   // checks. No checks for < 0 needed since size() is at least 0
 
@@ -2484,12 +2479,14 @@ void Molecule::read(int flag)
         nibody = values.next_int();
         ndbody = values.next_int();
         nwant = 3;
-      } else if (values.matches("^\\s*\\d+\\s+\\d+\\s+lsdem\\s*$")) {
+      } else if (values.matches("^\\s*\\S+\\s+\\d+\\s+\\f+\\s+lsdem\\s*$")) {
         lsdemflag = 1;
-        avec_ls_dem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
-        if (!avec_ls_dem) error->all(FLERR, fileiarg, "Molecule file requires atom style ls/dem");
-        grid_index = values.next_int();
-        nwant = 2;
+        avec_lsdem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
+        if (!avec_lsdem) error->all(FLERR, fileiarg, "Molecule file requires atom style lsdem");
+        grid_file = values.next_string();
+        grid_style = values.next_int();
+        grid_scale = values.next_double();
+        nwant = 4;
       } else if (values.matches("^\\s*\\d+\\s+\\S+\\s+types\\s*$")) {
         error->all(FLERR, fileiarg, "Found data file header keyword '{}' in molecule file", text);
       } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+[xyz]lo\\s+[xyz]hi\\s*$")) {
@@ -4300,7 +4297,7 @@ void Molecule::print(FILE *fp)
   if (nfragments) utils::print(fp, "  {} fragments\n", nfragments);
   if (massflag_user) utils::print(fp, "  {} mass\n", masstotal);
   if (bodyflag) utils::print(fp, "  {} {} body\n", nibody, ndbody);
-  if (lsdemflag) utils::print(fp, "  {} lsdem\n", grid_index);
+  if (lsdemflag) utils::print(fp, "  {} {} {} lsdem\n", grid_file, grid_style, grid_scale);
   if (comflag_user) utils::print(fp, "  {} {} {} com\n", com[0], com[1], com[2]);
   if (quatflag_user) utils::print(fp, "  {} {} {} {} quat\n", quat[0], quat[1], quat[2], quat[3]);
   if (inertiaflag_user)
@@ -4574,11 +4571,6 @@ void Molecule::print(FILE *fp)
       }
       utils::print(fp, " {}\n", dbodyparams[idx]);
     }
-  }
-
-  if (lsdemflag) {
-    fputs("\nLSDEM Grid Index\n\n", fp);
-    utils::print(fp, " {}\n", grid_index);
   }
 }
 // clang-format off

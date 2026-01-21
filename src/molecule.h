@@ -103,7 +103,7 @@ class Molecule : protected Pointers {
   int *ibodyparams;    // integer and double body params
   double *dbodyparams;
 
-  class AtomVecLSDEM *avec_ls_dem;
+  class AtomVecLSDEM *avec_lsdem;
   std::string grid_file;         // filename of LS grid
   int grid_style;                // style of LS grid storage
   double grid_scale;             // scale factor for LS grid

@@ -276,6 +276,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         strcpy(gridfiles[ibody], onemol->grid_file.c_str());
         bodyLS[ibody].grid_style = onemol->grid_style;
         bodyLS[ibody].grid_scale = onemol->grid_scale;
+        body[ibody].mass = onemol->masstotal;
       }
     }
 
@@ -608,8 +609,6 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
 {
   int i, ibody;
 
-  //check(3);
-
   // sum over atoms to get force and torque on rigid body
 
   double **x = atom->x;
@@ -700,6 +699,7 @@ void FixRigidSmallLSDEM::set_arrays(int i)
 {
   FixRigidSmall::set_arrays(i);
   bodyownLS[i] = -1;
+  atom->ivector[index_ls_dem_touch_id][i] = -1;
 }
 
 /* ----------------------------------------------------------------------
