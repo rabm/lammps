@@ -829,8 +829,8 @@ void PairLSDEM::init_style()
   if (comm->ghost_velocity == 0)
     error->all(FLERR, "Pair ls/dem requires ghost atoms store velocity");
 
-  if (!atom->xcom_flag || !atom->omega_flag)
-    error->all(FLERR, "Pair ls/dem requires atom attributes xcom and omega");
+  if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
+    error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
   neighbor->add_request(this, NeighConst::REQ_GHOST);
 }

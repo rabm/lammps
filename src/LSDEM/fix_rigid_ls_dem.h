@@ -33,7 +33,6 @@ class FixRigidLSDEM : public FixRigid {
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;
   void init() override;
-  void setup(int) override;
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
@@ -51,12 +50,7 @@ class FixRigidLSDEM : public FixRigid {
  protected:
   int stored_flag, distributed_flag;
   char *id_fix, *id_fix2;
-  int index_ls_dem_n;
-  int index_ls_dem_fs;
   int index_ls_dem_touch_id;
-  int index_ls_dem_fn1;
-  int index_ls_dem_fs1;
-  int index_ls_dem_size;
 
   int index_grid_values;
   int index_grid_min;

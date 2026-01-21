@@ -31,7 +31,6 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int setmask() override;
   void post_constructor() override;
   void init() override;
-  void setup(int) override;
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
@@ -77,12 +76,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int stored_flag, distributed_flag;
   int comm_flag2;
   char *id_fix, *id_fix2;
-  int index_ls_dem_n;
-  int index_ls_dem_fs;
   int index_ls_dem_touch_id;
-  int index_ls_dem_fn1;
-  int index_ls_dem_fs1;
-  int index_ls_dem_size;
 
   int index_grid_values;
   int index_grid_min;

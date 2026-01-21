@@ -93,11 +93,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   comm_forward += 1 + bodysizeLS;
   comm_flag2 = REGULAR;
 
-  if (!atom->omega_flag)
-    error->all(FLERR, "Fix rigid/small/ls/dem requires atom attribute omega");
-
   if (langflag)
-    error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
+    error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -134,11 +131,7 @@ void FixRigidSmallLSDEM::post_constructor()
     "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
      id_fix));
   int tmp1, tmp2;
-  index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
-  index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
-  index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
-  index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -146,68 +139,9 @@ void FixRigidSmallLSDEM::post_constructor()
 void FixRigidSmallLSDEM::init()
 {
   FixRigidSmall::init();
-  if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag || !atom->grid_index_flag)
-    error->all(FLERR, "Fix rigid/small/ls/dem requires atom attributes xcom, omega, quat, and grid_index");
-}
 
-/* ----------------------------------------------------------------------
-   compute initial fcm and torque on bodies, also initial virial
-   reset all particle velocities to be consistent with vcm and omega
-------------------------------------------------------------------------- */
-
-void FixRigidSmallLSDEM::setup(int vflag)
-{
-  int i, n, ibody;
-
-  // error if maxextent > comm->cutghost
-  // NOTE: could just warn if an override flag set
-  // NOTE: this could fail for comm multi mode if user sets a wrong cutoff
-  //       for atom types in rigid bodies - need a more careful test
-  // must check here, not in init, b/c neigh/comm values set after fix init
-
-  double cutghost = MAX(neighbor->cutneighmax, comm->cutghostuser);
-  if (maxextent > cutghost)
-    error->all(FLERR, "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
-
-  //check(1);
-
-  // sum fcm, torque across all rigid bodies
-
-  compute_forces_and_torques();
-
-  // enforce 2d body forces and torques
-
-  if (domain->dimension == 2) enforce2d();
-
-  // virial setup before call to set_v
-
-  v_init(vflag);
-
-  // compute and forward communicate vcm and omega of all bodies
-
-  for (ibody = 0; ibody < nlocal_body; ibody++) {
-    Body *b = &body[ibody];
-    MathExtra::angmom_to_omega(b->angmom, b->ex_space, b->ey_space,
-                               b->ez_space, b->inertia, b->omega);
-  }
-
-  commflag = FINAL;
-  comm->forward_comm(this, 10);
-
-  // set velocity/rotation of atoms in rigid bodues
-
-  set_v();
-
-  // guesstimate virial as 2x the set_v contribution
-
-  int nlocal = atom->nlocal;
-  if (vflag_global)
-    for (n = 0; n < 6; n++) virial[n] *= 2.0;
-  if (vflag_atom) {
-    for (i = 0; i < nlocal; i++)
-      for (n = 0; n < 6; n++)
-        vatom[i][n] *= 2.0;
-  }
+  if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
+    error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -216,47 +150,23 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
   FixRigidSmall::setup_pre_neighbor();
 
-  // For updating center of mass
-  double **grain_com = atom->xcom;
-  double **grain_quat = atom->quat;
-  double **grain_omega = atom->omega;
-  int *grid_index = atom->grid_index;
-  int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int ibody, i, a;
   int dimension = domain->dimension;
 
-  for (i = 0; i < atom->nlocal; i++) {
-    ibody = atom2body[i];
-    if (ibody == -1)
-      error->all(FLERR, "Cannot mix LS DEM and regular DEM grains");
-    grain_com[i][0] = body[ibody].xcm[0];
-    grain_com[i][1] = body[ibody].xcm[1];
-    grain_com[i][2] = body[ibody].xcm[2];
-
-    grain_quat[i][0] = body[ibody].quat[0];
-    grain_quat[i][1] = body[ibody].quat[1];
-    grain_quat[i][2] = body[ibody].quat[2];
-    grain_quat[i][3] = body[ibody].quat[3];
-
-    grain_omega[i][0] = body[ibody].omega[0];
-    grain_omega[i][1] = body[ibody].omega[1];
-    grain_omega[i][2] = body[ibody].omega[2];
-
-    touch_id[i] = -1;
-  }
-
-  // Copy maximum cutoff from pair style
-  // This will determine radius of level set around nodes in the distributed case.
-  // TBD: Some (automatic?) optimisation.
+  // Pair cutoff sets size of LS around nodes for distributed case
   if (!utils::strmatch(force->pair_style, "^ls/dem"))
     error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
   int index_global = 0;
-  int distributed_flag = 0;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  int *grid_index = atom->grid_index;
   if (!stored_flag) {
     stored_flag = 1;
+
+    for (i = 0; i < atom->nlocal; i++)
+      touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
     int *ntotal_global;
     char **gridfiles;
@@ -287,7 +197,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     double min_stride = DBL_MAX;
     for (ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]); // Retrieve file name
-      read_gridfile(ibody, 0, filename, nullptr); // Get only grid sizes (tag 0)
+      read_gridfile(ibody, 0, filename, nullptr); // Get only grid sizes (which 0)
       file_map[filename].insert(ibody);
 
       // Calculate and save grid properties
@@ -331,7 +241,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     }
 
     if (distributed_flag) {
-      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;  // +1 for middle cell (needed?) DvdH: I think +1 is not needed, but result should be cast to int?
+      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
       if (dimension == 2) subgrid_size[2] = 1;
       id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
       ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
@@ -345,15 +255,15 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     }
 
     if (index_global) {
-      memory->create_ragged(global_grids, index_global, ntotal_global, "rigid/ls/dem:global_grids");
+      memory->create_ragged(global_grids, index_global, ntotal_global, "rigid/small/ls/dem:global_grids");
     }
 
     // ------------------------------ //
     // Read and store level sets      //
     // ------------------------------ //
 
-    double *temp_grid_values = nullptr;
-    memory->create(temp_grid_values, max_grid_size_flat, "rigid/ls/dem:temp_grid_values");
+    double *temp_grid_values;
+    memory->create(temp_grid_values, max_grid_size_flat, "rigid/small/ls/dem:temp_grid_values");
 
     double **grid_values, **grid_min_local;
     if (distributed_flag) {
@@ -361,22 +271,20 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       grid_min_local = atom->darray[index_grid_min];
     }
 
-    double *ls_val;
-    double delx, dely, delz, area;
+
     double **x = atom->x;
+
     int need_distributed, need_global, need_padding;
-    double com_temp[3], density, inertia_temp[3][3], evectors[3][3], scale, scale2, scale3;
     int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
+    double *ls_val, temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+    double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
       read_gridfile(-1, 1, filename, temp_grid_values);
 
       // Compute grain properties per unique grid
       for (ibody = 0; ibody < nbody; ibody++) {
-        // TODO JBC: this is the quick and easy way of doing this.
-        //           All procs share the same nbody so we can instead replace with range-based loop: for(int ibody : pair.second) {
-        //           But range-based loops require a declaration, which clashes with LAMMPS style of declaring ibody at the start (which I don't like, but think was easier as of now than changing all the indices of this function)
         if (pair.second.find(ibody) == pair.second.end())
           continue;
 
@@ -385,16 +293,12 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         if (bodyLS[ibody].grid_vol < 0)
           error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
 
-        // Comparing if CoM in level-set grid is indeed aligned with CoM provided in the input file.
-        // A misalignment would mean that the forces and rotations are applied to the wrong point in
-        // space, leading to integration issues.
-        if ( sqrt( (bodyLS[ibody].grid_min[0]+com_temp[0])*(bodyLS[ibody].grid_min[0]+com_temp[0])+
-                  (bodyLS[ibody].grid_min[1]+com_temp[1])*(bodyLS[ibody].grid_min[1]+com_temp[1])+
-                  (bodyLS[ibody].grid_min[2]+com_temp[2])*(bodyLS[ibody].grid_min[2]+com_temp[2])) > (0.5 * bodyLS[ibody].grid_stride)
-        ) {
+        // Comparing if CoM in level-set grid is indeed aligned with CoM
+        // Misalignment would cause forces/rotations to be applied to the wrong point in space
+        MathExtra::add3(bodyLS[ibody].grid_min, com_temp, temp);
+        if (MathExtra::len3(temp) > (0.5 * bodyLS[ibody].grid_stride))
           error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
-            bodyLS[ibody].grid_min[0],bodyLS[ibody].grid_min[1],bodyLS[ibody].grid_min[2],com_temp[0],com_temp[1],com_temp[2]);
-        }
+            bodyLS[ibody].grid_min[0], bodyLS[ibody].grid_min[1], bodyLS[ibody].grid_min[2], com_temp[0], com_temp[1], com_temp[2]);
 
         // Overwrite inertia, could modify logic (compare or warn) if desired
 
@@ -421,14 +325,14 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
         // Scale all relevant quantities by given scaling of grain size
         scale = bodyLS[ibody].grid_scale;
-        scale2 = scale*scale;
-        scale3 = scale*scale2;
+        scale2 = scale * scale;
+        scale3 = scale * scale2;
         density = body[ibody].mass / bodyLS[ibody].grid_vol;
         bodyLS[ibody].grid_stride *= scale;
         MathExtra::scale3(scale, bodyLS[ibody].grid_min);
         bodyLS[ibody].node_area *= scale2;
         bodyLS[ibody].grid_vol *= scale3;
-        MathExtra::scale3(density*scale2*scale3, body[ibody].inertia);
+        MathExtra::scale3(density * scale2*scale3, body[ibody].inertia);
       }
 
       // Start handling memory approach
@@ -453,6 +357,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       if (need_distributed) {
         for (i = 0; i < atom->nlocal; i++) {
           ibody = atom2body[i];
+          Body *b = &body[ibody];
 
           need_padding = 0;
           if (pair.second.find(ibody) == pair.second.end())
@@ -464,9 +369,9 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           ntotal = nx * ny * nz;
 
           // Location of atom/node relative to CoM
-          delx = x[i][0] - grain_com[i][0];
-          dely = x[i][1] - grain_com[i][1];
-          delz = x[i][2] - grain_com[i][2];
+          delx = x[i][0] - b->xcm[0];
+          dely = x[i][1] - b->xcm[1];
+          delz = x[i][2] - b->xcm[2];
 
           // Account for PBCs
           domain->minimum_image(FLERR, delx, dely, delz);
@@ -517,7 +422,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
             }
           }
 
-          // JBC: This might be deleted with watershed. If we keep it, might consider moving it so it doesn't print too many warnings
           if (need_padding)
             error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
         }
@@ -529,12 +433,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     memory->destroy(temp_grid_values);
     memory->destroy(ntotal_global);
 
-  } else {
-    if (distributed_flag) {
-      int tmp1, tmp2;
-      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-    }
   }
 
   nghost_bodyLS = 0;
@@ -554,6 +452,12 @@ void FixRigidSmallLSDEM::pre_force(int vflag)
   comm_flag2 = PREFORCE;
   comm->forward_comm(this, 1);
   comm_flag2 = REGULAR;
+
+  if (distributed_flag) {
+    int tmp1, tmp2;
+    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+  }
 }
 
 
@@ -575,6 +479,7 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
     grain_com[i][0] = b->xcm[0];
     grain_com[i][1] = b->xcm[1];
     grain_com[i][2] = b->xcm[2];
+
     grain_quat[i][0] = b->quat[0];
     grain_quat[i][1] = b->quat[1];
     grain_quat[i][2] = b->quat[2];
@@ -642,7 +547,7 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
   // reverse communicate fcm, torque of all bodies
 
   commflag = FORCE_TORQUE;
-  comm->reverse_comm(this,6);
+  comm->reverse_comm(this, 6);
 
   // add gravity force to COM of each body
 
@@ -716,6 +621,9 @@ void FixRigidSmallLSDEM::set_arrays(int i)
 void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
                                  double *xgeom, double *vcm, double *quat)
 {
+  //TODO: modify to update LSDEM properties
+  //      need to trigger reading level-set grid file...
+
   int m;
   double ctr2com[3],ctr2com_rotate[3];
   double rotmat[3][3];
