@@ -22,6 +22,8 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 
 #include "fix_rigid_small.h"
 
+#include <map>
+
 namespace LAMMPS_NS {
 
 class FixRigidSmallLSDEM : public FixRigidSmall {
@@ -100,8 +102,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // local methods
 
   void compute_forces_and_torques() override;
-  void read_gridfile(int, int, std::string, double *);
+  void preread_gridfile_names(std::map<std::string, double> &);
+  double preread_gridfile(std::string);
   void read_gridfile_names(char **);
+  void read_gridfile(int, int, std::string, double *);
   void grow_body_ls();
 };
 

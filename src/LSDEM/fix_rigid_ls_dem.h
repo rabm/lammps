@@ -36,6 +36,7 @@ class FixRigidLSDEM : public FixRigid {
   void setup_pre_force(int) override;
   void initial_integrate(int) override;
   void pre_force(int) override;
+  void set_arrays(int) override;
   void write_restart_file(const char *) override;
 
   double memory_usage() override;

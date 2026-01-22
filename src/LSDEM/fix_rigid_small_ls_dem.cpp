@@ -59,7 +59,7 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
-  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr)
+  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr), id_fix(nullptr), id_fix2(nullptr)
 {
   maxcut = -1;
   stored_flag = 0;
@@ -101,6 +101,13 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 {
+  // delete extra property/atom fixes
+
+  if (id_fix && modify->nfix) modify->delete_fix(id_fix);
+  delete[] id_fix;
+  if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2);
+  delete[] id_fix2;
+
   // unregister callbacks to this fix from Atom class
 
   if (modify->get_fix_by_id(id)) atom->delete_callback(id,Atom::GROW);
@@ -142,6 +149,66 @@ void FixRigidSmallLSDEM::init()
 
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
+
+  // Pair cutoff sets size of LS around nodes for distributed case
+  if (!utils::strmatch(force->pair_style, "^ls/dem"))
+    error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
+  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  maxcut = pair->maxcut;
+
+  // if distributed, need to calculate size for fix property/atom local grids
+  //   needs to be defined in init to set comm limits
+
+  std::map<std::string, double> gridfile_map;
+  std::string gridfile;
+
+  if (inpfile) {
+    preread_gridfile_names(gridfile_map);
+  } else {
+    Molecule *onemol;
+    int *grid_index = atom->grid_index;
+    for (int i = 0; i < atom->nlocal; i++) {
+      onemol = atom->molecules[grid_index[i]];
+      if (!onemol->grid_file.empty()) {
+        gridfile = onemol->grid_file;
+        if (gridfile_map.find(gridfile) == gridfile_map.end())
+          gridfile_map[gridfile] = onemol->grid_scale;
+        else
+          gridfile_map[gridfile] = MAX(gridfile_map[gridfile], onemol->grid_scale);
+
+        if (onemol->grid_style)
+          distributed_flag = 1;
+      }
+    }
+  }
+
+  double stride, scale;
+  double min_stride = DBL_MAX;
+  for (const auto& pair : gridfile_map) {
+    gridfile = pair.first;
+    scale = pair.second;
+    stride = preread_gridfile(gridfile);
+    min_stride = MIN(min_stride, stride * scale);
+  }
+
+  // All local grids sized on finest grid (fix property/atom requires fixed-size containers)
+  rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
+
+  if (distributed_flag) {
+    // todo try remove +1 and cast to int
+    for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;
+    if (domain->dimension == 2) subgrid_size[2] = 1;
+
+    id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+    int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+    if (ntotal > RECOMMENDED_MAX_NGRID)
+      error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
+    modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
+
+    int tmp1, tmp2;
+    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -150,14 +217,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
   FixRigidSmall::setup_pre_neighbor();
 
+  // compared to rigid/ls/dem, need to wait until atom2body made
+
   int ibody, i, a;
   int dimension = domain->dimension;
-
-  // Pair cutoff sets size of LS around nodes for distributed case
-  if (!utils::strmatch(force->pair_style, "^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
-  maxcut = pair->maxcut;
 
   int index_global = 0;
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
@@ -194,7 +257,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     std::map <std::string, std::set<int>> file_map;
     std::string filename;
     int grid_size_flat, max_grid_size_flat(0);
-    double min_stride = DBL_MAX;
     for (ibody = 0; ibody < nbody; ibody++) {
       filename.assign(gridfiles[ibody]); // Retrieve file name
       read_gridfile(ibody, 0, filename, nullptr); // Get only grid sizes (which 0)
@@ -203,7 +265,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       // Calculate and save grid properties
       grid_size_flat = bodyLS[ibody].grid_size[0] * bodyLS[ibody].grid_size[1] * bodyLS[ibody].grid_size[2];
       max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
-      min_stride = MIN(min_stride, bodyLS[ibody].grid_stride * bodyLS[ibody].grid_scale);
 
       // Store global info
       bodyLS[ibody].grid_index = -1;
@@ -220,8 +281,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           ntotal_global[index_global] = grid_size_flat;
           index_global += 1;
         }
-      } else {
-        distributed_flag = 1;
       }
     }
 
@@ -229,29 +288,11 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     // Allocate memory for level sets //
     // ------------------------------ //
 
-    int ntotal;
-    // All local grids sized on finest grid (fix property/atom requires fixed-size containers)
-    rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
-
     for (ibody = 0; ibody < nbody; ibody++)
       bodyLS[ibody].grid_nnodes = 0;
     for (i = 0; i < atom->nlocal; i++) {
       ibody = atom2body[i];
       bodyLS[ibody].grid_nnodes += 1;
-    }
-
-    if (distributed_flag) {
-      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
-      if (dimension == 2) subgrid_size[2] = 1;
-      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-      ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-      if (ntotal > RECOMMENDED_MAX_NGRID)
-        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-      modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
-
-      int tmp1, tmp2;
-      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
     }
 
     if (index_global) {
@@ -271,13 +312,11 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       grid_min_local = atom->darray[index_grid_min];
     }
 
-
     double **x = atom->x;
 
-    int need_distributed, need_global, need_padding;
-    int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
+    int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double *ls_val, temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
     double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
@@ -366,7 +405,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           nx = bodyLS[ibody].grid_size[0];
           ny = bodyLS[ibody].grid_size[1];
           nz = bodyLS[ibody].grid_size[2];
-          ntotal = nx * ny * nz;
 
           // Location of atom/node relative to CoM
           delx = x[i][0] - b->xcm[0];
@@ -426,13 +464,17 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
             error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
         }
       }
-
     }
 
     memory->destroy(gridfiles);
     memory->destroy(temp_grid_values);
     memory->destroy(ntotal_global);
+  }
 
+  if (distributed_flag) {
+    int tmp1, tmp2;
+    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
   }
 
   nghost_bodyLS = 0;
@@ -452,12 +494,6 @@ void FixRigidSmallLSDEM::pre_force(int vflag)
   comm_flag2 = PREFORCE;
   comm->forward_comm(this, 1);
   comm_flag2 = REGULAR;
-
-  if (distributed_flag) {
-    int tmp1, tmp2;
-    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-  }
 }
 
 
@@ -889,6 +925,126 @@ double FixRigidSmallLSDEM::memory_usage()
   return bytes;
 }
 
+/* ----------------------------------------------------------------------
+   one-time prereading of file names for LS grid
+     collect unique gridfile names and min scale factors
+     set distributed flag
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::preread_gridfile_names(std::map<std::string, double> &gridfile_map)
+{
+  tagint id;
+  int nchunk, eofflag, nlines;
+  FILE *fp;
+  char *eof, *start, *next, *buf;
+  char line[MAXLINE] = {'\0'};
+  std::string gridfile;
+
+  if (comm->me == 0) {
+    fp = fopen(inpfile,"r");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid/small/ls/dem infile {}: {}", inpfile, utils::getsyserror());
+    while (true) {
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/small/ls/dem infile");
+      start = &line[strspn(line, " \t\n\v\f\r")];
+      if (*start != '\0' && *start != '#') break;
+    }
+    nlines = utils::inumeric(FLERR, utils::trim(line), true, lmp);
+    if (nlines == 0) fclose(fp);
+  }
+  MPI_Bcast(&nlines, 1, MPI_INT, 0, world);
+
+  if (nlines == 0) return;
+  else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
+
+  auto buffer = new char[CHUNK * MAXLINE];
+  int nread = 0;
+  int me = comm->me;
+  int style;
+  double scale;
+  while (nread < nlines) {
+    nchunk = MIN(nlines - nread, CHUNK);
+    eofflag = utils::read_lines_from_file(fp, nchunk, MAXLINE, buffer, me, world);
+    if (eofflag) error->all(FLERR, "Unexpected end of fix rigid/small/ls/dem infile");
+
+    buf = buffer;
+    next = strchr(buf, '\n');
+    *next = '\0';
+    int nwords = utils::count_words(utils::trim_comment(buf));
+    *next = '\n';
+
+    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
+      error->all(FLERR, "Incorrect rigid body format in fix rigid/small/ls/dem file");
+
+    for (int i = 0; i < nchunk; i++) {
+      next = strchr(buf,'\n');
+      *next = '\0';
+
+      try {
+        ValueTokenizer values(buf);
+        id = values.next_tagint();
+        values.skip(19);
+        style = values.next_int();
+        if (style == 1)
+          distributed_flag = 1;
+
+        scale = values.next_double();
+        gridfile = values.next_string();
+        if (gridfile_map.find(gridfile) == gridfile_map.end())
+          gridfile_map[gridfile] = scale;
+        else
+          gridfile_map[gridfile] = MIN(gridfile_map[gridfile], scale);
+      } catch (TokenizerException &e) {
+        error->all(FLERR, "Invalid fix rigid/small/ls/dem infile: {}", e.what());
+      }
+      buf = next + 1;
+    }
+    nread += nchunk;
+  }
+
+  if (comm->me == 0) fclose(fp);
+  delete[] buffer;
+}
+
+/* ----------------------------------------------------------------------
+   preread per rigid body level-set grid values from user-provided file
+     grab stride to calculate maximum distributed local grid size
+------------------------------------------------------------------------- */
+
+double FixRigidSmallLSDEM::preread_gridfile(std::string filename)
+{
+  int dim = domain->dimension;
+  double grid_size_buf[dim + 1];
+  FILE *fp;
+  char *eof, *start, *buf;
+  char line[MAXLINE] = {'\0'};
+
+  int nlines = 1;
+  const char* gridfile = filename.c_str();
+  if (comm->me == 0) {
+    fp = fopen(gridfile, "r");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix rigid/small/ls/dem gridfile {}: {}", gridfile, utils::getsyserror());
+    while (true) {
+      eof = fgets(line, MAXLINE, fp);
+      if (eof == nullptr) error->one(FLERR,"Unexpected end of fix rigid/small/ls/dem gridfile");
+      start = &line[strspn(line, " \t\n\v\f\r")];
+      if (*start != '\0' && *start != '#') break;
+    }
+
+    eof = fgets(line, MAXLINE, fp);
+    if (eof == nullptr) error->one(FLERR, "Unexpected end of fix rigid/small/ls/dem gridfile");
+    grid_size_buf[0] = utils::numeric(FLERR, utils::trim(line), false, lmp);
+    if (grid_size_buf[0] <= 0.0)
+      error->one(FLERR, "Grid stride for rigid/small/ls/dem gridfile {} must be positive", gridfile);
+  }
+  MPI_Bcast(grid_size_buf, dim + 1, MPI_DOUBLE, 0, world);
+
+  double grid_stride = grid_size_buf[0];
+  if (comm->me == 0) fclose(fp);
+  return grid_stride;
+}
 
 /* ----------------------------------------------------------------------
    one-time reading of file names for LS grid

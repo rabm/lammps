@@ -90,7 +90,7 @@ double compute_surface_area(int dimension, int *grid_size, double stride, double
   double epsilon, vol_in, vol_out, area;
   // Value of epsilon below gives the most accurate results. Why? Level set does not have more information
   // than is in the grid, and larger values increase error on the finite-difference approximation.
-  epsilon = 0.5*stride;
+  epsilon = 0.5 * stride;
   vol_in = compute_volume(dimension, grid_size, stride, grid_values, epsilon);
   vol_out = compute_volume(dimension, grid_size, stride, grid_values, -epsilon);
   // Finite central difference

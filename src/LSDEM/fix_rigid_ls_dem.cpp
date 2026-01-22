@@ -242,10 +242,9 @@ void FixRigidLSDEM::init()
 
     double **x = atom->x;
 
-    int need_distributed, need_global, need_padding;
-    int nx, ny, nz, ix_node, iy_node, iz_node, xmincell, ymincell, zmincell, index;
+    int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double *ls_val, temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
     double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
@@ -394,13 +393,17 @@ void FixRigidLSDEM::init()
             error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
         }
       }
-
     }
 
     memory->destroy(gridfiles);
     memory->destroy(temp_grid_values);
     memory->destroy(ntotal_global);
+  }
 
+  if (distributed_flag) {
+      int tmp1, tmp2;
+      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
   }
 }
 
@@ -416,12 +419,6 @@ void FixRigidLSDEM::setup_pre_force(int vflag)
 void FixRigidLSDEM::pre_force(int vflag)
 {
   comm->forward_comm(this);
-
-  if (distributed_flag) {
-      int tmp1, tmp2;
-      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-  }
 }
 
 /* ---------------------------------------------------------------------- */
