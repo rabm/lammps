@@ -39,7 +39,7 @@ AtomVecLSDEM::AtomVecLSDEM(LAMMPS *lmp) : AtomVec(lmp)
   // except: fields_data_atom & fields_data_vel must match data file
 
   fields_grow = {"molecule", "xcom", "quat", "omega", "torque", "grid_index"};
-  fields_copy = {"molecule"};
+  fields_copy = {"molecule", "xcom", "quat", "grid_index"};
   fields_comm_vel = {"xcom", "quat", "omega"};
   fields_reverse = {"torque"};
   fields_border = {"molecule"};
@@ -81,7 +81,21 @@ void AtomVecLSDEM::data_atom_post(int ilocal)
   xcom[ilocal][1] = 0.0;
   xcom[ilocal][2] = 0.0;
 
-  quat[ilocal][0] = 0.0;
+  quat[ilocal][0] = 1.0;
+  quat[ilocal][1] = 0.0;
+  quat[ilocal][2] = 0.0;
+  quat[ilocal][3] = 0.0;
+
+  grid_index[ilocal] = -1;
+}
+
+/* ----------------------------------------------------------------------
+   initialize non-zero atom quantities
+------------------------------------------------------------------------- */
+
+void AtomVecLSDEM::create_atom_post(int ilocal)
+{
+  quat[ilocal][0] = 1.0;
   quat[ilocal][1] = 0.0;
   quat[ilocal][2] = 0.0;
   quat[ilocal][3] = 0.0;

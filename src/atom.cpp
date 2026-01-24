@@ -2257,14 +2257,14 @@ void Atom::add_molecule_atom(Molecule *onemol, int iatom, int ilocal, tagint off
                                  onemol->ibodyparams,onemol->dbodyparams);
     onemol->avec_body->set_quat(ilocal,onemol->quat_external);
   }
-  if (onemol->lsdemflag) {
+  if (onemol->lsdemflag && grid_index_flag) {
     grid_index[ilocal] = onemol->myindex;
-    if (onemol->comflag) {
+    if (xcom_flag) {
       xcom[ilocal][0] = onemol->com_external[0];
       xcom[ilocal][1] = onemol->com_external[1];
       xcom[ilocal][2] = onemol->com_external[2];
     }
-    if (onemol->quatflag) {
+    if (quat_flag) {
       quat[ilocal][0] = onemol->quat_external[0];
       quat[ilocal][1] = onemol->quat_external[1];
       quat[ilocal][2] = onemol->quat_external[2];

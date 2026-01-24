@@ -260,7 +260,6 @@ void FixRigidLSDEM::init()
         if (grid_vol[ibody] < 0)
           error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
 
-
         // Comparing if CoM in level-set grid is indeed aligned with CoM
         // Misalignment would cause forces/rotations to be applied to the wrong point in space
         MathExtra::add3(grid_min[ibody], com_temp, temp);
@@ -299,9 +298,15 @@ void FixRigidLSDEM::init()
         density = masstotal[ibody] / grid_vol[ibody];
         grid_stride[ibody] *= scale;
         MathExtra::scale3(scale, grid_min[ibody]);
-        node_area[ibody] *= scale2;
-        grid_vol[ibody] *= scale3;
-        MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
+        if (1 || dimension == 3) {
+          node_area[ibody] *= scale2;
+          grid_vol[ibody] *= scale3;
+          MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
+        } else {
+          node_area[ibody] *= scale;
+          grid_vol[ibody] *= scale2;
+          MathExtra::scale3(density * scale2 * scale2, inertia[ibody]);
+        }
       }
 
       // Start handling memory approach

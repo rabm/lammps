@@ -30,6 +30,7 @@ class AtomVecLSDEM : virtual public AtomVec {
 
   void grow_pointers() override;
   void data_atom_post(int) override;
+  void create_atom_post(int) override;
 
  protected:
   double **xcom, **quat, **omega;

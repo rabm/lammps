@@ -225,6 +225,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
   int index_global = 0;
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
   int *grid_index = atom->grid_index;
+  double **quat = atom->quat;
+  double **xcom = atom->xcom;
   if (!stored_flag) {
     stored_flag = 1;
 
@@ -316,7 +318,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
     int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3], quat_conj[4], dx_local[3];
     double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
@@ -369,9 +371,15 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         density = body[ibody].mass / bodyLS[ibody].grid_vol;
         bodyLS[ibody].grid_stride *= scale;
         MathExtra::scale3(scale, bodyLS[ibody].grid_min);
-        bodyLS[ibody].node_area *= scale2;
-        bodyLS[ibody].grid_vol *= scale3;
-        MathExtra::scale3(density * scale2*scale3, body[ibody].inertia);
+        if (1 || dimension == 3) {
+          bodyLS[ibody].node_area *= scale2;
+          bodyLS[ibody].grid_vol *= scale3;
+          MathExtra::scale3(density * scale2 * scale3, body[ibody].inertia);
+        } else {
+          bodyLS[ibody].node_area *= scale;
+          bodyLS[ibody].grid_vol *= scale2;
+          MathExtra::scale3(density * scale2 * scale2, body[ibody].inertia);
+        }
       }
 
       // Start handling memory approach
@@ -407,23 +415,29 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           nz = bodyLS[ibody].grid_size[2];
 
           // Location of atom/node relative to CoM
-          delx = x[i][0] - b->xcm[0];
-          dely = x[i][1] - b->xcm[1];
-          delz = x[i][2] - b->xcm[2];
+          double dx[3];
+          dx[0] = x[i][0] - xcom[i][0];
+          dx[1] = x[i][1] - xcom[i][1];
+          dx[2] = x[i][2] - xcom[i][2];
+
 
           // Account for PBCs
-          domain->minimum_image(FLERR, delx, dely, delz);
+          domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+
+          // Rotate to body frame
+          MathExtra::qconjugate(quat[i], quat_conj);
+          MathExtra::quatrotvec(quat_conj, dx, dx_local);
 
           // Location of atom/node relative to entire grain grid minimum.
-          delx -= bodyLS[ibody].grid_min[0];
-          dely -= bodyLS[ibody].grid_min[1];
-          delz -= bodyLS[ibody].grid_min[2];
+          dx_local[0] -= bodyLS[ibody].grid_min[0];
+          dx_local[1] -= bodyLS[ibody].grid_min[1];
+          dx_local[2] -= bodyLS[ibody].grid_min[2];
 
           // Index of atom/node in entire grain grid.
           double stride = bodyLS[ibody].grid_stride;
-          ix_node = int(delx / stride);
-          iy_node = int(dely / stride);
-          iz_node = int(delz / stride);
+          ix_node = int(dx_local[0] / stride);
+          iy_node = int(dx_local[1] / stride);
+          iz_node = int(dx_local[2] / stride);
 
           // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
           index_grid_min_local[0] = ix_node - rcell;
@@ -454,6 +468,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
                 } else {
                   // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
                   index_global = ix_global + iy_global * nx + iz_global * nx * ny;
+                  if (index_global < 0 || index_global >= nx * ny * nz)
+                    error->warning(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
                   grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
                 }
               }
@@ -659,6 +675,8 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 {
   //TODO: modify to update LSDEM properties
   //      need to trigger reading level-set grid file...
+
+  error->one(FLERR, "Molecule insertion not yet supported for fix rigid/small/ls/dem");
 
   int m;
   double ctr2com[3],ctr2com_rotate[3];
