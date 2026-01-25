@@ -371,7 +371,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         density = body[ibody].mass / bodyLS[ibody].grid_vol;
         bodyLS[ibody].grid_stride *= scale;
         MathExtra::scale3(scale, bodyLS[ibody].grid_min);
-        if (1 || dimension == 3) {
+        if (dimension == 3) {
           bodyLS[ibody].node_area *= scale2;
           bodyLS[ibody].grid_vol *= scale3;
           MathExtra::scale3(density * scale2 * scale3, body[ibody].inertia);

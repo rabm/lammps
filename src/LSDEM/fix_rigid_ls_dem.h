@@ -66,6 +66,8 @@ class FixRigidLSDEM : public FixRigid {
   double *node_area;
   int *grid_nnodes;             // the number of nodes in the grid
 
+  double **quat0c;              // conjugate of initial quaternion of each rigid body
+
   double **global_grids;
   double *grid_scale;
   double maxcut;

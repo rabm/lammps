@@ -31,6 +31,8 @@
 #include "rigid_const.h"
 #include "tokenizer.h"
 
+#include "update.h"
+
 #include <cmath>
 #include <cfloat> // DBL_MAX
 #include <cstring>
@@ -53,7 +55,9 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
-    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr), grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr), grid_nnodes(nullptr)
+    grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr),
+    grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr),
+    grid_nnodes(nullptr), quat0c(nullptr)
 {
   comm_forward = 1;
   maxcut = -1;
@@ -74,6 +78,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(grid_nnodes, nbody, "rigid/ls/dem:grid_nnodes");
+  memory->create(quat0c, nbody, 4, "rigid/ls/dem:quat0c");
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
@@ -101,6 +106,7 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_vol);
   memory->destroy(node_area);
   memory->destroy(grid_nnodes);
+  memory->destroy(quat0c);
 
   // delete global memory data
 
@@ -244,7 +250,7 @@ void FixRigidLSDEM::init()
 
     int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3], cross[3];
     double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
@@ -281,6 +287,46 @@ void FixRigidLSDEM::init()
           ez_space[ibody][a] = evectors[a][2];
         }
 
+        // for 2d, ensure that evector along z axis is last
+        // necessary so that quaternion is a simple rotation around +z axis
+        //   or a 180 degree rotation for a -z axis
+        // otherwise richardson() method for a body with a tiny evalue (near-linear)
+        //  may not preserve the correct z-aligned quat and associated evectors
+        //  over time due to round-off accumulation
+
+        if (domain->dimension == 2) {
+          if (fabs(ez_space[ibody][0]) > EPSILON || fabs(ez_space[ibody][1]) > EPSILON) {
+            std::swap(inertia[ibody][1],inertia[ibody][2]);
+            std::swap(ey_space[ibody][0],ez_space[ibody][0]);
+            std::swap(ey_space[ibody][1],ez_space[ibody][1]);
+            std::swap(ey_space[ibody][2],ez_space[ibody][2]);
+          }
+        }
+
+        // if any principal moment < scaled EPSILON, set to 0.0
+
+        double max;
+        max = MAX(inertia[ibody][0],inertia[ibody][1]);
+        max = MAX(max,inertia[ibody][2]);
+
+        if (inertia[ibody][0] < EPSILON*max) inertia[ibody][0] = 0.0;
+        if (inertia[ibody][1] < EPSILON*max) inertia[ibody][1] = 0.0;
+        if (inertia[ibody][2] < EPSILON*max) inertia[ibody][2] = 0.0;
+
+        // enforce 3 evectors as a right-handed coordinate system
+        // flip 3rd vector if needed
+
+        MathExtra::cross3(ex_space[ibody],ey_space[ibody],cross);
+        if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
+          MathExtra::negate3(ez_space[ibody]);
+
+        // create initial quaternion
+
+        MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
+                         quat[ibody]);
+
+        MathExtra::qconjugate(quat[ibody], quat0c[ibody]);
+
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
         // Test for physical realism
@@ -298,7 +344,7 @@ void FixRigidLSDEM::init()
         density = masstotal[ibody] / grid_vol[ibody];
         grid_stride[ibody] *= scale;
         MathExtra::scale3(scale, grid_min[ibody]);
-        if (1 || dimension == 3) {
+        if (dimension == 3) {
           node_area[ibody] *= scale2;
           grid_vol[ibody] *= scale3;
           MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
@@ -309,7 +355,8 @@ void FixRigidLSDEM::init()
         }
       }
 
-      // Start handling memory approach
+      // Start handling memory of LS grid
+
       need_distributed = 0; // Save relevant grid snippet at node, regardless of duplicity
       need_global = 0;  // Save the entire grid as a shared memory stucture between grains with the same grid
       for (const auto& jbody : file_map[filename]) {
@@ -403,12 +450,51 @@ void FixRigidLSDEM::init()
     memory->destroy(gridfiles);
     memory->destroy(temp_grid_values);
     memory->destroy(ntotal_global);
+
+    // Redefine displace - initial atom coords in basis of principal axes - with new inertia/exspace values
+
+    int *periodicity = domain->periodicity;
+    double xprd = domain->xprd;
+    double yprd = domain->yprd;
+    double zprd = domain->zprd;
+    double xy = domain->xy;
+    double xz = domain->xz;
+    double yz = domain->yz;
+    double delta[3];
+    int xbox,ybox,zbox;
+    double xunwrap,yunwrap,zunwrap;
+
+    for (i = 0; i < atom->nlocal; i++) {
+      if (body[i] < 0)  continue;
+
+      ibody = body[i];
+
+      xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
+      ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
+      zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+
+      if (triclinic == 0) {
+        xunwrap = x[i][0] + xbox*xprd;
+        yunwrap = x[i][1] + ybox*yprd;
+        zunwrap = x[i][2] + zbox*zprd;
+      } else {
+        xunwrap = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
+        yunwrap = x[i][1] + ybox*yprd + zbox*yz;
+        zunwrap = x[i][2] + zbox*zprd;
+      }
+
+      delta[0] = xunwrap - xcm[ibody][0];
+      delta[1] = yunwrap - xcm[ibody][1];
+      delta[2] = zunwrap - xcm[ibody][2];
+      MathExtra::transpose_matvec(ex_space[ibody],ey_space[ibody],
+                                  ez_space[ibody],delta,displace[i]);
+    }
   }
 
   if (distributed_flag) {
-      int tmp1, tmp2;
-      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    int tmp1, tmp2;
+    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
   }
 }
 
@@ -444,10 +530,10 @@ void FixRigidLSDEM::initial_integrate(int vflag)
     grain_com[i][1] = xcm[ibody][1];
     grain_com[i][2] = xcm[ibody][2];
 
-    grain_quat[i][0] = quat[ibody][0];
-    grain_quat[i][1] = quat[ibody][1];
-    grain_quat[i][2] = quat[ibody][2];
-    grain_quat[i][3] = quat[ibody][3];
+    // Overwrite parent-class calculated quaternion with that relative to LS grid
+    //   rotate current orientation, then remove initial orientation
+
+    MathExtra::quatquat(quat[ibody], quat0c[ibody], grain_quat[i]);
 
     grain_omega[i][0] = omega[ibody][0];
     grain_omega[i][1] = omega[ibody][1];
@@ -833,6 +919,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double x_local[3];
   double dx[3] = {delx, dely, delz};
   double grain_quat_conj[4];
+
   MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
   // See comments above functions in math_extra.h/cpp for details
@@ -870,7 +957,8 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double z_red = x_local[2] * strideinv;
 
   int dim = domain->dimension;
-  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
+  double dist;
+  dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];

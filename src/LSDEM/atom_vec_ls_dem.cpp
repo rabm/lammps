@@ -38,8 +38,8 @@ AtomVecLSDEM::AtomVecLSDEM(LAMMPS *lmp) : AtomVec(lmp)
   // order of fields in a string does not matter
   // except: fields_data_atom & fields_data_vel must match data file
 
-  fields_grow = {"molecule", "xcom", "quat", "omega", "torque", "grid_index"};
-  fields_copy = {"molecule", "xcom", "quat", "grid_index"};
+  fields_grow = {"molecule", "xcom", "quat", "grid_index", "omega", "torque"};
+  fields_copy = {"molecule", "xcom", "quat", "grid_index", "omega"};
   fields_comm_vel = {"xcom", "quat", "omega"};
   fields_reverse = {"torque"};
   fields_border = {"molecule"};
@@ -95,6 +95,14 @@ void AtomVecLSDEM::data_atom_post(int ilocal)
 
 void AtomVecLSDEM::create_atom_post(int ilocal)
 {
+  omega[ilocal][0] = 0.0;
+  omega[ilocal][1] = 0.0;
+  omega[ilocal][2] = 0.0;
+
+  xcom[ilocal][0] = 0.0;
+  xcom[ilocal][1] = 0.0;
+  xcom[ilocal][2] = 0.0;
+
   quat[ilocal][0] = 1.0;
   quat[ilocal][1] = 0.0;
   quat[ilocal][2] = 0.0;
