@@ -144,7 +144,7 @@ void FixRigidLSDEM::init()
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
-  int ibody, i, a;
+  int iatom, ibody, i, a;
   int dimension = domain->dimension;
 
   // Pair cutoff sets size of LS around nodes for distributed case
@@ -247,6 +247,7 @@ void FixRigidLSDEM::init()
     }
 
     double **x = atom->x;
+    double **quat_atom = atom->quat;
 
     int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
@@ -320,12 +321,22 @@ void FixRigidLSDEM::init()
         if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
           MathExtra::negate3(ez_space[ibody]);
 
-        // create initial quaternion
+        // create initial quaternion relative to inertial frame
 
         MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
                          quat[ibody]);
 
+        // additoinally, calculate relative rotation from inerital frame to LS grid
+        //   assume any additional rotations on grains (e.g. by displace_atoms)
+        //   were performed correct s.t. all atoms have equivalent initial quaterions
+        // Note: do not do something similar for CoM b/c there is no way to save
+        //   atom coordinates before being shifted in read_data. Also, this can be
+        //   achieved easily by just setting the shift in the infile.
+        for (iatom = 0; iatom < atom->nlocal; iatom++)
+          if (body[iatom] == ibody) break;
+
         MathExtra::qconjugate(quat[ibody], quat0c[ibody]);
+        MathExtra::quatquat(quat_atom[iatom], quat0c[ibody], quat0c[ibody]);
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
