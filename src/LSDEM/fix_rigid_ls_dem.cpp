@@ -288,6 +288,7 @@ void FixRigidLSDEM::init()
           ez_space[ibody][a] = evectors[a][2];
         }
 
+        // copy of calculations from FixRigid::setup_bodies_static()
         // for 2d, ensure that evector along z axis is last
         // necessary so that quaternion is a simple rotation around +z axis
         //   or a 180 degree rotation for a -z axis
@@ -326,9 +327,9 @@ void FixRigidLSDEM::init()
         MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
                          quat[ibody]);
 
-        // additoinally, calculate relative rotation from inerital frame to LS grid
+        // additionally, calculate relative rotation from inerital frame to LS grid
         //   assume any additional rotations on grains (e.g. by displace_atoms)
-        //   were performed correct s.t. all atoms have equivalent initial quaterions
+        //   were performed correctly s.t. all atoms have equivalent initial quaterions
         // Note: do not do something similar for CoM b/c there is no way to save
         //   atom coordinates before being shifted in read_data. Also, this can be
         //   achieved easily by just setting the shift in the infile.
@@ -396,26 +397,31 @@ void FixRigidLSDEM::init()
           nx = grid_size[ibody][0];
           ny = grid_size[ibody][1];
           nz = grid_size[ibody][2];
-          ntotal = nx * ny * nz;
 
           // Location of atom/node relative to CoM
-          delx = x[i][0] - xcm[ibody][0];
-          dely = x[i][1] - xcm[ibody][1];
-          delz = x[i][2] - xcm[ibody][2];
+          double dx[3], dx_local[3];
+          dx[0] = x[i][0] - xcm[ibody][0];
+          dx[1] = x[i][1] - xcm[ibody][1];
+          dx[2] = x[i][2] - xcm[ibody][2];
 
           // Account for PBCs
           domain->minimum_image(FLERR, delx, dely, delz);
 
+          // Rotate to LS frame (now just the atomic quaternion)
+          double quat_conj[4];
+          MathExtra::qconjugate(quat_atom[i], quat_conj);
+          MathExtra::quatrotvec(quat_conj, dx, dx_local);
+
           // Location of atom/node relative to entire grain grid minimum.
-          delx -= grid_min[ibody][0];
-          dely -= grid_min[ibody][1];
-          delz -= grid_min[ibody][2];
+          dx_local[0] -= grid_min[ibody][0];
+          dx_local[1] -= grid_min[ibody][1];
+          dx_local[2] -= grid_min[ibody][2];
 
           // Index of atom/node in entire grain grid.
           double stride = grid_stride[ibody];
-          ix_node = int(delx / stride);
-          iy_node = int(dely / stride);
-          iz_node = int(delz / stride);
+          ix_node = int(dx_local[0] / stride);
+          iy_node = int(dx_local[1] / stride);
+          iz_node = int(dx_local[2] / stride);
 
           // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
           index_grid_min_local[0] = ix_node - rcell;
@@ -446,6 +452,8 @@ void FixRigidLSDEM::init()
                 } else {
                   // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
                   index_global = ix_global + iy_global * nx + iz_global * nx * ny;
+                  if (index_global < 0 || index_global >= nx * ny * nz)
+                    error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
                   grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
                 }
               }
@@ -463,6 +471,7 @@ void FixRigidLSDEM::init()
     memory->destroy(ntotal_global);
 
     // Redefine displace - initial atom coords in basis of principal axes - with new inertia/exspace values
+    //   copy of calculations from FixRigid::setup_bodies_static()
 
     int *periodicity = domain->periodicity;
     double xprd = domain->xprd;
@@ -500,12 +509,6 @@ void FixRigidLSDEM::init()
       MathExtra::transpose_matvec(ex_space[ibody],ey_space[ibody],
                                   ez_space[ibody],delta,displace[i]);
     }
-  }
-
-  if (distributed_flag) {
-    int tmp1, tmp2;
-    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
   }
 }
 
@@ -968,8 +971,7 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   double z_red = x_local[2] * strideinv;
 
   int dim = domain->dimension;
-  double dist;
-  dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
+  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];

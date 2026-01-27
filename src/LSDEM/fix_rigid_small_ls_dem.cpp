@@ -71,6 +71,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   while (nmax_bodyLS < nlocal_body) nmax_bodyLS += DELTA_BODY;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
   memory->grow(bodyownLS, atom->nmax, "rigid/small/ls/dem:bodyownLS");
+  for (int i = 0; i < nmax_bodyLS; i++)
+    bodyLS[i].grid_style = -1;
   atom->add_callback(Atom::GROW);
 
   // set bodyown for owned atoms
@@ -156,6 +158,8 @@ void FixRigidSmallLSDEM::init()
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
+  if (stored_flag) return;
+
   // if distributed, need to calculate size for fix property/atom local grids
   //   needs to be defined in init to set comm limits
 
@@ -219,7 +223,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
   // compared to rigid/ls/dem, need to wait until atom2body made
 
-  int ibody, i, a;
+  int iatom, ibody, i, a;
   int dimension = domain->dimension;
 
   int index_global = 0;
@@ -240,6 +244,13 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
     if (inpfile) {
       read_gridfile_names(gridfiles);
+      for (i = 0; i < atom->nlocal; i++) {
+        ibody = atom2body[i];
+        xcom[i][0] = body[ibody].xcm[0];
+        xcom[i][1] = body[ibody].xcm[1];
+        xcom[i][2] = body[ibody].xcm[2];
+      }
+
     } else {
       Molecule *onemol;
       for (i = 0; i < atom->nlocal; i++) {
@@ -252,7 +263,14 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         bodyLS[ibody].grid_style = onemol->grid_style;
         bodyLS[ibody].grid_scale = onemol->grid_scale;
         body[ibody].mass = onemol->masstotal;
+        body[ibody].xcm[0] = onemol->com_external[0];
+        body[ibody].xcm[1] = onemol->com_external[1];
+        body[ibody].xcm[2] = onemol->com_external[2];
       }
+
+      for (ibody = 0; ibody < nbody; ibody++)
+        if (bodyLS[ibody].grid_style == -1)
+          error->all(FLERR, "LS body {} missing level set data", ibody);
     }
 
     // Read grid dimensions for all bodies
@@ -315,11 +333,12 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     }
 
     double **x = atom->x;
+    double **quat_atom = atom->quat;
 
     int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3], quat_conj[4], dx_local[3];
-    double delx, dely, delz, area, density, scale, scale2, scale3;
+    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3], quat_conj[4], dx_local[3], cross[3];
+    double delx, dely, delz, area, density, scale, scale2, scale3, *ex, *ey, *ez, *inertia, *xcm, *xgc;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
       read_gridfile(-1, 1, filename, temp_grid_values);
@@ -344,15 +363,75 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         // Overwrite inertia, could modify logic (compare or warn) if desired
 
         // Calculate eigen system of inertia tensor
-        int ierror = MathEigen::jacobi3(inertia_temp, body[ibody].inertia, evectors, 1);
+        inertia = body[ibody].inertia;
+        int ierror = MathEigen::jacobi3(inertia_temp, inertia, evectors, 1);
         if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
         // Set grain orientation based on eigenvectors of inertia tensor
+        ex = body[ibody].ex_space;
+        ey = body[ibody].ey_space;
+        ez = body[ibody].ez_space;
         for (a = 0; a < 3; a++) {
-          body[ibody].ex_space[a] = evectors[a][0];
-          body[ibody].ey_space[a] = evectors[a][1];
-          body[ibody].ez_space[a] = evectors[a][2];
+          ex[a] = evectors[a][0];
+          ey[a] = evectors[a][1];
+          ez[a] = evectors[a][2];
         }
+
+        // copy of calculations from FixRigidSmall::setup_bodies_static()
+        // for 2d, ensure that evector along z axis is last
+        // necessary so that quaternion is a simple rotation around +z axis
+        //   or a 180 degree rotation for a -z axis
+        // otherwise richardson() method for a body with a tiny evalue (near-linear)
+        //  may not preserve the correct z-aligned quat and associated evectors
+        //  over time due to round-off accumulation
+
+        if (domain->dimension == 2) {
+          if (fabs(ez[0]) > EPSILON || fabs(ez[1]) > EPSILON) {
+            std::swap(inertia[1],inertia[2]);
+            std::swap(ey[0],ez[0]);
+            std::swap(ey[1],ez[1]);
+            std::swap(ey[2],ez[2]);
+          }
+        }
+
+        // if any principal moment < scaled EPSILON, set to 0.0
+
+        double max;
+        max = MAX(inertia[0],inertia[1]);
+        max = MAX(max,inertia[2]);
+
+        if (inertia[0] < EPSILON*max) inertia[0] = 0.0;
+        if (inertia[1] < EPSILON*max) inertia[1] = 0.0;
+        if (inertia[2] < EPSILON*max) inertia[2] = 0.0;
+
+        // enforce 3 evectors as a right-handed coordinate system
+        // flip 3rd vector if needed
+
+        MathExtra::cross3(ex,ey,cross);
+        if (MathExtra::dot3(cross,ez) < 0.0) MathExtra::negate3(ez);
+
+        // create initial quaternion
+
+        MathExtra::exyz_to_q(ex,ey,ez,body[ibody].quat);
+
+        // convert geometric center position to principal axis coordinates
+        // xcm is wrapped, but xgc is not initially
+
+        xcm = body[ibody].xcm;
+        xgc = body[ibody].xgc;
+        double delta[3];
+        MathExtra::sub3(xgc,xcm,delta);
+        domain->minimum_image_big(FLERR, delta);
+        MathExtra::transpose_matvec(ex,ey,ez,delta,body[ibody].xgc_body);
+        MathExtra::add3(xcm,delta,xgc);
+
+        // additionally, calculate relative rotation from inerital frame to LS grid
+        //   assume any rotations on grains (e.g. by create_atoms, displace_atoms, ...)
+        //   were correctly performed s.t. all atoms have equivalent initial quaterions
+        iatom = body[ibody].ilocal;
+
+        MathExtra::qconjugate(body[ibody].quat, bodyLS[ibody].quat0c);
+        MathExtra::quatquat(quat_atom[iatom], bodyLS[ibody].quat0c, bodyLS[ibody].quat0c);
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         area = compute_surface_area(dimension, bodyLS[ibody].grid_size, bodyLS[ibody].grid_stride, temp_grid_values);
@@ -420,12 +499,13 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           dx[1] = x[i][1] - xcom[i][1];
           dx[2] = x[i][2] - xcom[i][2];
 
-
           // Account for PBCs
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
           // Rotate to body frame
-          MathExtra::qconjugate(quat[i], quat_conj);
+          double quat_temp[4];
+          MathExtra::quatquat(body[ibody].quat, bodyLS[ibody].quat0c, quat_temp);
+          MathExtra::qconjugate(quat_temp, quat_conj);
           MathExtra::quatrotvec(quat_conj, dx, dx_local);
 
           // Location of atom/node relative to entire grain grid minimum.
@@ -469,7 +549,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
                   // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
                   index_global = ix_global + iy_global * nx + iz_global * nx * ny;
                   if (index_global < 0 || index_global >= nx * ny * nz)
-                    error->warning(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
+                    error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
                   grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
                 }
               }
@@ -485,12 +565,25 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     memory->destroy(gridfiles);
     memory->destroy(temp_grid_values);
     memory->destroy(ntotal_global);
-  }
 
-  if (distributed_flag) {
-    int tmp1, tmp2;
-    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    // Redefine displace - initial atom coords in basis of principal axes - with new inertia/exspace values
+    //   copy of calculations from FixSmallRigid::setup_bodies_static()
+
+    int *periodicity = domain->periodicity;
+    double delta[3], unwrap[3];
+    for (i = 0; i < atom->nlocal; i++) {
+      if (atom2body[i] < 0) continue;
+
+      Body *b = &body[atom2body[i]];
+
+      domain->unmap(x[i], xcmimage[i], unwrap);
+      xcm = b->xcm;
+      delta[0] = unwrap[0] - xcm[0];
+      delta[1] = unwrap[1] - xcm[1];
+      delta[2] = unwrap[2] - xcm[2];
+      MathExtra::transpose_matvec(b->ex_space, b->ey_space, b->ez_space,
+                                delta, displace[i]);
+    }
   }
 
   nghost_bodyLS = 0;
@@ -536,6 +629,11 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
     grain_quat[i][1] = b->quat[1];
     grain_quat[i][2] = b->quat[2];
     grain_quat[i][3] = b->quat[3];
+
+    // Overwrite parent-class calculated quaternion with that relative to LS grid
+    //   rotate current orientation, then remove initial orientation
+
+    MathExtra::quatquat(b->quat, bodyLS[ibody].quat0c, grain_quat[i]);
 
     grain_omega[i][0] = b->omega[0];
     grain_omega[i][1] = b->omega[1];
@@ -928,6 +1026,9 @@ void FixRigidSmallLSDEM::grow_body_ls()
   nmax_bodyLS += DELTA_BODY;
   bodyLS = (BodyLS *) memory->srealloc(bodyLS, nmax_bodyLS * sizeof(BodyLS),
                                    "rigid/small/ls/dem:bodyLS");
+
+  for (int i = nmax_bodyLS - DELTA_BODY; i < nmax_bodyLS; i++)
+    bodyLS[i].grid_style = -1;
 }
 
 /* ----------------------------------------------------------------------
