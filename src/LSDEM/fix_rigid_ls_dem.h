@@ -66,7 +66,7 @@ class FixRigidLSDEM : public FixRigid {
   double *node_area;
   int *grid_nnodes;             // the number of nodes in the grid
 
-  double **quat0c;              // initial quaternion conjugate of each rigid body
+  double **quatd2g;             // quaternion that rotates from diagonal to grid frame for each rigid body
 
   double **global_grids;
   double *grid_scale;

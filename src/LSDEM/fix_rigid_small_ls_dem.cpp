@@ -244,13 +244,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
     if (inpfile) {
       read_gridfile_names(gridfiles);
-      for (i = 0; i < atom->nlocal; i++) {
-        ibody = atom2body[i];
-        xcom[i][0] = body[ibody].xcm[0];
-        xcom[i][1] = body[ibody].xcm[1];
-        xcom[i][2] = body[ibody].xcm[2];
-      }
-
     } else {
       Molecule *onemol;
       for (i = 0; i < atom->nlocal; i++) {
@@ -263,9 +256,9 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         bodyLS[ibody].grid_style = onemol->grid_style;
         bodyLS[ibody].grid_scale = onemol->grid_scale;
         body[ibody].mass = onemol->masstotal;
-        body[ibody].xcm[0] = onemol->com_external[0];
-        body[ibody].xcm[1] = onemol->com_external[1];
-        body[ibody].xcm[2] = onemol->com_external[2];
+        body[ibody].xcm[0] = xcom[i][0];
+        body[ibody].xcm[1] = xcom[i][1];
+        body[ibody].xcm[2] = xcom[i][2];
       }
 
       for (ibody = 0; ibody < nbody; ibody++)
@@ -430,8 +423,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         //   were correctly performed s.t. all atoms have equivalent initial quaterions
         iatom = body[ibody].ilocal;
 
-        MathExtra::qconjugate(body[ibody].quat, bodyLS[ibody].quat0c);
-        MathExtra::quatquat(quat_atom[iatom], bodyLS[ibody].quat0c, bodyLS[ibody].quat0c);
+        MathExtra::qconjugate(body[ibody].quat, quat_conj);
+        MathExtra::quatquat(quat_conj, quat_atom[iatom], bodyLS[ibody].quatd2g);
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         area = compute_surface_area(dimension, bodyLS[ibody].grid_size, bodyLS[ibody].grid_stride, temp_grid_values);
@@ -495,17 +488,16 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
           // Location of atom/node relative to CoM
           double dx[3];
-          dx[0] = x[i][0] - xcom[i][0];
-          dx[1] = x[i][1] - xcom[i][1];
-          dx[2] = x[i][2] - xcom[i][2];
+          dx[0] = x[i][0] - body[ibody].xcm[0];
+          dx[1] = x[i][1] - body[ibody].xcm[1];
+          dx[2] = x[i][2] - body[ibody].xcm[2];
 
           // Account for PBCs
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
-          // Rotate to body frame
+          // Rotate to LS frame (for now, just the atomic quaternion)
           double quat_temp[4];
-          MathExtra::quatquat(body[ibody].quat, bodyLS[ibody].quat0c, quat_temp);
-          MathExtra::qconjugate(quat_temp, quat_conj);
+          MathExtra::qconjugate(quat_atom[i], quat_conj);
           MathExtra::quatrotvec(quat_conj, dx, dx_local);
 
           // Location of atom/node relative to entire grain grid minimum.
@@ -557,7 +549,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           }
 
           if (need_padding)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
+            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, atom->tag[i]);
         }
       }
     }
@@ -625,15 +617,8 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
     grain_com[i][1] = b->xcm[1];
     grain_com[i][2] = b->xcm[2];
 
-    grain_quat[i][0] = b->quat[0];
-    grain_quat[i][1] = b->quat[1];
-    grain_quat[i][2] = b->quat[2];
-    grain_quat[i][3] = b->quat[3];
-
-    // Overwrite parent-class calculated quaternion with that relative to LS grid
-    //   rotate current orientation, then remove initial orientation
-
-    MathExtra::quatquat(b->quat, bodyLS[ibody].quat0c, grain_quat[i]);
+    // calculate rotation from current orientation to LS grid
+    MathExtra::quatquat(b->quat, bodyLS[ibody].quatd2g, grain_quat[i]);
 
     grain_omega[i][0] = b->omega[0];
     grain_omega[i][1] = b->omega[1];

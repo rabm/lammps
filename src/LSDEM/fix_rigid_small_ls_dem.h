@@ -66,7 +66,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     double grid_vol;       // volume of LS grid
     double node_area;      // area associated with each grid node
     double grid_min[3];    // minimum xyz coordinates of LS grid
-    double quat0c[4];      // initial quaternion conjugate of each rigid body
+    double quatd2g[4];     // quaternion that rotates from digagonal to grid frame for each rigid body
   };
 
   inline int* get_atom2body_array() { return atom2body; };

@@ -57,7 +57,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr),
     grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr),
-    grid_nnodes(nullptr), quat0c(nullptr)
+    grid_nnodes(nullptr), quatd2g(nullptr)
 {
   comm_forward = 1;
   maxcut = -1;
@@ -78,7 +78,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(grid_nnodes, nbody, "rigid/ls/dem:grid_nnodes");
-  memory->create(quat0c, nbody, 4, "rigid/ls/dem:quat0c");
+  memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
@@ -106,7 +106,7 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_vol);
   memory->destroy(node_area);
   memory->destroy(grid_nnodes);
-  memory->destroy(quat0c);
+  memory->destroy(quatd2g);
 
   // delete global memory data
 
@@ -251,7 +251,7 @@ void FixRigidLSDEM::init()
 
     int need_distributed, need_global, need_padding, nx, ny, nz, ix_node, iy_node, iz_node;
     int ix_global, iy_global, iz_global, index_global, index_local, index_grid_min_local[3];
-    double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3], cross[3];
+    double temp[3], com_temp[3], quat_conj[4], inertia_temp[3][3], evectors[3][3], cross[3];
     double delx, dely, delz, area, density, scale, scale2, scale3;
     for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
       filename = pair.first;
@@ -336,8 +336,8 @@ void FixRigidLSDEM::init()
         for (iatom = 0; iatom < atom->nlocal; iatom++)
           if (body[iatom] == ibody) break;
 
-        MathExtra::qconjugate(quat[ibody], quat0c[ibody]);
-        MathExtra::quatquat(quat_atom[iatom], quat0c[ibody], quat0c[ibody]);
+        MathExtra::qconjugate(quat[ibody], quat_conj);
+        MathExtra::quatquat(quat_conj, quat_atom[iatom], quatd2g[ibody]);
 
         // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
         area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
@@ -407,7 +407,7 @@ void FixRigidLSDEM::init()
           // Account for PBCs
           domain->minimum_image(FLERR, delx, dely, delz);
 
-          // Rotate to LS frame (now just the atomic quaternion)
+          // Rotate to LS frame (for now, just the atomic quaternion)
           double quat_conj[4];
           MathExtra::qconjugate(quat_atom[i], quat_conj);
           MathExtra::quatrotvec(quat_conj, dx, dx_local);
@@ -461,7 +461,7 @@ void FixRigidLSDEM::init()
           }
 
           if (need_padding)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, i);
+            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, atom->tag[i]);
         }
       }
     }
@@ -544,10 +544,8 @@ void FixRigidLSDEM::initial_integrate(int vflag)
     grain_com[i][1] = xcm[ibody][1];
     grain_com[i][2] = xcm[ibody][2];
 
-    // Overwrite parent-class calculated quaternion with that relative to LS grid
-    //   rotate current orientation, then remove initial orientation
-
-    MathExtra::quatquat(quat[ibody], quat0c[ibody], grain_quat[i]);
+    // calculate rotation from current orientation to LS grid
+    MathExtra::quatquat(quat[ibody], quatd2g[ibody], grain_quat[i]);
 
     grain_omega[i][0] = omega[ibody][0];
     grain_omega[i][1] = omega[ibody][1];
