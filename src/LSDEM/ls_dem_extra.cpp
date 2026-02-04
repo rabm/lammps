@@ -226,7 +226,7 @@ double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int n
 
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ((ind_x < 0 || ind_x >= (nrow - 1)) || (ind_y < 0 || ind_y >= (ncol - 1)) ||
+  if ((ind_x < 0 || ind_x >= (ncol - 1)) || (ind_y < 0 || ind_y >= (nrow - 1)) ||
       ((dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
     return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
 
