@@ -656,8 +656,13 @@ void FixPour::pre_exchange()
           atom->radius[n] = radtmp;
           atom->rmass[n] = 4.0 * MY_PI / 3.0 * radtmp * radtmp * radtmp * denstmp;
         } else {
-          onemols[imol]->quat_external = quat;
-          onemols[imol]->com_external = coord;
+          onemols[imol]->quat_external[0] = quat[0];
+          onemols[imol]->quat_external[1] = quat[1];
+          onemols[imol]->quat_external[2] = quat[2];
+          onemols[imol]->quat_external[3] = quat[3];
+          onemols[imol]->com_external[0] = coord[0];
+          onemols[imol]->com_external[1] = coord[1];
+          onemols[imol]->com_external[2] = coord[2];
           atom->add_molecule_atom(onemols[imol], m, n, maxtag_all);
         }
 

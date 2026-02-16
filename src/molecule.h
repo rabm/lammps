@@ -132,9 +132,9 @@ class Molecule : protected Pointers {
   double **dxbody;    // displacement of each atom relative to COM
                       // in body frame (diagonalized interia tensor)
 
-  double *quat_external;    // orientation imposed by external class
+  double quat_external[4];  // orientation imposed by external class
                             // e.g. FixPour or CreateAtoms
-  double *com_external;     // COM position imposed by external class
+  double com_external[3];   // COM position imposed by external class
 
   Molecule(class LAMMPS *);
   ~Molecule() override;

@@ -570,8 +570,13 @@ void FixDeposit::pre_exchange()
         atom->v[n][1] = vnew[1];
         atom->v[n][2] = vnew[2];
         if (mode == MOLECULE) {
-          onemols[imol]->quat_external = quat;
-          onemols[imol]->com_external = coord;
+          onemols[imol]->quat_external[0] = quat[0];
+          onemols[imol]->quat_external[1] = quat[1];
+          onemols[imol]->quat_external[2] = quat[2];
+          onemols[imol]->quat_external[3] = quat[3];
+          onemols[imol]->com_external[0] = coord[0];
+          onemols[imol]->com_external[1] = coord[1];
+          onemols[imol]->com_external[2] = coord[2];
           atom->add_molecule_atom(onemols[imol],m,n,maxtag_all);
         }
         modify->create_attribute(n);

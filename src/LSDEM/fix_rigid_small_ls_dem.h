@@ -55,18 +55,18 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double memory_usage() override;
 
   struct BodyLS {
+    // These are only needed by local bodies
     int ilocal;            // index of owning atom, duplicate from Body
-    int style;             // distributed vs. global memory
-    int grid_index;        // index of body's global memory, -1 if distributed
-    int grid_size[3];      // size of each grid
-    int grid_style;        // grid storage style
-    int grid_nnodes;       // number of nodes in grid
-    double grid_scale;     // scale factor for grid values
-    double grid_stride;    // the LS grid stride, assumed equal in all direction
+    int file_id;           // integer id of file
     double grid_vol;       // volume of LS grid
     double node_area;      // area associated with each grid node
-    double grid_min[3];    // minimum xyz coordinates of LS grid
-    double quatd2g[4];     // quaternion that rotates from digagonal to grid frame for each rigid body
+
+    // These are needed by local + ghost bodies
+    int style;             // style of memory, GLOBAL or distributed
+    int grid_index;        // index of body's global memory
+    double grid_scale;     // scale factor for grid values, only needed for GLOBAL
+    double grid_stride;    // the LS grid stride, assumed equal in all direction
+    double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
   };
 
   inline int* get_atom2body_array() { return atom2body; };
@@ -77,14 +77,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
  protected:
   int stored_flag, distributed_flag;
-  int comm_flag2;
+  int commflag_ls;
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;
 
-  int index_grid_values;
-  int index_grid_min;
-
-  double **global_grids;
   double maxcut, warncut;
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension
@@ -100,13 +96,40 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   int *bodyownLS;           // mirror of bodyown
 
+  // pointers for per-atom distributed quantities
+
+  int index_grid_values;
+  int index_grid_min;
+
+  // arrays for global quantities
+
+  double **global_grids;
+  int **global_grids_size;
+  double **global_grids_min;
+
+  // LS grid file data
+
+  struct LSData {
+    int id;                     // integer ID for the grid
+    int grid_index;             // index of grid in global storage
+    int style;                  // memory style
+    double stride;              // stride used in LS
+    double grid_min[3];         // minimum LS grid point
+    int grid_size[3];           // size of LS grid
+    std::vector<tagint> bodies; // bodies using this data in the infile
+    std::vector<double> scales; // scales for each body in the infile
+  };
+
+  std::map<std::string, LSData> gridfile_data;
+  std::map<int, std::string> id_to_gridfile;
+  std::map<std::string, int> gridfile_to_id;
+
   // local methods
 
   void compute_forces_and_torques() override;
-  void preread_gridfile_names(std::map<std::string, double> &);
-  double preread_gridfile(std::string);
-  void read_gridfile_names(char **);
-  void read_gridfile(int, int, std::string, double *);
+  void compute_grain_properties(int, int*, double*, double*);
+  void read_infile();
+  void read_gridfile(int, std::string, double *);
   void grow_body_ls();
 };
 

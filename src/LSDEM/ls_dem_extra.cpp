@@ -21,6 +21,8 @@
 #include <cmath>
 #include <vector>
 
+#include <cstdio>
+
 using namespace LAMMPS_NS;
 using namespace MathConst;
 using namespace RigidLSDEMConst;

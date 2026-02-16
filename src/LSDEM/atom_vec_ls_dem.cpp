@@ -44,7 +44,7 @@ AtomVecLSDEM::AtomVecLSDEM(LAMMPS *lmp) : AtomVec(lmp)
   fields_reverse = {"torque"};
   fields_border = {"molecule"};
   fields_border_vel = {"molecule", "xcom", "quat", "omega"};
-  fields_exchange = {"molecule", "grid_index"};
+  fields_exchange = {"molecule", "xcom", "quat", "grid_index"};
   fields_restart = {"molecule", "grid_index"};
   fields_create = {"molecule", "xcom", "quat", "omega", "grid_index"};
   fields_data_atom = {"id", "molecule", "type", "x"};

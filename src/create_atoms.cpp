@@ -881,6 +881,10 @@ void CreateAtoms::add_random()
           if (comm->me == 0) get_xmol(xone);
           MPI_Bcast(&xmol[0][0], onemol->natoms * 3, MPI_DOUBLE, 0, world);
 
+          // forward external com/quat data in case needed
+          MPI_Bcast(onemol->quat_external, 4, MPI_DOUBLE, 0, world);
+          MPI_Bcast(onemol->com_external, 3, MPI_DOUBLE, 0, world);
+
           for (int i = 0; i < nlocal; i++) {
             for (int j = 0; j < onemol->natoms; j++) {
               delx = xmol[j][0] - x[i][0];
@@ -1573,8 +1577,13 @@ void CreateAtoms::get_xmol(double *center)
   // onemol->quat_external is used by atom->add_molecule_atom()
   //   ditto for com position
 
-  onemol->quat_external = quatone;
-  onemol->com_external = center;
+  onemol->quat_external[0] = quatone[0];
+  onemol->quat_external[1] = quatone[1];
+  onemol->quat_external[2] = quatone[2];
+  onemol->quat_external[3] = quatone[3];
+  onemol->com_external[0] = center[0];
+  onemol->com_external[1] = center[1];
+  onemol->com_external[2] = center[2];
 
   int natoms = onemol->natoms;
   double xnew[3];
