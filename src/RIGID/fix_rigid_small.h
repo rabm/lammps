@@ -68,8 +68,6 @@ class FixRigidSmall : public Fix {
   double compute_scalar() override;
   double memory_usage() override;
 
-  int nlocal_body;    // # of owned rigid bodies
-  int nghost_body;    // # of ghost rigid bodies
  protected:
   double dtv, dtf, dtq;
   double *step_respa;
@@ -109,6 +107,8 @@ class FixRigidSmall : public Fix {
   };
 
   Body *body;         // list of rigid bodies, owned and ghost
+  int nlocal_body;    // # of owned rigid bodies
+  int nghost_body;    // # of ghost rigid bodies
   int nmax_body;      // max # of bodies that body can hold
   int bodysize;       // sizeof(Body) in doubles
 
