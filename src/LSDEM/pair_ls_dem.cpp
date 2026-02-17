@@ -36,6 +36,10 @@ static constexpr double EPSILON = 1e-12;
 using namespace LAMMPS_NS;
 using namespace MathConst;
 
+//TODO:
+//  add checks for key overlfow
+//  add checks to rigid/small/ls/dem nbodies < 2bil (or generalize)
+
 /* ---------------------------------------------------------------------- */
 
 PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), etan(nullptr), etat(nullptr), cut(nullptr),
@@ -73,8 +77,9 @@ PairLSDEM::~PairLSDEM()
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
-  int i, j, ii, jj, key, allnum, inum, jnum, itype, jtype, ibody, jbody;
+  int i, j, ii, jj, allnum, inum, jnum, itype, jtype, ibody, jbody;
   tagint itag, jtag;
+  long key;
   double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
@@ -117,9 +122,10 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Grain quantities
   double **grain_com = atom->xcom;
   double **grain_omega = atom->omega;
-  std::unordered_map<int, std::pair<int, double>> min_distances;
+  std::unordered_map<long, std::pair<int, double>> min_distances;
 
   int *mybody, nbody;
+  tagint *mybody2;
   double *grain_vol, *node_area;
   FixRigidSmallLSDEM::BodyLS *bodyLS;
   if (fix_rigid) { // How is nbody updated during fix pour?
@@ -128,9 +134,9 @@ void PairLSDEM::compute(int eflag, int vflag)
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
   } else {
-    mybody = fix_rigid_small->get_atom2body_array();
+    mybody2 = atom->molecule;
     bodyLS = fix_rigid_small->get_bodyLS_array();
-    nbody = fix_rigid_small->get_nbody();
+    nbody = fix_rigid_small->get_maxmol();
   }
 
   inum = list->inum;
@@ -147,7 +153,10 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    ibody = mybody[i];
+    if (fix_rigid)
+      ibody = mybody[i];
+    else
+      ibody = (int) mybody2[i];
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -162,7 +171,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      jbody = mybody[j];
+      if (fix_rigid)
+        jbody = mybody[j];
+      else
+        jbody = (int) mybody2[j];
       jtag = tag[j];
 
       // Separation distance between the two nodes
@@ -214,7 +226,10 @@ void PairLSDEM::compute(int eflag, int vflag)
     vyitmp = v[i][1];
     vzitmp = v[i][2];
     itype = type[i];
-    ibody = mybody[i];
+    if (fix_rigid)
+      ibody = mybody[i];
+    else
+      ibody = (int) mybody2[i];
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
@@ -247,7 +262,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
-      jbody = mybody[j];
+      if (fix_rigid)
+        jbody = mybody[j];
+      else
+        jbody = (int) mybody2[j];
       jtag = tag[j];
       jtype = type[j];
       jcomx = grain_com[j][0];
@@ -418,8 +436,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
         if (touch_id[i] != jbody) {
           if (comm->me == 0) {
-            error->warning(FLERR, "Shear history of node on grain {} penetrating {} cannot be computed at step {}",
-              ibody, jbody, update->ntimestep);
+            error->warning(FLERR, "Shear history of node {} on grain {} penetrating node {} on {} cannot be computed at step {}",
+              tag[i], ibody, tag[j], jbody, update->ntimestep);
           }
         }
       } else {
@@ -428,8 +446,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         }
         if (touch_id[j] != ibody) {
           if (comm->me == 0) {
-            error->warning(FLERR, "Shear history of node on grain {} penetrating {} cannot be computed at step {}",
-              jbody, ibody, update->ntimestep);
+            error->warning(FLERR, "Shear history of node {} on grain {} penetrating node {} on {} cannot be computed at step {}",
+              tag[j], jbody, tag[i], ibody, update->ntimestep);
           }
         }
       }

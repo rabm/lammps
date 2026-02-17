@@ -692,6 +692,7 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
   //TODO: modify to update LSDEM properties
   //   note that all global grids should be stored since molecules defined in advance
   //   need mechanism to store grids before distribution... or just require global grids for pouring
+  //   need to update maxmol for pair ls/dem
 
   error->one(FLERR, "Molecule insertion not yet supported for fix rigid/small/ls/dem");
 

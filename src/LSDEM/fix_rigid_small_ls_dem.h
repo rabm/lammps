@@ -69,8 +69,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
   };
 
-  inline int* get_atom2body_array() { return atom2body; };
-  inline int get_nbody() { return nbody; };
+  inline int get_maxmol() { return maxmol; };
   inline BodyLS* get_bodyLS_array() { return bodyLS; };
 
   double get_ls_value(int, int, double*);
