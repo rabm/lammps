@@ -325,7 +325,6 @@ void PairLSDEM::compute(int eflag, int vflag)
           u = - fix_rigid_small->get_ls_value(j, i, normal);
       }
 
-
       // No adhesion, cohesion, or ranged forces.
       if (u <= 0) {
         // Reset shear force if no contact

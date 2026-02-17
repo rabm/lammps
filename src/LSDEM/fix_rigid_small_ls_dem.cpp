@@ -339,6 +339,12 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       bodyLS[ibody].grid_stride = mydata.stride;
     }
 
+    // Send to ghosts
+    nghost_bodyLS = 0;
+    commflag_ls = FULL_BODY_LS;
+    comm->forward_comm(this, 1 + bodysizeLS);
+    commflag_ls = PARENT;
+
     // ------------------------------- //
     // Read + process LS grid data     //
     // ------------------------------- //
@@ -449,7 +455,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
                 if (ix_global < 0 || ix_global >= nx[0] ||
                     iy_global < 0 || iy_global >= nx[1] ||
                     iz_global < 0 || iz_global >= nx[2]) {
-                  need_padding = 1;
+                  need_padding += 1;
                   grid_values[i][index_local] = BIG;
                 } else {
                   // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
@@ -462,8 +468,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
             }
           }
 
-          if (need_padding)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, atom->tag[i]);
+          if (need_padding == 1 && comm->me == 0)
+            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
         }
       }
     }
