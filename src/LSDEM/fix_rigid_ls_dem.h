@@ -64,7 +64,6 @@ class FixRigidLSDEM : public FixRigid {
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
   double *grid_vol;
   double *node_area;
-  int *grid_nnodes;             // the number of nodes in the grid
 
   double **quatd2g;             // quaternion that rotates from diagonal to grid frame for each rigid body
 
@@ -75,7 +74,7 @@ class FixRigidLSDEM : public FixRigid {
 
   void compute_forces_and_torques() override;
   void read_gridfile(int, int, std::string, int **, double *);
-  void read_gridfile_names(char **);
+  void read_infile(char **);
 };
 
 }    // namespace LAMMPS_NS

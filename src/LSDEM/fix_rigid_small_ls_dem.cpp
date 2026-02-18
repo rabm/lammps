@@ -153,6 +153,7 @@ void FixRigidSmallLSDEM::init()
   maxcut = pair->maxcut;
 
   if (stored_flag) return;
+  // set in setup_pre_neighbor()
 
   // Create complete list of LS gridfile names and data
   //   run in init b/c need to calculate size for fix property/atom
@@ -240,6 +241,9 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
   FixRigidSmall::setup_pre_neighbor();
 
+  if (stored_flag) return;
+  stored_flag = 1;
+
   // compared to rigid/ls/dem, need to wait until atom2body made
 
   int ibody, i, a;
@@ -254,260 +258,255 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
   double **x = atom->x;
   LSData mydata;
 
-  if (!stored_flag) {
-    stored_flag = 1;
+  // -------------------------------- //
+  // Calc memory info for level sets  //
+  // -------------------------------- //
 
-    // -------------------------------- //
-    // Calc memory info for level sets  //
-    // -------------------------------- //
+  // Find max grid size and location+size of all globally stored grids
+  int *ntotal_global;
+  memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
 
-    // Find max grid size and location+size of all globally stored grids
-    int *ntotal_global;
-    memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
+  std::string gridfile;
+  int index_global_grid, grid_size_flat, max_grid_size_flat;
+  index_global_grid = max_grid_size_flat = 0;
+  for (const auto& pair : gridfile_data) {
+    gridfile = pair.first;
 
-    std::string gridfile;
-    int index_global_grid, grid_size_flat, max_grid_size_flat;
-    index_global_grid = max_grid_size_flat = 0;
-    for (const auto& pair : gridfile_data) {
-      gridfile = pair.first;
+    grid_size_flat = gridfile_data[gridfile].grid_size[0];
+    grid_size_flat *= gridfile_data[gridfile].grid_size[1];
+    grid_size_flat *= gridfile_data[gridfile].grid_size[2];
+    max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
 
-      grid_size_flat = gridfile_data[gridfile].grid_size[0];
-      grid_size_flat *= gridfile_data[gridfile].grid_size[1];
-      grid_size_flat *= gridfile_data[gridfile].grid_size[2];
-      max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
-
-      if (gridfile_data[gridfile].style == GLOBAL) {
-        gridfile_data[gridfile].grid_index = index_global_grid;
-        ntotal_global[index_global_grid] = grid_size_flat;
-        index_global_grid += 1;
-      } else {
-        gridfile_data[gridfile].grid_index = -1;
-      }
-    }
-
-    // ------------------------------- //
-    // Copy data to body + bodyLS      //
-    // ------------------------------- //
-
-    for (i = 0; i < atom->nlocal; i++)
-      touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
-
-    // Copy body geometry + infile data into body structure
-    if (inpfile) {
-      tagint myid;
-      for (int i = 0; i < atom->nlocal; i++) {
-        if (bodyown[i] < 0) continue;
-        myid = molecule[i];
-        ibody = atom2body[i];
-
-        // check all bodies in infile to find match, O(nlocal_body x nbody)
-        //   only done once and presumably nbody small if using infile
-        for (const auto& pair : gridfile_data) {
-          gridfile = pair.first;
-          mydata = pair.second;
-          for (int j = 0; j < mydata.bodies.size(); j++) {
-            if (mydata.bodies[j] == myid) {
-              bodyLS[ibody].file_id = mydata.id;
-              bodyLS[ibody].grid_scale = mydata.scales[j];
-            }
-          }
-        }
-      }
+    if (gridfile_data[gridfile].style == GLOBAL) {
+      gridfile_data[gridfile].grid_index = index_global_grid;
+      ntotal_global[index_global_grid] = grid_size_flat;
+      index_global_grid += 1;
     } else {
-      Molecule *onemol;
-      for (i = 0; i < atom->nlocal; i++) {
-        if (bodyownLS[i] == -1) continue;
-        onemol = atom->molecules[grid_index[i]];
-        ibody = atom2body[i];
-        bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
-        bodyLS[ibody].style = onemol->grid_style;
-        bodyLS[ibody].grid_scale = onemol->grid_scale;
-        body[ibody].mass = onemol->masstotal;
-        body[ibody].xcm[0] = xcom[i][0];
-        body[ibody].xcm[1] = xcom[i][1];
-        body[ibody].xcm[2] = xcom[i][2];
-      }
-    }
-
-    // Copy gridfile extra data to bodyLS structure
-    for (int i = 0; i < atom->nlocal; i++) {
-      if (bodyown[i] < 0) continue;
-      ibody = atom2body[i];
-      mydata = gridfile_data[id_to_gridfile[bodyLS[ibody].file_id]];
-      bodyLS[ibody].grid_index = mydata.grid_index;
-      bodyLS[ibody].style = mydata.style;
-      bodyLS[ibody].grid_stride = mydata.stride;
-    }
-
-    // Send to ghosts
-    nghost_bodyLS = 0;
-    commflag_ls = FULL_BODY_LS;
-    comm->forward_comm(this, 1 + bodysizeLS);
-    commflag_ls = PARENT;
-
-    // ------------------------------- //
-    // Read + process LS grid data     //
-    // ------------------------------- //
-
-    double *temp_grid_values;
-    memory->create(temp_grid_values, max_grid_size_flat, "rigid/small/ls/dem:temp_grid_values");
-
-    double **grid_values, **grid_min_local;
-    if (distributed_flag) {
-      grid_values = atom->darray[index_grid_values];
-      grid_min_local = atom->darray[index_grid_min];
-    }
-
-    if (index_global_grid) {
-      memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
-      memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
-      memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
-    }
-
-    int need_padding, index_local, index_global;
-    int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
-    double stride, dx[3], dx_local[3], quat_conj[4], gmin[3];
-    for (const auto& pair : gridfile_data) {
-      gridfile = pair.first;
-
-      read_gridfile(1, gridfile, temp_grid_values);
-
-      // Compute grain properties (volume, area, inertia...) for each body using this grid
-      for (ibody = 0; ibody < nlocal_body; ibody++) {
-        if (pair.second.id != bodyLS[ibody].file_id)
-          continue;
-        compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
-      }
-
-      if (gridfile_data[gridfile].style == GLOBAL) {
-        index_global_grid = gridfile_data[gridfile].grid_index;
-        for (int n = 0; n < ntotal_global[index_global_grid]; n++) {
-          // Unscaled grid values (and mins) of grains stored globally to avoid duplicating memory
-          global_grids[index_global_grid][n] = temp_grid_values[n];
-        }
-
-        global_grids_min[index_global_grid][0] = gridfile_data[gridfile].grid_min[0];
-        global_grids_min[index_global_grid][1] = gridfile_data[gridfile].grid_min[1];
-        global_grids_min[index_global_grid][2] = gridfile_data[gridfile].grid_min[2];
-
-        global_grids_size[index_global_grid][0] = gridfile_data[gridfile].grid_size[0];
-        global_grids_size[index_global_grid][1] = gridfile_data[gridfile].grid_size[1];
-        global_grids_size[index_global_grid][2] = gridfile_data[gridfile].grid_size[2];
-      } else {
-
-        for (i = 0; i < atom->nlocal; i++) {
-          ibody = atom2body[i];
-
-          // Ideally would have list of all atoms in a rigid body... not sure if exists...
-          if (pair.second.id != bodyLS[ibody].file_id)
-            continue;
-
-          need_padding = 0;
-
-          nx[0] = gridfile_data[gridfile].grid_size[0];
-          nx[1] = gridfile_data[gridfile].grid_size[1];
-          nx[2] = gridfile_data[gridfile].grid_size[2];
-
-          gmin[0] = gridfile_data[gridfile].grid_min[0] * bodyLS[ibody].grid_scale;
-          gmin[1] = gridfile_data[gridfile].grid_min[1] * bodyLS[ibody].grid_scale;
-          gmin[2] = gridfile_data[gridfile].grid_min[2] * bodyLS[ibody].grid_scale;
-
-          // Location of atom/node relative to CoM
-          MathExtra::sub3(x[i], body[ibody].xcm, dx);
-
-          // Account for PBCs
-          domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
-
-          // Rotate to LS frame (for now, just the atomic quaternion)
-          MathExtra::qconjugate(quat_atom[i], quat_conj);
-          MathExtra::quatrotvec(quat_conj, dx, dx_local);
-
-          // Location of atom/node relative to entire grain grid minimum.
-          MathExtra::sub3(dx_local, gmin, dx_local);
-
-          // Index of atom/node in entire grain grid.
-          stride = bodyLS[ibody].grid_stride;
-          ix_node[0] = int(dx_local[0] / stride);
-          ix_node[1] = int(dx_local[1] / stride);
-          ix_node[2] = int(dx_local[2] / stride);
-
-          // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
-          index_grid_min_local[0] = ix_node[0] - rcell;
-          index_grid_min_local[1] = ix_node[1] - rcell;
-          index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
-
-          // Location of local grid minimum relative to CoM
-          grid_min_local[i][0] = index_grid_min_local[0] * stride + gmin[0];
-          grid_min_local[i][1] = index_grid_min_local[1] * stride + gmin[1];
-          grid_min_local[i][2] = index_grid_min_local[2] * stride + gmin[2];
-
-          for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
-            for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
-              for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
-                index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
-
-                // Shift local cell to global cell
-                ix_global = ix_local + index_grid_min_local[0];
-                iy_global = iy_local + index_grid_min_local[1];
-                iz_global = iz_local + index_grid_min_local[2];
-
-                // Explicit bounds check per dimension (safer and clearer)
-                if (ix_global < 0 || ix_global >= nx[0] ||
-                    iy_global < 0 || iy_global >= nx[1] ||
-                    iz_global < 0 || iz_global >= nx[2]) {
-                  need_padding += 1;
-                  grid_values[i][index_local] = BIG;
-                } else {
-                  // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
-                  index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
-                  if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
-                    error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
-                  grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
-                }
-              }
-            }
-          }
-
-          if (need_padding == 1 && comm->me == 0)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
-        }
-      }
-    }
-
-    memory->destroy(temp_grid_values);
-    memory->destroy(ntotal_global);
-
-    // resend full body info with new body properies (e.g. inertia)
-    nghost_body = 0;
-    commflag = FULL_BODY;
-    comm->forward_comm(this);
-
-    nghost_bodyLS = 0;
-    commflag_ls = FULL_BODY_LS;
-    comm->forward_comm(this, 1 + bodysizeLS);
-    commflag_ls = PARENT;
-
-    reset_atom2body();
-
-    // Redefine displace - initial atom coords in basis of principal axes - with new inertia/exspace values
-    //   copy of calculations from FixSmallRigid::setup_bodies_static()
-
-    int *periodicity = domain->periodicity;
-    double delta[3], unwrap[3];
-    for (i = 0; i < atom->nlocal; i++) {
-      if (atom2body[i] < 0) continue;
-
-      Body *b = &body[atom2body[i]];
-
-      domain->unmap(x[i], xcmimage[i], unwrap);
-      delta[0] = unwrap[0] - b->xcm[0];
-      delta[1] = unwrap[1] - b->xcm[1];
-      delta[2] = unwrap[2] - b->xcm[2];
-      MathExtra::transpose_matvec(b->ex_space, b->ey_space, b->ez_space,
-                                delta, displace[i]);
+      gridfile_data[gridfile].grid_index = -1;
     }
   }
 
+  // ------------------------------- //
+  // Copy data to body + bodyLS      //
+  // ------------------------------- //
+
+  for (i = 0; i < atom->nlocal; i++)
+    touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
+
+  // Copy body geometry + infile data into body structure
+  if (inpfile) {
+    tagint myid;
+    for (int i = 0; i < atom->nlocal; i++) {
+      if (bodyown[i] < 0) continue;
+      myid = molecule[i];
+      ibody = atom2body[i];
+
+      // check all bodies in infile to find match, O(nlocal_body x nbody)
+      //   only done once and presumably nbody small if using infile
+      for (const auto& pair : gridfile_data) {
+        gridfile = pair.first;
+        mydata = pair.second;
+        for (int j = 0; j < mydata.bodies.size(); j++) {
+          if (mydata.bodies[j] == myid) {
+            bodyLS[ibody].file_id = mydata.id;
+            bodyLS[ibody].grid_scale = mydata.scales[j];
+          }
+        }
+      }
+    }
+  } else {
+    Molecule *onemol;
+    for (i = 0; i < atom->nlocal; i++) {
+      if (bodyownLS[i] == -1) continue;
+      onemol = atom->molecules[grid_index[i]];
+      ibody = atom2body[i];
+      bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
+      bodyLS[ibody].style = onemol->grid_style;
+      bodyLS[ibody].grid_scale = onemol->grid_scale;
+      body[ibody].mass = onemol->masstotal;
+      body[ibody].xcm[0] = xcom[i][0];
+      body[ibody].xcm[1] = xcom[i][1];
+      body[ibody].xcm[2] = xcom[i][2];
+    }
+  }
+
+  // Copy gridfile extra data to bodyLS structure
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (bodyown[i] < 0) continue;
+    ibody = atom2body[i];
+    mydata = gridfile_data[id_to_gridfile[bodyLS[ibody].file_id]];
+    bodyLS[ibody].grid_index = mydata.grid_index;
+    bodyLS[ibody].style = mydata.style;
+    bodyLS[ibody].grid_stride = mydata.stride;
+  }
+
+  // Send to ghosts
+  nghost_bodyLS = 0;
+  commflag_ls = FULL_BODY_LS;
+  comm->forward_comm(this, 1 + bodysizeLS);
+  commflag_ls = PARENT;
+
+  // ------------------------------- //
+  // Read + process LS grid data     //
+  // ------------------------------- //
+
+  double *temp_grid_values;
+  memory->create(temp_grid_values, max_grid_size_flat, "rigid/small/lsdem:temp_grid_values");
+
+  double **grid_values, **grid_min_local;
+  if (distributed_flag) {
+    grid_values = atom->darray[index_grid_values];
+    grid_min_local = atom->darray[index_grid_min];
+  }
+
+  if (index_global_grid) {
+    memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
+    memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
+    memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
+  }
+
+  int need_padding, index_local, index_global;
+  int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
+  double stride, dx[3], dx_local[3], quat_conj[4], gmin[3];
+  for (const auto& pair : gridfile_data) {
+    gridfile = pair.first;
+
+    read_gridfile(1, gridfile, temp_grid_values);
+
+    // Compute grain properties (volume, area, inertia...) for each body using this grid
+    for (ibody = 0; ibody < nlocal_body; ibody++) {
+      if (pair.second.id != bodyLS[ibody].file_id)
+        continue;
+      compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
+    }
+
+    if (gridfile_data[gridfile].style == GLOBAL) {
+      index_global_grid = gridfile_data[gridfile].grid_index;
+      for (int n = 0; n < ntotal_global[index_global_grid]; n++) {
+        // Unscaled grid values (and mins) of grains stored globally to avoid duplicating memory
+        global_grids[index_global_grid][n] = temp_grid_values[n];
+      }
+
+      global_grids_min[index_global_grid][0] = gridfile_data[gridfile].grid_min[0];
+      global_grids_min[index_global_grid][1] = gridfile_data[gridfile].grid_min[1];
+      global_grids_min[index_global_grid][2] = gridfile_data[gridfile].grid_min[2];
+
+      global_grids_size[index_global_grid][0] = gridfile_data[gridfile].grid_size[0];
+      global_grids_size[index_global_grid][1] = gridfile_data[gridfile].grid_size[1];
+      global_grids_size[index_global_grid][2] = gridfile_data[gridfile].grid_size[2];
+    } else {
+
+      for (i = 0; i < atom->nlocal; i++) {
+        ibody = atom2body[i];
+
+        // Ideally would have list of all atoms in a rigid body... not sure if exists...
+        if (pair.second.id != bodyLS[ibody].file_id)
+          continue;
+
+        need_padding = 0;
+
+        nx[0] = gridfile_data[gridfile].grid_size[0];
+        nx[1] = gridfile_data[gridfile].grid_size[1];
+        nx[2] = gridfile_data[gridfile].grid_size[2];
+
+        gmin[0] = gridfile_data[gridfile].grid_min[0] * bodyLS[ibody].grid_scale;
+        gmin[1] = gridfile_data[gridfile].grid_min[1] * bodyLS[ibody].grid_scale;
+        gmin[2] = gridfile_data[gridfile].grid_min[2] * bodyLS[ibody].grid_scale;
+
+        // Location of atom/node relative to CoM
+        MathExtra::sub3(x[i], body[ibody].xcm, dx);
+
+        // Account for PBCs
+        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+
+        // Rotate to LS frame (for now, just the atomic quaternion)
+        MathExtra::qconjugate(quat_atom[i], quat_conj);
+        MathExtra::quatrotvec(quat_conj, dx, dx_local);
+
+        // Location of atom/node relative to entire grain grid minimum.
+        MathExtra::sub3(dx_local, gmin, dx_local);
+
+        // Index of atom/node in entire grain grid.
+        stride = bodyLS[ibody].grid_stride;
+        ix_node[0] = int(dx_local[0] / stride);
+        ix_node[1] = int(dx_local[1] / stride);
+        ix_node[2] = int(dx_local[2] / stride);
+
+        // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
+        index_grid_min_local[0] = ix_node[0] - rcell;
+        index_grid_min_local[1] = ix_node[1] - rcell;
+        index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
+
+        // Location of local grid minimum relative to CoM
+        grid_min_local[i][0] = index_grid_min_local[0] * stride + gmin[0];
+        grid_min_local[i][1] = index_grid_min_local[1] * stride + gmin[1];
+        grid_min_local[i][2] = index_grid_min_local[2] * stride + gmin[2];
+
+        for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
+          for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
+            for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
+              index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
+
+              // Shift local cell to global cell
+              ix_global = ix_local + index_grid_min_local[0];
+              iy_global = iy_local + index_grid_min_local[1];
+              iz_global = iz_local + index_grid_min_local[2];
+
+              // Explicit bounds check per dimension (safer and clearer)
+              if (ix_global < 0 || ix_global >= nx[0] ||
+                  iy_global < 0 || iy_global >= nx[1] ||
+                  iz_global < 0 || iz_global >= nx[2]) {
+                need_padding += 1;
+                grid_values[i][index_local] = BIG;
+              } else {
+                // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
+                index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
+                if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
+                  error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
+                grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
+              }
+            }
+          }
+        }
+
+        if (need_padding == 1 && comm->me == 0)
+          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+      }
+    }
+  }
+
+  memory->destroy(temp_grid_values);
+  memory->destroy(ntotal_global);
+
+  // resend full body info with new body properies (e.g. inertia)
+  nghost_body = 0;
+  commflag = FULL_BODY;
+  comm->forward_comm(this);
+
+  nghost_bodyLS = 0;
+  commflag_ls = FULL_BODY_LS;
+  comm->forward_comm(this, 1 + bodysizeLS);
+  commflag_ls = PARENT;
+
+  reset_atom2body();
+
+  // Redefine displace - initial atom coords in basis of principal axes -with new inertia/exspace values
+  //   copy of calculations from FixSmallRigid::setup_bodies_static()
+
+  int *periodicity = domain->periodicity;
+  double delta[3], unwrap[3];
+  for (i = 0; i < atom->nlocal; i++) {
+    if (atom2body[i] < 0) continue;
+
+    Body *b = &body[atom2body[i]];
+
+    domain->unmap(x[i], xcmimage[i], unwrap);
+    delta[0] = unwrap[0] - b->xcm[0];
+    delta[1] = unwrap[1] - b->xcm[1];
+    delta[2] = unwrap[2] - b->xcm[2];
+    MathExtra::transpose_matvec(b->ex_space, b->ey_space, b->ez_space,
+                              delta, displace[i]);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
