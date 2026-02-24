@@ -68,15 +68,13 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
 
-  nmax_bodyLS = 0;
-  while (nmax_bodyLS < nlocal_body) nmax_bodyLS += DELTA_BODY;
+  nmax_bodyLS = nmax_body;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
   memory->grow(bodyownLS, atom->nmax, "rigid/small/ls/dem:bodyownLS");
   for (int i = 0; i < nmax_bodyLS; i++)
     bodyLS[i].style = -1;
-  //atom->add_callback(Atom::GROW);
 
-  // set bodyown for owned atoms
+  // set bodyownLS for owned atoms
 
   tagint *tag = atom->tag;
   nlocal_bodyLS = nghost_bodyLS = 0;
@@ -96,6 +94,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
+
+  // only call FixRigidSmall::setup_bodies_static() once
+  reinitflag = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -226,13 +227,6 @@ void FixRigidSmallLSDEM::init()
     index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
     index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
   }
-
-  for (int i = 0; i < atom->nlocal+atom->nghost; i++) {
-
-    if (bodyown[i] != bodyownLS[i])
-      error->one(FLERR, "different bodies {} vs {} for {} {} / {} tag {}", bodyown[i], bodyownLS[i],comm->me, i, atom->nlocal, atom->tag[i]);
-  }
-
 }
 
 /* ---------------------------------------------------------------------- */
@@ -240,6 +234,13 @@ void FixRigidSmallLSDEM::init()
 void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
   FixRigidSmall::setup_pre_neighbor();
+
+  // Sanity check for agreement with parent
+  for (int i = 0; i < atom->nlocal+atom->nghost; i++) {
+    if (bodyown[i] != bodyownLS[i]) {
+      error->one(FLERR, "Different bodies detected, {} vs {}, for atom {} on processor {}", bodyown[i], bodyownLS[i], atom->tag[i], comm->me);
+    }
+  }
 
   if (stored_flag) return;
   stored_flag = 1;

@@ -81,6 +81,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
+
+  // only call FixRigidSmall::setup_bodies_static() once
+  reinitflag = 0;
 }
 
 /* ---------------------------------------------------------------------- */

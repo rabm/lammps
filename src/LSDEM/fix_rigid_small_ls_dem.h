@@ -27,6 +27,8 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 namespace LAMMPS_NS {
 
 class FixRigidSmallLSDEM : public FixRigidSmall {
+  friend class ComputeRigidLSDEMLocal;
+
  public:
   FixRigidSmallLSDEM(class LAMMPS *, int, char **);
   ~FixRigidSmallLSDEM() override;
