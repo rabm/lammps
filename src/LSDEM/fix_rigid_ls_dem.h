@@ -73,6 +73,7 @@ class FixRigidLSDEM : public FixRigid {
   int rcell;
 
   void compute_forces_and_torques() override;
+  void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);
   void read_infile(char **);
 };

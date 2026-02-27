@@ -245,122 +245,18 @@ void FixRigidLSDEM::init()
   double **x = atom->x;
   double **quat_atom = atom->quat;
 
-  int need_distributed, need_global, need_padding, nx, ny, nz, ix_node,iy_node, iz_node;
-  int ix_global, iy_global, iz_global, index_global, index_local,index_grid_min_local[3];
-  double temp[3], com_temp[3], quat_conj[4], inertia_temp[3][3], evectors[3][3], cross[3];
-  double delx, dely, delz, area, density, scale, scale2, scale3;
+  int need_distributed, need_global, need_padding, index_local, index_global;
+  int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
+  double stride, dx[3], dx_local[3], quat_conj[4];
   for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
 
-    // Compute grain properties per unique grid
+    // Compute grain properties (volume, area, inertia...) for each body using this grid
     for (ibody = 0; ibody < nbody; ibody++) {
       if (pair.second.find(ibody) == pair.second.end())
         continue;
-
-      // Compute properties from the level-set grid
-      grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], temp_grid_values, com_temp, inertia_temp, dimension);
-      if (grid_vol[ibody] < 0)
-        error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
-
-      // Comparing if CoM in level-set grid is indeed aligned with CoM
-      // Misalignment would cause forces/rotations to be applied to the wrong point in space
-      MathExtra::add3(grid_min[ibody], com_temp, temp);
-      if (MathExtra::len3(temp) > (0.5 * grid_stride[ibody])) {
-        error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
-          grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], com_temp[0], com_temp[1], com_temp[2]);
-      }
-
-      // Overwrite inertia, could modify logic (compare or warn) if desired
-
-      // Calculate eigen system of inertia tensor
-      int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
-      if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
-
-      // Set grain orientation based on eigenvectors of inertia tensor
-      for (a = 0; a < 3; a++) {
-        ex_space[ibody][a] = evectors[a][0];
-        ey_space[ibody][a] = evectors[a][1];
-        ez_space[ibody][a] = evectors[a][2];
-      }
-
-      // copy of calculations from FixRigid::setup_bodies_static()
-      // for 2d, ensure that evector along z axis is last
-      // necessary so that quaternion is a simple rotation around +z axis
-      //   or a 180 degree rotation for a -z axis
-      // otherwise richardson() method for a body with a tiny evalue (near-linear)
-      //  may not preserve the correct z-aligned quat and associated evectors
-      //  over time due to round-off accumulation
-
-      if (domain->dimension == 2) {
-        if (fabs(ez_space[ibody][0]) > EPSILON || fabs(ez_space[ibody][1]) > EPSILON) {
-          std::swap(inertia[ibody][1],inertia[ibody][2]);
-          std::swap(ey_space[ibody][0],ez_space[ibody][0]);
-          std::swap(ey_space[ibody][1],ez_space[ibody][1]);
-          std::swap(ey_space[ibody][2],ez_space[ibody][2]);
-        }
-      }
-
-      // if any principal moment < scaled EPSILON, set to 0.0
-
-      double max;
-      max = MAX(inertia[ibody][0],inertia[ibody][1]);
-      max = MAX(max,inertia[ibody][2]);
-
-      if (inertia[ibody][0] < EPSILON*max) inertia[ibody][0] = 0.0;
-      if (inertia[ibody][1] < EPSILON*max) inertia[ibody][1] = 0.0;
-      if (inertia[ibody][2] < EPSILON*max) inertia[ibody][2] = 0.0;
-
-      // enforce 3 evectors as a right-handed coordinate system
-      // flip 3rd vector if needed
-
-      MathExtra::cross3(ex_space[ibody],ey_space[ibody],cross);
-      if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
-        MathExtra::negate3(ez_space[ibody]);
-
-      // create initial quaternion relative to inertial frame
-
-      MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
-                       quat[ibody]);
-
-      // additionally, calculate relative rotation from inerital frame to LS grid
-      //   assume any additional rotations on grains (e.g. by displace_atoms)
-      //   were performed correctly s.t. all atoms have equivalent initial quaterions
-      // Note: do not do something similar for CoM b/c there is no way to save
-      //   atom coordinates before being shifted in read_data. Also, this can be
-      //   achieved easily by just setting the shift in the infile.
-      for (iatom = 0; iatom < atom->nlocal; iatom++)
-        if (body[iatom] == ibody) break;
-
-      MathExtra::qconjugate(quat[ibody], quat_conj);
-      MathExtra::quatquat(quat_conj, quat_atom[iatom], quatd2g[ibody]);
-
-      // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
-      area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], temp_grid_values);
-      // Test for physical realism
-      if (!((area > 0.0) && std::isfinite(area)))
-        error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
-      node_area[ibody] = area;
-
-      // Normalise by number of nodes
-      node_area[ibody] /= nrigid[ibody];
-
-      // Scale all relevant quantities by given scaling of grain size
-      scale = grid_scale[ibody];
-      scale2 = scale * scale;
-      scale3 = scale * scale2;
-      density = masstotal[ibody] / grid_vol[ibody];
-      grid_stride[ibody] *= scale;
-      MathExtra::scale3(scale, grid_min[ibody]);
-      if (dimension == 3) {
-        node_area[ibody] *= scale2;
-        grid_vol[ibody] *= scale3;
-        MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
-      } else {
-        node_area[ibody] *= scale;
-        grid_vol[ibody] *= scale2;
-        MathExtra::scale3(density * scale2 * scale2, inertia[ibody]);
-      }
+      compute_grain_properties(ibody, temp_grid_values, filename);
     }
 
     // Start handling memory of LS grid
@@ -386,43 +282,38 @@ void FixRigidLSDEM::init()
       for (i = 0; i < atom->nlocal; i++) {
         ibody = body[i];
 
-        need_padding = 0;
         if (pair.second.find(ibody) == pair.second.end())
           continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
-        nx = grid_size[ibody][0];
-        ny = grid_size[ibody][1];
-        nz = grid_size[ibody][2];
+        need_padding = 0;
+
+        nx[0] = grid_size[ibody][0];
+        nx[1] = grid_size[ibody][1];
+        nx[2] = grid_size[ibody][2];
 
         // Location of atom/node relative to CoM
-        double dx[3], dx_local[3];
-        dx[0] = x[i][0] - xcm[ibody][0];
-        dx[1] = x[i][1] - xcm[ibody][1];
-        dx[2] = x[i][2] - xcm[ibody][2];
+        MathExtra::sub3(x[i], xcm[ibody], dx);
 
         // Account for PBCs
-        domain->minimum_image(FLERR, delx, dely, delz);
+        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
         // Rotate to LS frame (for now, just the atomic quaternion)
-        double quat_conj[4];
         MathExtra::qconjugate(quat_atom[i], quat_conj);
         MathExtra::quatrotvec(quat_conj, dx, dx_local);
 
         // Location of atom/node relative to entire grain grid minimum.
-        dx_local[0] -= grid_min[ibody][0];
-        dx_local[1] -= grid_min[ibody][1];
-        dx_local[2] -= grid_min[ibody][2];
+        MathExtra::sub3(dx_local, grid_min[ibody], dx_local);
 
         // Index of atom/node in entire grain grid.
-        double stride = grid_stride[ibody];
-        ix_node = int(dx_local[0] / stride);
-        iy_node = int(dx_local[1] / stride);
-        iz_node = int(dx_local[2] / stride);
+        stride = grid_stride[ibody];
+        ix_node[0] = int(dx_local[0] / stride);
+        ix_node[1] = int(dx_local[1] / stride);
+        ix_node[2] = int(dx_local[2] / stride);
 
         // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
-        index_grid_min_local[0] = ix_node - rcell;
-        index_grid_min_local[1] = iy_node - rcell;
-        index_grid_min_local[2] = (dimension == 3) ? iz_node - rcell : 0;
+        index_grid_min_local[0] = ix_node[0] - rcell;
+        index_grid_min_local[1] = ix_node[1] - rcell;
+        index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
 
         // Location of local grid minimum relative to CoM
         grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
@@ -440,15 +331,15 @@ void FixRigidLSDEM::init()
               iz_global = iz_local + index_grid_min_local[2];
 
               // Explicit bounds check per dimension (safer and clearer)
-              if (ix_global < 0 || ix_global >= nx ||
-                  iy_global < 0 || iy_global >= ny ||
-                  iz_global < 0 || iz_global >= nz) {
+              if (ix_global < 0 || ix_global >= nx[0] ||
+                  iy_global < 0 || iy_global >= nx[1] ||
+                  iz_global < 0 || iz_global >= nx[2]) {
                 need_padding = 1;
                 grid_values[i][index_local] = BIG;
               } else {
                 // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
-                index_global = ix_global + iy_global * nx + iz_global * nx * ny;
-                if (index_global < 0 || index_global >= nx * ny * nz)
+                index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
+                if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
                   error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
                 grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
               }
@@ -456,8 +347,8 @@ void FixRigidLSDEM::init()
           }
         }
 
-        if (need_padding)
-          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}. Local grid padded with BIG values", ibody, atom->tag[i]);
+        if (need_padding && comm->me == 0)
+          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
   }
@@ -891,6 +782,124 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
     delete[] buffer;
   }
   if (comm->me == 0) fclose(fp);
+}
+
+/* ----------------------------------------------------------------------
+   Using a full level set, calculate properites of grain
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std::string filename)
+{
+  // Compute properties from the level-set grid
+  int dimension = domain->dimension;
+  double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+
+  grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], grid_values, com_temp, inertia_temp, dimension);
+
+  if (grid_vol[ibody] < 0)
+    error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
+
+  // Comparing if CoM in level-set grid is indeed aligned with CoM
+  // Misalignment would cause forces/rotations to be applied to the wrong point in space
+  MathExtra::add3(grid_min[ibody], com_temp, temp);
+  if (MathExtra::len3(temp) > (0.5 * grid_stride[ibody])) {
+    error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
+      grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], com_temp[0], com_temp[1], com_temp[2]);
+  }
+
+  // Overwrite inertia, could modify logic (compare or warn) if desired
+
+  // Calculate eigen system of inertia tensor
+  int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
+  if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
+
+  // Set grain orientation based on eigenvectors of inertia tensor
+  for (int a = 0; a < 3; a++) {
+    ex_space[ibody][a] = evectors[a][0];
+    ey_space[ibody][a] = evectors[a][1];
+    ez_space[ibody][a] = evectors[a][2];
+  }
+
+  // copy of calculations from FixRigid::setup_bodies_static()
+  // for 2d, ensure that evector along z axis is last
+  // necessary so that quaternion is a simple rotation around +z axis
+  //   or a 180 degree rotation for a -z axis
+  // otherwise richardson() method for a body with a tiny evalue (near-linear)
+  //  may not preserve the correct z-aligned quat and associated evectors
+  //  over time due to round-off accumulation
+
+  if (domain->dimension == 2) {
+    if (fabs(ez_space[ibody][0]) > EPSILON || fabs(ez_space[ibody][1]) > EPSILON) {
+      std::swap(inertia[ibody][1],inertia[ibody][2]);
+      std::swap(ey_space[ibody][0],ez_space[ibody][0]);
+      std::swap(ey_space[ibody][1],ez_space[ibody][1]);
+      std::swap(ey_space[ibody][2],ez_space[ibody][2]);
+    }
+  }
+
+  // if any principal moment < scaled EPSILON, set to 0.0
+
+  double max;
+  max = MAX(inertia[ibody][0],inertia[ibody][1]);
+  max = MAX(max,inertia[ibody][2]);
+
+  if (inertia[ibody][0] < EPSILON*max) inertia[ibody][0] = 0.0;
+  if (inertia[ibody][1] < EPSILON*max) inertia[ibody][1] = 0.0;
+  if (inertia[ibody][2] < EPSILON*max) inertia[ibody][2] = 0.0;
+
+  // enforce 3 evectors as a right-handed coordinate system
+  // flip 3rd vector if needed
+
+  double cross[3];
+  MathExtra::cross3(ex_space[ibody],ey_space[ibody],cross);
+  if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
+    MathExtra::negate3(ez_space[ibody]);
+
+  // create initial quaternion relative to inertial frame
+
+  MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
+                   quat[ibody]);
+
+  // additionally, calculate relative rotation from inerital frame to LS grid
+  //   assume any additional rotations on grains (e.g. by displace_atoms)
+  //   were performed correctly s.t. all atoms have equivalent initial quaterions
+  // Note: do not do something similar for CoM b/c there is no way to save
+  //   atom coordinates before being shifted in read_data. Also, this can be
+  //   achieved easily by just setting the shift in the infile.
+  int iatom;
+  for (iatom = 0; iatom < atom->nlocal; iatom++)
+    if (body[iatom] == ibody) break;
+
+  double quat_conj[4];
+  MathExtra::qconjugate(quat[ibody], quat_conj);
+  MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
+
+  // Surface area calculation with default epsilon (diff between inner and outer) of two times gridstride.
+  double area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], grid_values);
+  // Test for physical realism
+  if (!((area > 0.0) && std::isfinite(area)))
+    error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
+  node_area[ibody] = area;
+
+  // Normalise by number of nodes
+  node_area[ibody] /= nrigid[ibody];
+
+  // Scale all relevant quantities by given scaling of grain size
+  double scale = grid_scale[ibody];
+  double scale2 = scale * scale;
+  double scale3 = scale * scale2;
+  double density = masstotal[ibody] / grid_vol[ibody];
+  grid_stride[ibody] *= scale;
+  MathExtra::scale3(scale, grid_min[ibody]);
+  if (dimension == 3) {
+    node_area[ibody] *= scale2;
+    grid_vol[ibody] *= scale3;
+    MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
+  } else {
+    node_area[ibody] *= scale;
+    grid_vol[ibody] *= scale2;
+    MathExtra::scale3(density * scale2 * scale2, inertia[ibody]);
+  }
 }
 
 /* ----------------------------------------------------------------------

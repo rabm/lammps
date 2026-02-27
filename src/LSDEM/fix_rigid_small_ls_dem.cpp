@@ -388,13 +388,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         global_grids[index_global_grid][n] = temp_grid_values[n];
       }
 
-      global_grids_min[index_global_grid][0] = gridfile_data[gridfile].grid_min[0];
-      global_grids_min[index_global_grid][1] = gridfile_data[gridfile].grid_min[1];
-      global_grids_min[index_global_grid][2] = gridfile_data[gridfile].grid_min[2];
-
-      global_grids_size[index_global_grid][0] = gridfile_data[gridfile].grid_size[0];
-      global_grids_size[index_global_grid][1] = gridfile_data[gridfile].grid_size[1];
-      global_grids_size[index_global_grid][2] = gridfile_data[gridfile].grid_size[2];
+      for (a = 0; a < 3; a++) {
+        global_grids_min[index_global_grid][a] = gridfile_data[gridfile].grid_min[a];
+        global_grids_size[index_global_grid][a] = gridfile_data[gridfile].grid_size[a];
+      }
     } else {
 
       for (i = 0; i < atom->nlocal; i++) {
@@ -470,7 +467,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
           }
         }
 
-        if (need_padding == 1 && comm->me == 0)
+        if (need_padding && comm->me == 0)
           error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
@@ -1225,7 +1222,7 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
 {
   // Compute properties from the level-set grid
   int dimension = domain->dimension;
-  double temp[3], com_temp[3], inertia_temp[3][3];
+  double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
 
   bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, bodyLS[ibody].grid_stride, grid_values, com_temp, inertia_temp, dimension);
   if (bodyLS[ibody].grid_vol < 0)
@@ -1241,7 +1238,6 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
   // Overwrite inertia, could modify logic (compare or warn) if desired
 
   // Calculate eigen system of inertia tensor
-  double evectors[3][3];
   double *inertia = body[ibody].inertia;
   int ierror = MathEigen::jacobi3(inertia_temp, inertia, evectors, 1);
   if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
