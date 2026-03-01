@@ -377,6 +377,7 @@
 
 /atom_vec_ls_dem.cpp
 /atom_vec_ls_dem.h
+/compute_rigid_ls_dem_local.cpp
 /fix_rigid_ls_dem.cpp
 /fix_rigid_ls_dem.h
 /fix_rigid_small_ls_dem.cpp
