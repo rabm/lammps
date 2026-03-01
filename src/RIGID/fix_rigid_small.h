@@ -172,6 +172,7 @@ class FixRigidSmall : public Fix {
 
   char *id_gravity;    // ID of fix gravity command to add gravity forces
   double *gvec;        // ptr to gravity vector inside the fix
+  int grav_group_bit;  // group bit for fix gravity
 
   double p_current[3], p_target[3];
 

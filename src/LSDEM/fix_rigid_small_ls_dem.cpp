@@ -615,6 +615,32 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
     tcm[2] += torque[i][2];
   }
 
+  // subtract gravity forces from any atoms
+
+  if (id_gravity) {
+    int *type = atom->type;
+    int *mask = atom->mask;
+    double *rmass = atom->rmass;
+    double *mass = atom->mass;
+    double massone;
+    for (i = 0; i < nlocal; i++) {
+      if (!(mask[i] & grav_group_bit)) continue;
+      if (atom2body[i] < 0) continue;
+      Body *b = &body[atom2body[i]];
+
+      fcm = b->fcm;
+
+      if (rmass)
+        massone = rmass[i];
+      else
+        massone = mass[type[i]];
+
+      fcm[0] -= gvec[0] * massone;
+      fcm[1] -= gvec[1] * massone;
+      fcm[2] -= gvec[2] * massone;
+    }
+  }
+
   // reverse communicate fcm, torque of all bodies
 
   commflag = FORCE_TORQUE;
@@ -624,7 +650,11 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
 
   if (id_gravity) {
     double mass;
+    int *mask = atom->mask;
     for (ibody = 0; ibody < nlocal_body; ibody++) {
+      i = body[ibody].ilocal;
+      if (!(mask[i] & grav_group_bit)) continue;
+
       mass = body[ibody].mass;
       fcm = body[ibody].fcm;
       fcm[0] += gvec[0] * mass;

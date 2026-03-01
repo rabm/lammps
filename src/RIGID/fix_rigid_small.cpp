@@ -569,6 +569,7 @@ void FixRigidSmall::init()
       error->all(FLERR,"Fix {} gravity fix ID {} is not a gravity fix style", style, id_gravity);
     int tmp;
     gvec = (double *) ifix->extract("gvec", tmp);
+    grav_group_bit = ifix->groupbit;
   }
 
   // timestep info
