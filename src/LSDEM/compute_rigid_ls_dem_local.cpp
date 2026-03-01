@@ -30,7 +30,7 @@ using namespace LAMMPS_NS;
 
 static constexpr int DELTA = 10000;
 
-enum{ID,MOL,MASS,X,Y,Z,XU,YU,ZU,VX,VY,VZ,FX,FY,FZ,IX,IY,IZ,
+enum{ID,GRID,MOL,MASS,X,Y,Z,XU,YU,ZU,VX,VY,VZ,FX,FY,FZ,IX,IY,IZ,
      TQX,TQY,TQZ,OMEGAX,OMEGAY,OMEGAZ,ANGMOMX,ANGMOMY,ANGMOMZ,
      QUATW,QUATI,QUATJ,QUATK,QUAT2W,QUAT2I,QUAT2J,QUAT2K,
      INERTIAX,INERTIAY,INERTIAZ};
@@ -53,6 +53,7 @@ ComputeRigidLSDEMLocal::ComputeRigidLSDEMLocal(LAMMPS *lmp, int narg, char **arg
   nvalues = 0;
   for (int iarg = 4; iarg < narg; iarg++) {
     if (strcmp(arg[iarg],"id") == 0) rstyle[nvalues++] = ID;
+    else if (strcmp(arg[iarg],"grid") == 0) rstyle[nvalues++] = GRID;
     else if (strcmp(arg[iarg],"mol") == 0) rstyle[nvalues++] = MOL;
     else if (strcmp(arg[iarg],"mass") == 0) rstyle[nvalues++] = MASS;
     else if (strcmp(arg[iarg],"x") == 0) rstyle[nvalues++] = X;
@@ -187,6 +188,9 @@ int ComputeRigidLSDEMLocal::compute_rigid(int flag)
         switch (rstyle[n]) {
         case ID:
           ptr[n] = tag[body->ilocal];
+          break;
+        case GRID:
+          ptr[n] = bodyls->grid_index;
           break;
         case MOL:
           ptr[n] = molecule[body->ilocal];
