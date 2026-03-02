@@ -56,6 +56,11 @@ static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
 static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10x10
 
+// Todo: should fix we have different instance of fix property/atom
+//   for distributed memory when there are different cutoffs between
+//   two types of grains?
+// Todo: can create_atoms be used twice with two run commands?
+
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
@@ -95,7 +100,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
 
-  // only call FixRigidSmall::setup_bodies_static() once
+  // currently only call FixRigidSmall::setup_bodies_static() once
+  //   need to think how to support this...
   reinitflag = 0;
 }
 
@@ -542,6 +548,9 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
   int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
     ibody = atom2body[i];
+
+    if (ibody < 0)
+      error->one(FLERR, "Bad body index for atom {}", atom->tag[i]);
     Body *b = &body[ibody];
 
     grain_com[i][0] = b->xcm[0];

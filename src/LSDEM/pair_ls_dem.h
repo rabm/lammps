@@ -45,7 +45,7 @@ class PairLSDEM : public Pair {
   double maxcut;
 
  protected:
-  double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1; //, **gamma
+  double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
 
   int index_ls_dem_vol;
   int index_ls_dem_n;

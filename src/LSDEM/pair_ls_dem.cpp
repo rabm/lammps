@@ -37,13 +37,16 @@ using namespace LAMMPS_NS;
 using namespace MathConst;
 
 //TODO:
-//  add checks for key overlfow
+//  add checks for key overflow
 //  add checks to rigid/small/ls/dem nbodies < 2bil (or generalize)
 
 /* ---------------------------------------------------------------------- */
 
-PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp), kn(nullptr), kt(nullptr), mu(nullptr), etan(nullptr), etat(nullptr), cut(nullptr),
- decayn1(nullptr), etan1(nullptr), decayt1(nullptr), etat1(nullptr), fix_rigid(nullptr), fix_rigid_small(nullptr) // gamma(nullptr),
+PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
+  cut(nullptr), decayn1(nullptr), decayt1(nullptr), etan(nullptr),
+  etan1(nullptr), etat(nullptr),  etat1(nullptr),kn(nullptr),
+  knp(nullptr),kt(nullptr), mu(nullptr), fix_rigid(nullptr),
+  fix_rigid_small(nullptr)
 {
   writedata = 1;
   single_enable = 0;
@@ -68,8 +71,6 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(etan1);
     memory->destroy(decayt1);
     memory->destroy(etat1);
-    //memory->destroy(gamma);
-    // other consts
   }
 }
 
@@ -77,7 +78,7 @@ PairLSDEM::~PairLSDEM()
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
-  int i, j, ii, jj, allnum, inum, jnum, itype, jtype, ibody, jbody;
+  int i, j, ii, jj, allnum, inum, jnum, itype, jtype, ibody, jbody, ibodyID, jbodyID;
   tagint itag, jtag;
   long key;
   double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
@@ -114,6 +115,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   tagint *tag = atom->tag;
   int *type = atom->type;
+  tagint *molecule = atom->molecule;
   int nlocal = atom->nlocal;
   double *special_lj = force->special_lj;
   int newton_pair = force->newton_pair;
@@ -124,19 +126,18 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **grain_omega = atom->omega;
   std::unordered_map<long, std::pair<int, double>> min_distances;
 
-  int *mybody, nbody;
-  tagint *mybody2;
+  int *mybody, maxbodyID;
   double *grain_vol, *node_area;
   FixRigidSmallLSDEM::BodyLS *bodyLS;
   if (fix_rigid) { // How is nbody updated during fix pour?
     mybody = fix_rigid->get_body_array();
-    nbody = fix_rigid->get_nbody();
+    maxbodyID = fix_rigid->get_nbody();
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
   } else {
-    mybody2 = atom->molecule;
+    mybody = fix_rigid_small->get_atom2body_array();
     bodyLS = fix_rigid_small->get_bodyLS_array();
-    nbody = fix_rigid_small->get_maxmol();
+    maxbodyID = fix_rigid_small->get_maxmol();
   }
 
   inum = list->inum;
@@ -153,10 +154,13 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    if (fix_rigid)
+    if (fix_rigid) {
       ibody = mybody[i];
-    else
-      ibody = (int) mybody2[i];
+      ibodyID = ibody;
+    } else {
+      ibody = mybody[i];
+      ibodyID = (int) molecule[i];
+    }
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -171,10 +175,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      if (fix_rigid)
+      if (fix_rigid) {
         jbody = mybody[j];
-      else
-        jbody = (int) mybody2[j];
+        jbodyID = jbody;
+      } else {
+        jbody = mybody[j];
+        jbodyID = (int) molecule[j];
+      }
       jtag = tag[j];
 
       // Separation distance between the two nodes
@@ -188,7 +195,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Create a dictionary for each grain that holds the
       // tag of the closest interacting node on the other grain.
-      key = nbody * itag + jbody;
+      key = maxbodyID * itag + jbodyID;
       // If first interation between i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(jtag, r);
@@ -199,7 +206,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Do the same for node j
-      key = nbody * jtag + ibody;
+      key = maxbodyID * jtag + ibodyID;
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(itag, r);
       } else {
@@ -226,10 +233,13 @@ void PairLSDEM::compute(int eflag, int vflag)
     vyitmp = v[i][1];
     vzitmp = v[i][2];
     itype = type[i];
-    if (fix_rigid)
+    if (fix_rigid) {
       ibody = mybody[i];
-    else
-      ibody = (int) mybody2[i];
+      ibodyID = ibody;
+    } else {
+      ibody = mybody[i];
+      ibodyID = (int) molecule[i];
+    }
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
@@ -262,10 +272,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
-      if (fix_rigid)
+      if (fix_rigid) {
         jbody = mybody[j];
-      else
-        jbody = (int) mybody2[j];
+        jbodyID = jbody;
+      } else {
+        jbody = mybody[j];
+        jbodyID = (int) molecule[j];
+      }
       jtag = tag[j];
       jtype = type[j];
       jcomx = grain_com[j][0];
@@ -292,15 +305,15 @@ void PairLSDEM::compute(int eflag, int vflag)
       calc_force_of_i_on_j = 0;
 
       // Use the nodes of the smallest grain.
-      if (ivol < jvol || (ivol == jvol && ibody < jbody)) {
+      if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
         // Grain i is smaller, use nodes of i and level set of j.
-        key = nbody * itag + jbody;
+        key = maxbodyID * itag + jbodyID;
         if (min_distances.find(key) != min_distances.end())
           if (jtag == min_distances[key].first)
             calc_force_of_i_on_j = 1;
       } else {
         // Grain j is smaller, use nodes of j and level set of i.
-        key = nbody * jtag + ibody;
+        key = maxbodyID * jtag + ibodyID;
         if (min_distances.find(key) != min_distances.end())
           if (itag == min_distances[key].first)
             calc_force_of_j_on_i = 1;
@@ -658,6 +671,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       f[i][1] += fpair[1];
       f[i][2] += fpair[2];
 
+      if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
+        error->one(FLERR, "Bad force calculated between atoms %d %d on bodies %d %d with overlap %g and normal %g %g %g\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+
       // Lever arm on grain i
       lever[0] = contact_point[0] - icomx;
       lever[1] = contact_point[1] - icomy;
@@ -672,6 +688,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       torque[i][0] += torque_pair[0];
       torque[i][1] += torque_pair[1];
       torque[i][2] += torque_pair[2];
+
+      if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
+        error->one(FLERR, "Bad torque calculated between atoms %d %d on bodies %d %d with overlap %g and normal %g %g %g\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+
 
       // Mirror forces and torques on grain j
       if (newton_pair || j < nlocal) { // Need to check this again if we end up enabling newton_pair
@@ -727,7 +747,6 @@ void PairLSDEM::allocate()
   memory->create(etan1, np1, np1, "pair:etan1");
   memory->create(decayt1, np1, np1, "pair:decayt1");
   memory->create(etat1, np1, np1, "pair:etat1");
-  //memory->create(gamma, np1, np1, "pair:gamma");
 }
 
 /* ----------------------------------------------------------------------
@@ -743,7 +762,6 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
-
 }
 
 /* ----------------------------------------------------------------------
@@ -752,7 +770,7 @@ void PairLSDEM::settings(int narg, char ** arg)
 
 void PairLSDEM::coeff(int narg, char **arg)
 {
-  if (narg < 7)
+  if (narg != 9 && narg != 11 && narg != 13)
     error->all(FLERR, "Incorrect number of args for pair coefficients");
   if (!allocated) allocate();
 
@@ -766,36 +784,40 @@ void PairLSDEM::coeff(int narg, char **arg)
   double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
   double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[8], false, lmp); // TODO: unchecked access to narg > 7 that is not guarded from the error check above
+  double cut_one = utils::numeric(FLERR, arg[8], false, lmp);
 
   double kn_1, kt_1, etan_1, etat_1;
-  if (narg >9) {
+  if (narg > 9) {
     kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
     etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
+  }
+
+  if (narg > 11) {
     kt_1 = utils::numeric(FLERR, arg[11], false, lmp);
     etat_1 = utils::numeric(FLERR, arg[12], false, lmp);
   }
-  //double gamma_one = utils::numeric(FLERR, arg[6], false, lmp); // Doesn't do anything IIRC
 
-  if (kn_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (kt_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (mu_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (etan_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-  if (etat_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (kn_0 < 0.0) error->all(FLERR, "The normal stiffness {} must be postitive", kn_0);
+  if (kt_0 < 0.0) error->all(FLERR, "The tangential stiffness {} must be postitive", kt_0);
+  if (mu_0 < 0.0) error->all(FLERR, "The friction coefficient {} must be postitive", mu_0);
+  if (etan_0 < 0.0) error->all(FLERR, "The normal damping {} must be postitive", etan_0);
+  if (etat_0 < 0.0) error->all(FLERR, "The tangential damping {} must be postitive", etat_0);
+
   // Values of knp_0 can be both positive and negative.
-  if (narg >9){
-    if (kn_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if (etan_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
+  if (narg > 9) {
+    if (kn_1 < 0.0) error->all(FLERR, "The extra maxwell normal stiffness {} must be postitive", kn_1);
+    if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell normal damping {} must be postitive", etan_1);
     // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
-    if ( (kn_1 == 0.0) ^ (etan_1 == 0.0) ) {
-      error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
+    if ((kn_1 == 0.0) || (etan_1 == 0.0)) {
+      error->all(FLERR, "Maxwell arm requires normal stiffness k and damping eta to both be zero or both be positive");
     }
   }
-  if (narg > 9){
-    if (kt_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if (etat_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
-    if ( (kt_1 == 0.0) ^ (etat_1 == 0.0) ) {
-      error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
+
+  if (narg > 11){
+    if (kn_1 < 0.0) error->all(FLERR, "The extra maxwell tangential stiffness {} must be postitive", kn_1);
+    if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell tangential damping {} must be postitive", etan_1);
+    if ((kt_1 == 0.0) || (etat_1 == 0.0)) {
+      error->all(FLERR, "Maxwell arm requires tangential stiffness k and damping eta to both be zero or both be positive");
     }
   }
 
@@ -823,22 +845,22 @@ void PairLSDEM::coeff(int narg, char **arg)
       etat[i][j] = etat_0;
       knp[i][j] = knp_0;
       cut[i][j] = cut_one;
-      if (narg > 9){
-        decayn1[i][j] = exp(-dt/etan_1*kn_1);
+
+      if (narg > 9) {
+        decayn1[i][j] = exp(-dt * kn_1 / etan_1);
         etan1[i][j] = etan_1;
       } else {
         decayn1[i][j] = 0.0;
         etan1[i][j] = 0.0;
       }
-      if (narg > 11){
-        decayt1[i][j] = exp(-dt/etat_1*kt_1);
+      if (narg > 11) {
+        decayt1[i][j] = exp(-dt * kt_1 / etat_1);
         etat1[i][j] = etat_1;
       } else {
         decayt1[i][j] = 0.0;
         etat1[i][j] = 0.0;
       }
 
-      // gamma[i][j] = gamma_one;
       setflag[i][j] = 1;
       count++;
     }
@@ -875,10 +897,6 @@ void PairLSDEM::setup()
   if (maxcut < maxcut2)
     error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
 
-  // TODO: THIS IS TEMPORARY FOR A SINGLE TYPE OF GRAINS AS ALL ATOMS STORE THE SAME SIZE
-  // TODO: CREATE TEMP GROUPS TO PUT ATOMS OF SAME GRAIN TOGETHER AND CREATE FIX PROPERTY/ATOM OF DIFFERENT SIZE
-  // TODO: MUST BE SOME PARALLEL COMPLICATION, LOOK AT THE GROUP COMMAND CODE TO SEE HOW IT'S DONE
-
   auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
   auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
 
@@ -906,7 +924,7 @@ double PairLSDEM::init_one(int i, int j)
     cut[i][j] = mix_distance(cut[i][i], cut[j][j]);
     kn[i][j] = mix_energy(kn[i][i], kn[j][j], cut[i][i], cut[j][j]);
     kt[i][j] = mix_energy(kt[i][i], kt[j][j], cut[i][i], cut[j][j]);
-    mu[i][j] = 0.5*(mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
+    mu[i][j] = 0.5 * (mu[i][i] + mu[j][j]); // Arithmetic mean mixing rule
     etan[i][j] = mix_energy(etan[i][i], etan[j][j], cut[i][i], cut[j][j]);
     etat[i][j] = mix_energy(etat[i][i], etat[j][j], cut[i][i], cut[j][j]);
     knp[i][j] = mix_energy(knp[i][i], knp[j][j], cut[i][i], cut[j][j]);
@@ -914,7 +932,6 @@ double PairLSDEM::init_one(int i, int j)
     etan1[i][j] = mix_energy(etan1[i][i], etan1[j][j], cut[i][i], cut[j][j]);
     decayt1[i][j] = mix_energy(decayt1[i][i], decayt1[j][j], cut[i][i], cut[j][j]);
     etat1[i][j] = mix_energy(etat1[i][i], etat1[j][j], cut[i][i], cut[j][j]);
-    //gamma[i][j] = mix_energy(gamma[i][i], gamma[j][j], cut[i][i], cut[j][j]);
   }
 
   // DvdH: For most contact models mixing will not be simple.
@@ -932,7 +949,6 @@ double PairLSDEM::init_one(int i, int j)
   etan1[j][i] = etan1[i][j];
   decayt1[j][i] = decayt1[i][j];
   etat1[j][i] = etat1[i][j];
-  //gamma[j][i] = gamma[i][j];
 
   return cut[i][j];
 }
@@ -961,7 +977,6 @@ void PairLSDEM::write_restart(FILE *fp)
         fwrite(&etan1[i][j], sizeof(double), 1, fp);
         fwrite(&decayt1[i][j], sizeof(double), 1, fp);
         fwrite(&etat1[i][j], sizeof(double), 1, fp);
-        //fwrite(&gamma[i][j], sizeof(double), 1, fp);
       }
     }
 }
@@ -994,7 +1009,6 @@ void PairLSDEM::read_restart(FILE *fp)
           utils::sfread(FLERR, &etan1[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &decayt1[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etat1[i][j], sizeof(double), 1, fp, nullptr, error);
-          //utils::sfread(FLERR, &gamma[i][j], sizeof(double), 1, fp, nullptr, error);
         }
         MPI_Bcast(&kn[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&kt[i][j], 1, MPI_DOUBLE, 0, world);
@@ -1007,7 +1021,6 @@ void PairLSDEM::read_restart(FILE *fp)
         MPI_Bcast(&etan1[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&decayt1[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etat1[i][j], 1, MPI_DOUBLE, 0, world);
-        //MPI_Bcast(&gamma[i][j], 1, MPI_DOUBLE, 0, world);
       }
     }
 }

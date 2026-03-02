@@ -73,6 +73,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   inline int get_maxmol() { return maxmol; };
   inline BodyLS* get_bodyLS_array() { return bodyLS; };
+  inline int* get_atom2body_array() { return atom2body; };
 
   double get_ls_value(int, int, double*);
 
