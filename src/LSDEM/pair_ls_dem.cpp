@@ -767,10 +767,14 @@ void PairLSDEM::coeff(int narg, char **arg)
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
   double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);
   double cut_one = utils::numeric(FLERR, arg[8], false, lmp); // TODO: unchecked access to narg > 7 that is not guarded from the error check above
-  double kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
-  double etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
-  double kt_1 = utils::numeric(FLERR, arg[11], false, lmp);
-  double etat_1 = utils::numeric(FLERR, arg[12], false, lmp);
+
+  double kn_1, kt_1, etan_1, etat_1;
+  if (narg >9) {
+    kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
+    etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
+    kt_1 = utils::numeric(FLERR, arg[11], false, lmp);
+    etat_1 = utils::numeric(FLERR, arg[12], false, lmp);
+  }
   //double gamma_one = utils::numeric(FLERR, arg[6], false, lmp); // Doesn't do anything IIRC
 
   if (kn_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
@@ -779,7 +783,7 @@ void PairLSDEM::coeff(int narg, char **arg)
   if (etan_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
   if (etat_0 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
   // Values of knp_0 can be both positive and negative.
-  if (narg >= 7){
+  if (narg >9){
     if (kn_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     if (etan_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
@@ -787,7 +791,7 @@ void PairLSDEM::coeff(int narg, char **arg)
       error->all(FLERR, "Incorrect args for pair coefficients. Maxwell arm requires k and eta to both be zero or both be positive.");
     }
   }
-  if (narg >= 9){
+  if (narg > 9){
     if (kt_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     if (etat_1 < 0.0) error->all(FLERR, "Incorrect negative args for pair coefficients.");
     if ( (kt_1 == 0.0) ^ (etat_1 == 0.0) ) {
@@ -819,13 +823,19 @@ void PairLSDEM::coeff(int narg, char **arg)
       etat[i][j] = etat_0;
       knp[i][j] = knp_0;
       cut[i][j] = cut_one;
-      if (narg >= 7){
+      if (narg > 9){
         decayn1[i][j] = exp(-dt/etan_1*kn_1);
         etan1[i][j] = etan_1;
+      } else {
+        decayn1[i][j] = 0.0;
+        etan1[i][j] = 0.0;
       }
-      if (narg >= 9){
+      if (narg > 11){
         decayt1[i][j] = exp(-dt/etat_1*kt_1);
         etat1[i][j] = etat_1;
+      } else {
+        decayt1[i][j] = 0.0;
+        etat1[i][j] = 0.0;
       }
 
       // gamma[i][j] = gamma_one;
@@ -916,12 +926,12 @@ double PairLSDEM::init_one(int i, int j)
   kt[j][i] = kt[i][j];
   mu[j][i] = mu[i][j];
   knp[j][i] = knp[i][j];
-  etan[i][j] = etan[j][i];
-  etat[i][j] = etat[j][i];
-  decayn1[i][j] = decayn1[j][i];
-  etan1[i][j] = etan1[j][i];
-  decayt1[i][j] = decayt1[j][i];
-  etat1[i][j] = etat1[j][i];
+  etan[j][i] = etan[i][j];
+  etat[j][i] = etat[i][j];
+  decayn1[j][i] = decayn1[i][j];
+  etan1[j][i] = etan1[i][j];
+  decayt1[j][i] = decayt1[i][j];
+  etat1[j][i] = etat1[i][j];
   //gamma[j][i] = gamma[i][j];
 
   return cut[i][j];
