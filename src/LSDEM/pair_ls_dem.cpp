@@ -154,13 +154,8 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    if (fix_rigid) {
-      ibody = mybody[i];
-      ibodyID = ibody;
-    } else {
-      ibody = mybody[i];
-      ibodyID = (int) molecule[i];
-    }
+    if (fix_rigid) ibodyID = ibody;
+    else ibodyID = (int) molecule[i]; // could also use bodytag
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -175,13 +170,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      if (fix_rigid) {
-        jbody = mybody[j];
-        jbodyID = jbody;
-      } else {
-        jbody = mybody[j];
-        jbodyID = (int) molecule[j];
-      }
+      if (fix_rigid) jbodyID = jbody;
+      else jbodyID = (int) molecule[j];
+
       jtag = tag[j];
 
       // Separation distance between the two nodes
@@ -322,6 +313,12 @@ void PairLSDEM::compute(int eflag, int vflag)
       // If no forces are calculated
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
 
+      // ghosts may not find bodytag if comm distance too small
+      if (ibody < 0)
+        error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[i]);
+      if (jbody < 0)
+        error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[j]);
+
       // Evaluate the level set, and assign the interaction direction based on the
       // node-grain combination. Force magnitude and direction go i -> j by definition.
       if (calc_force_of_i_on_j) { // Use node of i.
@@ -343,7 +340,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Reset shear force if no contact
         // If i and j are not a shear-interacting pair, it will skip the reset
         if (calc_force_of_i_on_j) {
-          if (touch_id[i] == jbody) {
+          if (touch_id[i] == jbodyID) {
             touch_id[i] = -1;
             fs[i][0] = 0.0;
             fs[i][1] = 0.0;
@@ -353,7 +350,7 @@ void PairLSDEM::compute(int eflag, int vflag)
             n[i][2] = 0.0;
           }
         } else { // calc_force_of_j_on_i already guaranteed to be true (see line ~233)
-          if (touch_id[j] == ibody) {
+          if (touch_id[j] == ibodyID) {
             touch_id[j] = -1;
             fs[j][0] = 0.0;
             fs[j][1] = 0.0;
@@ -444,22 +441,22 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Initialise if no contact
       if (calc_force_of_i_on_j) {
         if (touch_id[i] == -1) {
-          touch_id[i] = jbody;
+          touch_id[i] = jbodyID;
         }
-        if (touch_id[i] != jbody) {
+        if (touch_id[i] != jbodyID) {
           if (comm->me == 0) {
             error->warning(FLERR, "Shear history of node {} on grain {} penetrating node {} on {} cannot be computed at step {}",
-              tag[i], ibody, tag[j], jbody, update->ntimestep);
+              tag[i], ibodyID, tag[j], jbodyID, update->ntimestep);
           }
         }
       } else {
         if (touch_id[j] == -1) {
-          touch_id[j] = ibody;
+          touch_id[j] = ibodyID;
         }
-        if (touch_id[j] != ibody) {
+        if (touch_id[j] != ibodyID) {
           if (comm->me == 0) {
             error->warning(FLERR, "Shear history of node {} on grain {} penetrating node {} on {} cannot be computed at step {}",
-              tag[j], jbody, tag[i], ibody, update->ntimestep);
+              tag[j], jbodyID, tag[i], ibodyID, update->ntimestep);
           }
         }
       }
@@ -714,6 +711,10 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Virial contribution: need to check
       fpair_mag = MathExtra::len3(fpair);
+
+      if (fpair_mag == 0.0)
+        error->one(FLERR, "Invalid force between atoms {} {} on bodies {} {}", tag[i], tag[j], ibodyID, jbodyID);
+
       if (evflag) ev_tally(i, j, nlocal, 0, evdwl, 0.0, fpair_mag, fpair[0]/fpair_mag, fpair[1]/fpair_mag, fpair[2]/fpair_mag);
     }
   }

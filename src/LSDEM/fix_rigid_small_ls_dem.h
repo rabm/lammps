@@ -133,6 +133,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void read_infile();
   void read_gridfile(int, std::string, double *);
   void grow_body_ls();
+  void reset_atom2body_ghost();
 };
 
 }    // namespace LAMMPS_NS

@@ -381,7 +381,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     read_gridfile(1, gridfile, temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
-    for (ibody = 0; ibody < nlocal_body; ibody++) {
+    for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
       if (pair.second.id != bodyLS[ibody].file_id)
         continue;
       compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
@@ -527,8 +527,35 @@ void FixRigidSmallLSDEM::pre_force(int vflag)
   commflag_ls = PREFORCE_LS;
   comm->forward_comm(this, 11);
   commflag_ls = PARENT;
+
+  reset_atom2body_ghost();
 }
 
+/* ----------------------------------------------------------------------
+   reset atom2body for all ghost atoms possible, namely those  which
+   the atom that owns the grid is also a ghost/owned
+   otherwise leave atom2body at -1
+   will error in pair if this atom needed
+   comm cutoff must be at least 1/2 of longest body, can this be relaxed?
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::reset_atom2body_ghost()
+{
+  int iowner;
+
+  // iowner = index of atom that owns the body that atom I is in
+
+  int nlocal = atom->nlocal;
+  int nghost = atom->nghost;
+  for (int i = nlocal; i < nlocal + nghost; i++) {
+    atom2body[i] = -1;
+    if (bodytag[i]) {
+      iowner = atom->map(bodytag[i]);
+      if (iowner != -1)
+        atom2body[i] = bodyown[iowner];
+    }
+  }
+}
 
 /* ---------------------------------------------------------------------- */
 
@@ -602,7 +629,7 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
   int nlocal = atom->nlocal;
   double *fcm,*tcm;
 
-  for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
+  for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
     fcm = body[ibody].fcm;
     fcm[0] = fcm[1] = fcm[2] = 0.0;
     tcm = body[ibody].torque;
@@ -660,7 +687,7 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
   if (id_gravity) {
     double mass;
     int *mask = atom->mask;
-    for (ibody = 0; ibody < nlocal_body; ibody++) {
+    for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
       i = body[ibody].ilocal;
       if (!(mask[i] & grav_group_bit)) continue;
 
@@ -755,7 +782,7 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 
   for (int i = nlocalprev; i < nlocal; i++) {
     bodytag[i] = tagprev + onemols[imol]->comatom;
-    if (tag[i]-tagprev == onemols[imol]->comatom) bodyown[i] = nlocal_body;
+    if (tag[i]-tagprev == onemols[imol]->comatom) bodyown[i] = nlocal_bodyLS;
 
     m = tag[i] - tagprev-1;
     displace[i][0] = onemols[imol]->dxbody[m][0];
@@ -772,8 +799,8 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
     }
 
     if (bodyown[i] >= 0) {
-      if (nlocal_body == nmax_body) grow_body();
-      Body *b = &body[nlocal_body];
+      if (nlocal_bodyLS == nmax_body) grow_body();
+      Body *b = &body[nlocal_bodyLS];
       b->mass = onemols[imol]->masstotal;
       b->natoms = onemols[imol]->natoms;
       b->xgc[0] = xgeom[0];
@@ -814,7 +841,7 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
       b->image = ((imageint) IMGMAX << IMG2BITS) |
         ((imageint) IMGMAX << IMGBITS) | IMGMAX;
       b->ilocal = i;
-      nlocal_body++;
+      nlocal_bodyLS++;
     }
   }
 }
@@ -907,7 +934,7 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
     m = 0;
     for (i = 0; i < n; i++) {
       j = list[i];
-      buf[m++] = ubuf(atom2body[j]).d;
+      buf[m++] = ubuf(bodytag[j]).d;
       buf[m++] = grain_com[j][0];
       buf[m++] = grain_com[j][1];
       buf[m++] = grain_com[j][2];
@@ -963,7 +990,7 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
     double **grain_quat = atom->quat;
     double **grain_omega = atom->omega;
     for (i = first; i < last; i++) {
-      atom2body[i] = ubuf(buf[m++]).i;
+      bodytag[i] = (tagint) ubuf(buf[m++]).i;
       grain_com[i][0] = buf[m++];
       grain_com[i][1] = buf[m++];
       grain_com[i][2] = buf[m++];
