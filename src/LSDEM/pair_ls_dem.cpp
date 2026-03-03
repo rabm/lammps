@@ -498,7 +498,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Applying the rotation
         sintheta = MathExtra::len3(k); // Rotation magnitude
         if (sintheta > EPSILON) { // Don't apply rotation if magnitude is tiny
-          costheta = sqrt(1 - sintheta * sintheta);
+          costheta = sqrt(MAX(1 - sintheta * sintheta, 0.0));
           k[0] = k[0] / sintheta; // Rotation axis
           k[1] = k[1] / sintheta;
           k[2] = k[2] / sintheta;
@@ -669,7 +669,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       f[i][2] += fpair[2];
 
       if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
-        error->one(FLERR, "Bad force calculated between atoms %d %d on bodies %d %d with overlap %g and normal %g %g %g\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+        error->one(FLERR, "Bad force calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
 
       // Lever arm on grain i
       lever[0] = contact_point[0] - icomx;
@@ -687,7 +687,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       torque[i][2] += torque_pair[2];
 
       if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
-        error->one(FLERR, "Bad torque calculated between atoms %d %d on bodies %d %d with overlap %g and normal %g %g %g\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+        error->one(FLERR, "Bad torque calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
 
 
       // Mirror forces and torques on grain j
