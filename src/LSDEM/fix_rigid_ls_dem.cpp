@@ -109,6 +109,8 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(node_area);
   memory->destroy(quatd2g);
 
+  memory->destroy(itensor_custom);
+
   // delete global memory data
 
   memory->destroy(global_grids);
@@ -140,8 +142,6 @@ void FixRigidLSDEM::post_constructor()
 
 void FixRigidLSDEM::init()
 {
-  FixRigid::init();
-
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
@@ -153,6 +153,10 @@ void FixRigidLSDEM::init()
 
   if (stored_flag) return;
   stored_flag = 1;
+
+  // allocate storage for LS-derived quantities (used in FixRigid::init())
+
+  memory->create(itensor_custom, nbody, 6, "rigid:itensor_custom");
 
   int iatom, ibody, i, a;
   int dimension = domain->dimension;
@@ -248,7 +252,7 @@ void FixRigidLSDEM::init()
   int need_distributed, need_global, need_padding, index_local, index_global;
   int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
   double stride, dx[3], dx_local[3], quat_conj[4];
-  for (const auto& pair : file_map) { // Loop over all <filename, [bodyIDs]>
+  for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
 
@@ -357,44 +361,22 @@ void FixRigidLSDEM::init()
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
 
-  // Redefine displace - initial atom coords in basis of principal axes - withnew inertia/exspace values
-  //   copy of calculations from FixRigid::setup_bodies_static()
+  FixRigid::init();
 
-  int *periodicity = domain->periodicity;
-  double xprd = domain->xprd;
-  double yprd = domain->yprd;
-  double zprd = domain->zprd;
-  double xy = domain->xy;
-  double xz = domain->xz;
-  double yz = domain->yz;
-  double delta[3];
-  int xbox,ybox,zbox;
-  double xunwrap,yunwrap,zunwrap;
+  memory->destroy(itensor_custom);
 
-  for (i = 0; i < atom->nlocal; i++) {
-    if (body[i] < 0)  continue;
+  // extra calculations using values from parent
 
-    ibody = body[i];
+  for (int ibody = 0; ibody < nbody; ibody++) {
 
-    xbox = (xcmimage[i] & IMGMASK) - IMGMAX;
-    ybox = (xcmimage[i] >> IMGBITS & IMGMASK) - IMGMAX;
-    zbox = (xcmimage[i] >> IMG2BITS) - IMGMAX;
+    // calculate relative rotation from inerital frame to LS grid
+    //   assume all atoms in body have equivalent initial quaterions
+    //   (user could incorrectly use diplace_atoms on subset)
+    for (iatom = 0; iatom < atom->nlocal; iatom++)
+      if (body[iatom] == ibody) break;
 
-    if (triclinic == 0) {
-      xunwrap = x[i][0] + xbox*xprd;
-      yunwrap = x[i][1] + ybox*yprd;
-      zunwrap = x[i][2] + zbox*zprd;
-    } else {
-      xunwrap = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
-      yunwrap = x[i][1] + ybox*yprd + zbox*yz;
-      zunwrap = x[i][2] + zbox*zprd;
-    }
-
-    delta[0] = xunwrap - xcm[ibody][0];
-    delta[1] = yunwrap - xcm[ibody][1];
-    delta[2] = zunwrap - xcm[ibody][2];
-    MathExtra::transpose_matvec(ex_space[ibody],ey_space[ibody],
-                                ez_space[ibody],delta,displace[i]);
+    MathExtra::qconjugate(quat[ibody], quat_conj);
+    MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
   }
 }
 
@@ -634,7 +616,14 @@ void FixRigidLSDEM::read_infile(char **gridfiles)
         if (id < 0 || id >= nbody)
           throw TokenizerException("invalid_rigid body ID ", std::to_string(id + 1));
 
-        values.skip(19);
+        // need early to calculate LS properties
+        masstotal[id] = values.next_double();
+        xcm[id][0] = values.next_double();
+        xcm[id][1] = values.next_double();
+        xcm[id][2] = values.next_double();
+
+        values.skip(15);
+
         grid_style[id] = values.next_int();
         if (grid_style[id] != 0 && grid_style[id] != 1)
           throw TokenizerException("invalid_rigid memory model ", std::to_string(grid_style[id]));
@@ -790,108 +779,36 @@ void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, in
 
 void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std::string filename)
 {
-  // Compute properties from the level-set grid
   int dimension = domain->dimension;
-  double temp[3], com_temp[3], inertia_temp[6], tensor[3][3], evectors[3][3];
+  double com_temp[3];
 
-  grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], grid_values, com_temp, inertia_temp, dimension);
+  grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], grid_values, com_temp, itensor_custom[ibody], dimension);
 
   if (grid_vol[ibody] < 0)
-    error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", filename);
+    error->all(FLERR, "Non-inertial reference frame for level set in {}", filename);
 
-  // Comparing if CoM in level-set grid is indeed aligned with CoM
-  // Misalignment would cause forces/rotations to be applied to the wrong point in space
-  tensor[0][0] = inertia_temp[0];
-  tensor[1][1] = inertia_temp[1];
-  tensor[2][2] = inertia_temp[2];
-  tensor[1][2] = tensor[2][1] = inertia_temp[3];
-  tensor[0][2] = tensor[2][0] = inertia_temp[4];
-  tensor[0][1] = tensor[1][0] = inertia_temp[5];
-
-  MathExtra::add3(grid_min[ibody], com_temp, temp);
-  if (MathExtra::len3(temp) > (0.5 * grid_stride[ibody])) {
-    error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
+  // Check CoM misalignment, would apply forces/rotations at incorrect positions
+  double sum[3];
+  MathExtra::add3(grid_min[ibody], com_temp, sum);
+  if (MathExtra::len3(sum) > (0.5 * grid_stride[ibody])) {
+    error->all(FLERR, "Centre of mass computed from LS grid does not agree with provided value, grid min at {} {} {} and CoM computed at {} {} {}",
       grid_min[ibody][0], grid_min[ibody][1], grid_min[ibody][2], com_temp[0], com_temp[1], com_temp[2]);
   }
 
-  // Overwrite inertia, could modify logic (compare or warn) if desired
+  // Surface area calculation
+  //   default epsilon (diff between inner and outer) = 2x grid stride.
 
-  // Calculate eigen system of inertia tensor
-  int ierror = MathEigen::jacobi3(tensor, inertia[ibody], evectors, 1);
-  if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
-
-  // Set grain orientation based on eigenvectors of inertia tensor
-  for (int a = 0; a < 3; a++) {
-    ex_space[ibody][a] = evectors[a][0];
-    ey_space[ibody][a] = evectors[a][1];
-    ez_space[ibody][a] = evectors[a][2];
-  }
-
-  // copy of calculations from FixRigid::setup_bodies_static()
-  // for 2d, ensure that evector along z axis is last
-  // necessary so that quaternion is a simple rotation around +z axis
-  //   or a 180 degree rotation for a -z axis
-  // otherwise richardson() method for a body with a tiny evalue (near-linear)
-  //  may not preserve the correct z-aligned quat and associated evectors
-  //  over time due to round-off accumulation
-
-  if (domain->dimension == 2) {
-    if (fabs(ez_space[ibody][0]) > EPSILON || fabs(ez_space[ibody][1]) > EPSILON) {
-      std::swap(inertia[ibody][1],inertia[ibody][2]);
-      std::swap(ey_space[ibody][0],ez_space[ibody][0]);
-      std::swap(ey_space[ibody][1],ez_space[ibody][1]);
-      std::swap(ey_space[ibody][2],ez_space[ibody][2]);
-    }
-  }
-
-  // if any principal moment < scaled EPSILON, set to 0.0
-
-  double max;
-  max = MAX(inertia[ibody][0],inertia[ibody][1]);
-  max = MAX(max,inertia[ibody][2]);
-
-  if (inertia[ibody][0] < EPSILON*max) inertia[ibody][0] = 0.0;
-  if (inertia[ibody][1] < EPSILON*max) inertia[ibody][1] = 0.0;
-  if (inertia[ibody][2] < EPSILON*max) inertia[ibody][2] = 0.0;
-
-  // enforce 3 evectors as a right-handed coordinate system
-  // flip 3rd vector if needed
-
-  double cross[3];
-  MathExtra::cross3(ex_space[ibody],ey_space[ibody],cross);
-  if (MathExtra::dot3(cross,ez_space[ibody]) < 0.0)
-    MathExtra::negate3(ez_space[ibody]);
-
-  // create initial quaternion relative to inertial frame
-
-  MathExtra::exyz_to_q(ex_space[ibody],ey_space[ibody],ez_space[ibody],
-                   quat[ibody]);
-
-  // additionally, calculate relative rotation from inerital frame to LS grid
-  //   assume any additional rotations on grains (e.g. by displace_atoms)
-  //   were performed correctly s.t. all atoms have equivalent initial quaterions
-  // Note: do not do something similar for CoM b/c there is no way to save
-  //   atom coordinates before being shifted in read_data. Also, this can be
-  //   achieved easily by just setting the shift in the infile.
-  int iatom;
-  for (iatom = 0; iatom < atom->nlocal; iatom++)
-    if (body[iatom] == ibody) break;
-
-  double quat_conj[4];
-  MathExtra::qconjugate(quat[ibody], quat_conj);
-  MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
-
-  // Surface area calculation with default epsilon (diff between inner and outer) of two times gridstride.
   double area = compute_surface_area(dimension, grid_size[ibody], grid_stride[ibody], grid_values);
   // Test for physical realism
   if (!((area > 0.0) && std::isfinite(area)))
-    error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
+    error->all(FLERR, "Invalid surface area calculated {}", area);
   node_area[ibody] = area;
 
   // Normalise by number of nodes
   node_area[ibody] /= nrigid[ibody];
 
-  // Scale all relevant quantities by given scaling of grain size
+  // Scale relevant quantities by grain size
+
   double scale = grid_scale[ibody];
   double scale2 = scale * scale;
   double scale3 = scale * scale2;
@@ -901,11 +818,13 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
   if (dimension == 3) {
     node_area[ibody] *= scale2;
     grid_vol[ibody] *= scale3;
-    MathExtra::scale3(density * scale2 * scale3, inertia[ibody]);
+    for (int a = 0; a < 6; a++)
+      itensor_custom[ibody][a] *= density * scale2 * scale3;
   } else {
     node_area[ibody] *= scale;
     grid_vol[ibody] *= scale2;
-    MathExtra::scale3(density * scale2 * scale2, inertia[ibody]);
+    for (int a = 0; a < 6; a++)
+      itensor_custom[ibody][a] *= density * scale2 * scale2;
   }
 }
 

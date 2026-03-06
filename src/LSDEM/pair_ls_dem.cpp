@@ -154,7 +154,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    if (fix_rigid) ibodyID = ibody;
+    if (fix_rigid) ibodyID = mybody[i];
     else ibodyID = (int) molecule[i]; // could also use bodytag
     itag = tag[i];
     jlist = firstneigh[i];
@@ -170,7 +170,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      if (fix_rigid) jbodyID = jbody;
+      if (fix_rigid) jbodyID = mybody[j];
       else jbodyID = (int) molecule[j];
 
       jtag = tag[j];
@@ -814,9 +814,9 @@ void PairLSDEM::coeff(int narg, char **arg)
     }
   }
 
-  if (narg > 11){
-    if (kn_1 < 0.0) error->all(FLERR, "The extra maxwell tangential stiffness {} must be postitive", kn_1);
-    if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell tangential damping {} must be postitive", etan_1);
+  if (narg > 11) {
+    if (kt_1 < 0.0) error->all(FLERR, "The extra maxwell tangential stiffness {} must be postitive", kt_1);
+    if (etat_1 < 0.0) error->all(FLERR, "The extra maxwell tangential damping {} must be postitive", etat_1);
     if ((kt_1 == 0.0) || (etat_1 == 0.0)) {
       error->all(FLERR, "Maxwell arm requires tangential stiffness k and damping eta to both be positive");
     }

@@ -286,13 +286,15 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       MathExtra::qconjugate(body[ibody].quat, quat_conj);
       MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
 
-      // scale velocities by # of nodes unlike in rigid b/c nodal count is arbitrary
-      body[ibody].vcm[0] /= body[ibody].natoms;
-      body[ibody].vcm[1] /= body[ibody].natoms;
-      body[ibody].vcm[2] /= body[ibody].natoms;
-      body[ibody].angmom[0] /= body[ibody].natoms;
-      body[ibody].angmom[1] /= body[ibody].natoms;
-      body[ibody].angmom[2] /= body[ibody].natoms;
+      if (!inpfile) {
+        // scale velocities by # of nodes unlike in rigid b/c nodal count is arbitrary
+        body[ibody].vcm[0] /= body[ibody].natoms;
+        body[ibody].vcm[1] /= body[ibody].natoms;
+        body[ibody].vcm[2] /= body[ibody].natoms;
+        body[ibody].angmom[0] /= body[ibody].natoms;
+        body[ibody].angmom[1] /= body[ibody].natoms;
+        body[ibody].angmom[2] /= body[ibody].natoms;
+      }
     }
 
     memory->destroy(itensor_custom);
@@ -630,7 +632,6 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
 
 void FixRigidSmallLSDEM::pre_neighbor()
 {
-  nghost_bodyLS = 0; // is this needed?
   FixRigidSmall::pre_neighbor();
 
   nghost_bodyLS = 0;
@@ -1348,6 +1349,7 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
   double com_temp[3];
 
   bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, bodyLS[ibody].grid_stride, grid_values, com_temp, itensor_custom[ibody], dimension);
+
   if (bodyLS[ibody].grid_vol < 0)
     error->all(FLERR, "Non-inertial reference frame for level set in {}", id_to_gridfile[bodyLS[ibody].file_id]);
 

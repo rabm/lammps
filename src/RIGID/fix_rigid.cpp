@@ -54,7 +54,8 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
     imagebody(nullptr), fflag(nullptr), tflag(nullptr), langextra(nullptr), sum(nullptr),
     all(nullptr), remapflag(nullptr), xcmimage(nullptr), eflags(nullptr), orient(nullptr),
     dorient(nullptr), id_dilate(nullptr), id_gravity(nullptr), id_no_grav(nullptr), apply_grav(nullptr),
-    random(nullptr), avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr)
+    random(nullptr), avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr),
+    itensor_custom(nullptr)
 {
   int i, j, ibody;
 
@@ -1955,6 +1956,11 @@ void FixRigid::setup_bodies_static()
   double tensor[3][3],evectors[3][3];
 
   for (ibody = 0; ibody < nbody; ibody++) {
+    // overwrite itensor if alternate defined
+    if (itensor_custom)
+      for (int a = 0; a < 6; a++)
+        all[ibody][a] = itensor_custom[ibody][a];
+
     tensor[0][0] = all[ibody][0];
     tensor[1][1] = all[ibody][1];
     tensor[2][2] = all[ibody][2];
@@ -2168,6 +2174,8 @@ void FixRigid::setup_bodies_static()
   double norm;
   for (ibody = 0; ibody < nbody; ibody++) {
     if (inpfile && inbody[ibody]) continue;
+    if (itensor_custom) continue;
+
     if (inertia[ibody][0] == 0.0) {
       if (fabs(all[ibody][0]) > TOLERANCE)
         error->all(FLERR,"Fix rigid: Bad principal moments");
