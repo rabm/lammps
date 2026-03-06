@@ -99,13 +99,11 @@ double compute_surface_area(int dimension, int *grid_size, double stride, double
   return area;
 }
 
-}
-
 /* ----------------------------------------------------------------------
   Compute CoM, moment of inertia, and volume of a grid
 ------------------------------------------------------------------------- */
 
-double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double *grid_values, double *com_temp, double inertia_temp[3][3], int dimension)
+double compute_grid_properties(int *grid_size, double stride, double *grid_values, double *com, double *inertia, int dimension)
 {
   // Volume integration
 
@@ -128,7 +126,7 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
   double h, ls_val;
   int idx;
   double volume = 0.0; // In voxel units
-  for (int a = 0; a < 3; a++) com_temp[a] = 0.0;
+  for (int a = 0; a < 3; a++) com[a] = 0.0;
   for (int ind_x = 0; ind_x < nx; ind_x++) {
     for (int ind_y = 0; ind_y < ny; ind_y++) {
       for (int ind_z = 0; ind_z < nz; ind_z++) {
@@ -138,42 +136,39 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
         heaviside_vals[idx] = h;
         if (h > 0.0) {
           volume += h;
-          com_temp[0] += ind_x * h;
-          com_temp[1] += ind_y * h;
-          com_temp[2] += ind_z * h;
+          com[0] += ind_x * h;
+          com[1] += ind_y * h;
+          com[2] += ind_z * h;
         }
       }
     }
   }
-  com_temp[0] /= volume; // Still all in voxel units
-  com_temp[1] /= volume;
-  com_temp[2] /= volume;
+  com[0] /= volume; // Still all in voxel units
+  com[1] /= volume;
+  com[2] /= volume;
 
   // Computing the inertia tensor (a second loop is unavoidable)
   double delx, dely, delz, delxx, delyy, delzz;
-  for (int a = 0; a < 3; a++) {
-    for (int b = 0; b < 3; b++) {
-      inertia_temp[a][b] = 0.0;
-    }
-  }
+  for (int a = 0; a < 6; a++)
+    inertia[a] = 0.0;
   for (int ind_x = 0; ind_x < nx; ind_x++) {
     for (int ind_y = 0; ind_y < ny; ind_y++) {
       for (int ind_z = 0; ind_z < nz; ind_z++) {
         idx = ind_x + ind_y * nx + ind_z * nx * ny;
         h = heaviside_vals[idx];
         if (h > 0.0) {
-          delx = ind_x - com_temp[0];
-          dely = ind_y - com_temp[1];
-          delz = ind_z - com_temp[2];
-          delxx = delx*delx;
-          delyy = dely*dely;
-          delzz = delz*delz;
-          inertia_temp[0][0] += (delyy + delzz) * h;
-          inertia_temp[1][1] += (delxx + delzz) * h;
-          inertia_temp[2][2] += (delxx + delyy) * h;
-          inertia_temp[0][1] -= delx * dely * h;
-          inertia_temp[0][2] -= delx * delz * h;
-          inertia_temp[1][2] -= dely * delz * h;
+          delx = ind_x - com[0];
+          dely = ind_y - com[1];
+          delz = ind_z - com[2];
+          delxx = delx * delx;
+          delyy = dely * dely;
+          delzz = delz * delz;
+          inertia[0] += (delyy + delzz) * h;
+          inertia[1] += (delxx + delzz) * h;
+          inertia[2] += (delxx + delyy) * h;
+          inertia[3] -= dely * delz * h;
+          inertia[4] -= delx * delz * h;
+          inertia[5] -= delx * dely * h;
         }
       }
     }
@@ -185,25 +180,20 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
 
   // Back to real units
   volume *= volume_cell;
-  com_temp[0] *= stride;
-  com_temp[1] *= stride;
-  com_temp[2] *= stride;
-  double Iscale = volume_cell*stride*stride; // Works in both 2D and 3D
-  inertia_temp[0][0] *= Iscale;
-  inertia_temp[1][1] *= Iscale;
-  inertia_temp[2][2] *= Iscale;
-  inertia_temp[0][1] *= Iscale;
-  inertia_temp[0][2] *= Iscale;
-  inertia_temp[1][2] *= Iscale;
-
-  // Populate other half of inertia tensor
-  inertia_temp[1][0] = inertia_temp[0][1];
-  inertia_temp[2][0] = inertia_temp[0][2];
-  inertia_temp[2][1] = inertia_temp[1][2];
+  com[0] *= stride;
+  com[1] *= stride;
+  com[2] *= stride;
+  double Iscale = volume_cell * stride * stride; // Works in both 2D and 3D
+  inertia[0] *= Iscale;
+  inertia[1] *= Iscale;
+  inertia[2] *= Iscale;
+  inertia[3] *= Iscale;
+  inertia[4] *= Iscale;
+  inertia[5] *= Iscale;
 
   // Check to see if level set has a non-inertial reference frame
-  double I_diag_norm = sqrt(inertia_temp[0][0] * inertia_temp[0][0] + inertia_temp[1][1] * inertia_temp[1][1] + inertia_temp[2][2] * inertia_temp[2][2]);
-  double I_off_diag_norm = sqrt(2.0 * (inertia_temp[0][1] * inertia_temp[0][1] + inertia_temp[0][2] * inertia_temp[0][2] + inertia_temp[1][2] * inertia_temp[1][2]));
+  double I_diag_norm = sqrt(inertia[0] * inertia[0] + inertia[1] * inertia[1] + inertia[2] * inertia[2]);
+  double I_off_diag_norm = sqrt(2.0 * (inertia[5] * inertia[5] + inertia[4] * inertia[4] + inertia[3] * inertia[3]));
   if (I_off_diag_norm / I_diag_norm > EPSILON_INERTIA)
     volume = -1;
 
@@ -214,7 +204,7 @@ double LSDEMExtra::compute_grid_properties(int *grid_size, double stride, double
   Perform trilinear interpolation to get level-set value and normal
 -------------------------------------------------------------------------*/
 
-double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int nrow, int nslice,
+double interpolate_LS(int dimension, double *mygrid, int ncol, int nrow, int nslice,
                                  double x_red, double y_red, double z_red, double normal[3], double stride)
 {
   double dist, nx, ny, nz(0.0);
@@ -222,7 +212,7 @@ double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int n
   // Calculate index from relative coordinate, being careful with integer division.
   int ind_x = int(x_red);
   int ind_y = int(y_red);
-  int ind_z = int(z_red); // Should always be zero in 2D.
+  int ind_z = int(z_red); // zero in 2D.
 
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
@@ -295,4 +285,6 @@ double LSDEMExtra::interpolate_LS(int dimension, double *mygrid, int ncol, int n
   MathExtra::norm3(normal);
 
   return dist;
+}
+
 }

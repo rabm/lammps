@@ -164,7 +164,12 @@ class FixRigidSmall : public Fix {
   int pcouple, pstyle;
   int p_chain;
 
+  // variables used by child classes
+
   int n_extra_attributes;   // # extra attributes a child class may have in input file
+  double **itensor_custom;  // alternate definition of itensor
+  double **xcm_custom;      // alternate definition of xcm
+  double *mass_custom;      // atlernate definition of mass
 
   int allremap;            // remap all atoms
   int dilate_group_bit;    // mask for dilation group

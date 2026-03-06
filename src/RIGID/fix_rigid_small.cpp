@@ -58,8 +58,9 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   inpfile(nullptr), body(nullptr), bodyown(nullptr), bodytag(nullptr), atom2body(nullptr),
   xcmimage(nullptr), displace(nullptr), eflags(nullptr), orient(nullptr), dorient(nullptr),
   avec_ellipsoid(nullptr), avec_line(nullptr), avec_tri(nullptr), counts(nullptr),
-  itensor(nullptr), mass_body(nullptr), langextra(nullptr), random(nullptr),
-  id_dilate(nullptr), id_gravity(nullptr), onemols(nullptr)
+  itensor(nullptr), itensor_custom(nullptr), mass_body(nullptr), langextra(nullptr),
+  random(nullptr), xcm_custom(nullptr), mass_custom(nullptr), id_dilate(nullptr),
+  id_gravity(nullptr), onemols(nullptr)
 {
   int i;
 
@@ -1901,6 +1902,16 @@ void FixRigidSmall::setup_bodies_static()
     xgc[0] /= body[ibody].natoms;
     xgc[1] /= body[ibody].natoms;
     xgc[2] /= body[ibody].natoms;
+
+    // overwrite xcm if alternate defined
+    if (xcm_custom) {
+      xcm[0] = xcm_custom[ibody][0];
+      xcm[1] = xcm_custom[ibody][1];
+      xcm[2] = xcm_custom[ibody][2];
+    }
+
+    if (mass_custom)
+      body[ibody].mass = mass_custom[ibody];
   }
 
   // set vcm, angmom = 0.0 in case inpfile is used
@@ -2048,6 +2059,11 @@ void FixRigidSmall::setup_bodies_static()
   double *ex,*ey,*ez;
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
+    // overwrite itensor if alternate defined
+    if (itensor_custom)
+      for (int a = 0; a < 6; a++)
+        itensor[ibody][a] = itensor_custom[ibody][a];
+
     tensor[0][0] = itensor[ibody][0];
     tensor[1][1] = itensor[ibody][1];
     tensor[2][2] = itensor[ibody][2];
@@ -2271,6 +2287,7 @@ void FixRigidSmall::setup_bodies_static()
   double norm;
   for (ibody = 0; ibody < nlocal_body; ibody++) {
     if (inpfile && inbody[ibody]) continue;
+    if (itensor_custom) continue;
     inertia = body[ibody].inertia;
 
     if (inertia[0] == 0.0) {

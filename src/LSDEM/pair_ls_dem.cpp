@@ -810,7 +810,7 @@ void PairLSDEM::coeff(int narg, char **arg)
     if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell normal damping {} must be postitive", etan_1);
     // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
     if ((kn_1 == 0.0) || (etan_1 == 0.0)) {
-      error->all(FLERR, "Maxwell arm requires normal stiffness k and damping eta to both be zero or both be positive");
+      error->all(FLERR, "Maxwell arm requires normal stiffness k and damping eta to both be positive");
     }
   }
 
@@ -818,7 +818,7 @@ void PairLSDEM::coeff(int narg, char **arg)
     if (kn_1 < 0.0) error->all(FLERR, "The extra maxwell tangential stiffness {} must be postitive", kn_1);
     if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell tangential damping {} must be postitive", etan_1);
     if ((kt_1 == 0.0) || (etat_1 == 0.0)) {
-      error->all(FLERR, "Maxwell arm requires tangential stiffness k and damping eta to both be zero or both be positive");
+      error->all(FLERR, "Maxwell arm requires tangential stiffness k and damping eta to both be positive");
     }
   }
 

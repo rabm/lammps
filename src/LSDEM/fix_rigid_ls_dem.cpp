@@ -792,7 +792,7 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
 {
   // Compute properties from the level-set grid
   int dimension = domain->dimension;
-  double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+  double temp[3], com_temp[3], inertia_temp[6], tensor[3][3], evectors[3][3];
 
   grid_vol[ibody] = compute_grid_properties(grid_size[ibody], grid_stride[ibody], grid_values, com_temp, inertia_temp, dimension);
 
@@ -801,6 +801,13 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
 
   // Comparing if CoM in level-set grid is indeed aligned with CoM
   // Misalignment would cause forces/rotations to be applied to the wrong point in space
+  tensor[0][0] = inertia_temp[0];
+  tensor[1][1] = inertia_temp[1];
+  tensor[2][2] = inertia_temp[2];
+  tensor[1][2] = tensor[2][1] = inertia_temp[3];
+  tensor[0][2] = tensor[2][0] = inertia_temp[4];
+  tensor[0][1] = tensor[1][0] = inertia_temp[5];
+
   MathExtra::add3(grid_min[ibody], com_temp, temp);
   if (MathExtra::len3(temp) > (0.5 * grid_stride[ibody])) {
     error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
@@ -810,7 +817,7 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
   // Overwrite inertia, could modify logic (compare or warn) if desired
 
   // Calculate eigen system of inertia tensor
-  int ierror = MathEigen::jacobi3(inertia_temp, inertia[ibody], evectors, 1);
+  int ierror = MathEigen::jacobi3(tensor, inertia[ibody], evectors, 1);
   if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
 
   // Set grain orientation based on eigenvectors of inertia tensor

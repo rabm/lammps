@@ -70,7 +70,6 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   maxcut = -1;
   stored_flag = 0;
   distributed_flag = 0;
-
   n_extra_attributes = 3;
 
   nmax_bodyLS = nmax_body;
@@ -120,6 +119,10 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
   memory->destroy(global_grids);
   memory->destroy(global_grids_min);
   memory->destroy(global_grids_size);
+
+  memory->destroy(itensor_custom);
+  memory->destroy(xcm_custom);
+  memory->destroy(mass_custom);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -162,12 +165,25 @@ void FixRigidSmallLSDEM::init()
   if (stored_flag) return;
   // set in setup_pre_neighbor()
 
+  // allocate storage for LS-derived quantities (used in FixRigidSmall::setup_pre_neighbor())
+
+  memory->create(itensor_custom, nlocal_body, 6, "rigid/small:itensor_custom");
+  memory->create(xcm_custom, nlocal_body, 3, "rigid/small:xcm_custom");
+  memory->create(mass_custom, nlocal_body, "rigid/small:mass_custom");
+
   // Create complete list of LS gridfile names and data
   //   run in init b/c need to calculate size for fix property/atom
   //   to set comm limits for distributed grid
 
   if (inpfile) {
+    for (int i = 0; i < nlocal_body; i++)
+      mass_custom[i] = -1;
+
     read_infile();
+
+    for (int i = 0; i < nlocal_body; i++)
+      if (mass_custom[i] == -1)
+        error->all(FLERR, "Must define all bodies in infile for ls/dem");
   } else {
     Molecule *onemol;
     int *grid_index = atom->grid_index;
@@ -239,19 +255,66 @@ void FixRigidSmallLSDEM::init()
 
 void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
-  FixRigidSmall::setup_pre_neighbor();
+  if (!stored_flag) {
+    // acquire ghost bodies via forward comm
+    // set atom2body for ghost atoms via forward comm
+    // set atom2body for other owned atoms via reset_atom2body()
 
-  // Sanity check for agreement with parent
-  for (int i = 0; i < atom->nlocal+atom->nghost; i++) {
-    if (bodyown[i] != bodyownLS[i]) {
-      error->one(FLERR, "Different bodies detected, {} vs {}, for atom {} on processor {}", bodyown[i], bodyownLS[i], atom->tag[i], comm->me);
-    }
+    nghost_body = 0;
+    commflag = FULL_BODY;
+    comm->forward_comm(this);
+    reset_atom2body();
+
+    process_levelsets();
   }
 
-  if (stored_flag) return;
-  stored_flag = 1;
+  FixRigidSmall::setup_pre_neighbor();
 
-  // compared to rigid/ls/dem, need to wait until atom2body made
+  if (!stored_flag) {
+    // extra calculations using values from parent
+
+    int iatom;
+    double quat_conj[4];
+    for (int ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
+      bodyLS[ibody].node_area /= body[ibody].natoms;
+
+      // calculate relative rotation from inerital frame to LS grid
+      //   assume all atoms in body have equivalent initial quaterions
+      //   (user could incorrectly use diplace_atoms on subset)
+      int iatom = body[ibody].ilocal;
+
+      MathExtra::qconjugate(body[ibody].quat, quat_conj);
+      MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
+
+      // scale velocities by # of nodes unlike in rigid b/c nodal count is arbitrary
+      body[ibody].vcm[0] /= body[ibody].natoms;
+      body[ibody].vcm[1] /= body[ibody].natoms;
+      body[ibody].vcm[2] /= body[ibody].natoms;
+      body[ibody].angmom[0] /= body[ibody].natoms;
+      body[ibody].angmom[1] /= body[ibody].natoms;
+      body[ibody].angmom[2] /= body[ibody].natoms;
+    }
+
+    memory->destroy(itensor_custom);
+    memory->destroy(xcm_custom);
+    memory->destroy(mass_custom);
+
+    stored_flag = 1;
+  }
+
+  // Sanity check for agreement with parent
+  for (int i = 0; i < atom->nlocal + atom->nghost; i++) {
+    if (bodyown[i] != bodyownLS[i]) {
+      error->one(FLERR, "Different bodies detected, {} vs {}, for atom {}", bodyown[i], bodyownLS[i], atom->tag[i]);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::process_levelsets()
+{
+  // Note, FixRigidSmall has not yet populated body structure, use custom fields
 
   int ibody, i, a;
   int dimension = domain->dimension;
@@ -330,10 +393,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
       bodyLS[ibody].style = onemol->grid_style;
       bodyLS[ibody].grid_scale = onemol->grid_scale;
-      body[ibody].mass = onemol->masstotal;
-      body[ibody].xcm[0] = xcom[i][0];
-      body[ibody].xcm[1] = xcom[i][1];
-      body[ibody].xcm[2] = xcom[i][2];
+      mass_custom[ibody] = onemol->masstotal;
+      xcm_custom[ibody][0] = xcom[i][0];
+      xcm_custom[ibody][1] = xcom[i][1];
+      xcm_custom[ibody][2] = xcom[i][2];
     }
   }
 
@@ -403,7 +466,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       for (i = 0; i < atom->nlocal; i++) {
         ibody = atom2body[i];
 
-        // Ideally would have list of all atoms in a rigid body... not sure if exists...
+        // Ideally use list of all atoms in body... not sure this exists
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
 
@@ -417,8 +480,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         gmin[1] = gridfile_data[gridfile].grid_min[1] * bodyLS[ibody].grid_scale;
         gmin[2] = gridfile_data[gridfile].grid_min[2] * bodyLS[ibody].grid_scale;
 
-        // Location of atom/node relative to CoM
-        MathExtra::sub3(x[i], body[ibody].xcm, dx);
+        // Location of atom/node relative to CoM (not yet defined in body structure)
+        MathExtra::sub3(x[i], xcm_custom[ibody], dx);
 
         // Account for PBCs
         domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
@@ -481,36 +544,6 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
-
-  // resend full body info with new body properies (e.g. inertia)
-  nghost_body = 0;
-  commflag = FULL_BODY;
-  comm->forward_comm(this);
-
-  nghost_bodyLS = 0;
-  commflag_ls = FULL_BODY_LS;
-  comm->forward_comm(this, 1 + bodysizeLS);
-  commflag_ls = PARENT;
-
-  reset_atom2body();
-
-  // Redefine displace - initial atom coords in basis of principal axes -with new inertia/exspace values
-  //   copy of calculations from FixSmallRigid::setup_bodies_static()
-
-  int *periodicity = domain->periodicity;
-  double delta[3], unwrap[3];
-  for (i = 0; i < atom->nlocal; i++) {
-    if (atom2body[i] < 0) continue;
-
-    Body *b = &body[atom2body[i]];
-
-    domain->unmap(x[i], xcmimage[i], unwrap);
-    delta[0] = unwrap[0] - b->xcm[0];
-    delta[1] = unwrap[1] - b->xcm[1];
-    delta[2] = unwrap[2] - b->xcm[2];
-    MathExtra::transpose_matvec(b->ex_space, b->ey_space, b->ez_space,
-                              delta, displace[i]);
-  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -597,7 +630,7 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
 
 void FixRigidSmallLSDEM::pre_neighbor()
 {
-  nghost_bodyLS = 0;
+  nghost_bodyLS = 0; // is this needed?
   FixRigidSmall::pre_neighbor();
 
   nghost_bodyLS = 0;
@@ -1085,6 +1118,16 @@ void FixRigidSmallLSDEM::read_infile()
   char line[MAXLINE] = {'\0'};
   std::string gridfile;
 
+  // create local hash with key/value pairs
+  // key = mol ID of bodies my atoms own
+  // value = index into local body array
+
+  int nlocal = atom->nlocal;
+
+  std::unordered_map<tagint,int> hash;
+  for (int i = 0; i < nlocal; i++)
+    if (bodyown[i] >= 0) hash[atom->molecule[i]] = bodyown[i];
+
   if (comm->me == 0) {
     fp = fopen(inpfile,"r");
     if (fp == nullptr)
@@ -1130,7 +1173,22 @@ void FixRigidSmallLSDEM::read_infile()
       try {
         ValueTokenizer values(buf);
         id = values.next_tagint();
-        values.skip(19);
+
+        if (id <= 0 || id > maxmol)
+          error->all(FLERR,"Invalid rigid body molecude ID {} in fix {} file", id, style);
+
+        if (hash.find(id) == hash.end()) {
+          buf = next + 1;
+          continue;
+        }
+        int m = hash[id];
+
+        mass_custom[m] = values.next_double();
+        xcm_custom[m][0] = values.next_double();
+        xcm_custom[m][1] = values.next_double();
+        xcm_custom[m][2] = values.next_double();
+
+        values.skip(15);
         mem_style = values.next_int();
 
         if (mem_style != DISTRIBUTED && mem_style != GLOBAL)
@@ -1286,120 +1344,45 @@ void FixRigidSmallLSDEM::read_gridfile(int which, std::string filename, double *
 
 void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, double *grid_min, double *grid_values)
 {
-  // Compute properties from the level-set grid
   int dimension = domain->dimension;
-  double temp[3], com_temp[3], inertia_temp[3][3], evectors[3][3];
+  double com_temp[3];
 
-  bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, bodyLS[ibody].grid_stride, grid_values, com_temp, inertia_temp, dimension);
+  bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, bodyLS[ibody].grid_stride, grid_values, com_temp, itensor_custom[ibody], dimension);
   if (bodyLS[ibody].grid_vol < 0)
-    error->all(FLERR, "Non-inertial reference frame detected for level set in {}, integration of rotational motion will be wrong", id_to_gridfile[bodyLS[ibody].file_id]);
+    error->all(FLERR, "Non-inertial reference frame for level set in {}", id_to_gridfile[bodyLS[ibody].file_id]);
 
-  // Comparing if CoM in level-set grid is indeed aligned with CoM
-  // Misalignment would cause forces/rotations to be applied to the wrong point in space
-  MathExtra::add3(grid_min, com_temp, temp);
-  if (MathExtra::len3(temp) > (0.5 * bodyLS[ibody].grid_stride))
-    error->all(FLERR, "Centre of mass computed from the LS grid does not agree with that provided in the input grid file! Grid min given at {} {} {} and CoM computed at {} {} {}.",
+  // Check CoM misalignment, would apply forces/rotations at incorrect positions
+  double sum[3];
+  MathExtra::add3(grid_min, com_temp, sum);
+  if (MathExtra::len3(sum) > (0.5 * bodyLS[ibody].grid_stride))
+    error->all(FLERR, "Centre of mass computed from LS grid does not agree with provided value, grid min at {} {} {} and CoM computed at {} {} {}",
     grid_min[0], grid_min[1], grid_min[2], com_temp[0], com_temp[1], com_temp[2]);
 
-  // Overwrite inertia, could modify logic (compare or warn) if desired
+  // Surface area calculation
+  //   default epsilon (diff between inner and outer) = 2x grid stride.
 
-  // Calculate eigen system of inertia tensor
-  double *inertia = body[ibody].inertia;
-  int ierror = MathEigen::jacobi3(inertia_temp, inertia, evectors, 1);
-  if (ierror) error->all(FLERR, "Insufficient Jacobi rotations for LS grid");
-
-  // Set grain orientation based on eigenvectors of inertia tensor
-  double *ex = body[ibody].ex_space;
-  double *ey = body[ibody].ey_space;
-  double *ez = body[ibody].ez_space;
-  for (int a = 0; a < 3; a++) {
-    ex[a] = evectors[a][0];
-    ey[a] = evectors[a][1];
-    ez[a] = evectors[a][2];
-  }
-
-  // copy of calculations from FixRigidSmall::setup_bodies_static()
-  // for 2d, ensure that evector along z axis is last
-  // necessary so that quaternion is a simple rotation around +z axis
-  //   or a 180 degree rotation for a -z axis
-  // otherwise richardson() method for a body with a tiny evalue (near-linear)
-  //  may not preserve the correct z-aligned quat and associated evectors
-  //  over time due to round-off accumulation
-
-  if (domain->dimension == 2) {
-    if (fabs(ez[0]) > EPSILON || fabs(ez[1]) > EPSILON) {
-      std::swap(inertia[1],inertia[2]);
-      std::swap(ey[0],ez[0]);
-      std::swap(ey[1],ez[1]);
-      std::swap(ey[2],ez[2]);
-    }
-  }
-
-  // if any principal moment < scaled EPSILON, set to 0.0
-
-  double max;
-  max = MAX(inertia[0],inertia[1]);
-  max = MAX(max,inertia[2]);
-
-  if (inertia[0] < EPSILON*max) inertia[0] = 0.0;
-  if (inertia[1] < EPSILON*max) inertia[1] = 0.0;
-  if (inertia[2] < EPSILON*max) inertia[2] = 0.0;
-
-  // enforce 3 evectors as a right-handed coordinate system
-  // flip 3rd vector if needed
-
-  double cross[3];
-  MathExtra::cross3(ex,ey,cross);
-  if (MathExtra::dot3(cross,ez) < 0.0) MathExtra::negate3(ez);
-
-  // create initial quaternion
-
-  MathExtra::exyz_to_q(ex,ey,ez,body[ibody].quat);
-
-  // convert geometric center position to principal axis coordinates
-  // xcm is wrapped, but xgc is not initially
-
-  double *xcm = body[ibody].xcm;
-  double *xgc = body[ibody].xgc;
-  double delta[3];
-  MathExtra::sub3(xgc,xcm,delta);
-  domain->minimum_image_big(FLERR, delta);
-  MathExtra::transpose_matvec(ex,ey,ez,delta,body[ibody].xgc_body);
-  MathExtra::add3(xcm,delta,xgc);
-
-  // additionally, calculate relative rotation from inerital frame to LS grid
-  //   assume any rotations on grains (e.g. by create_atoms, displace_atoms, ...)
-  //   were correctly performed s.t. all atoms have equivalent initial quaterions
-  int iatom = body[ibody].ilocal;
-
-  double quat_conj[4];
-  MathExtra::qconjugate(body[ibody].quat, quat_conj);
-  MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
-
-  // Surface area calculation with default epsilon (diff between inner and outer) of two times grid stride.
   double area = compute_surface_area(dimension, grid_size, bodyLS[ibody].grid_stride, grid_values);
-  // Test for physical realism
   if (!((area > 0.0) && std::isfinite(area)))
-    error->all(FLERR, "Surface area calculation returns nonsense, giving {}", area);
+    error->all(FLERR, "Invalid surface area calculated {}", area);
   bodyLS[ibody].node_area = area;
 
-  // Normalise by number of nodes
-  bodyLS[ibody].node_area /= body[ibody].natoms;
+  // Scale relevant quantities by grain size
 
-  // Scale all relevant quantities by given scaling of grain size
   double scale = bodyLS[ibody].grid_scale;
   double scale2 = scale * scale;
   double scale3 = scale * scale2;
-  double density = body[ibody].mass / bodyLS[ibody].grid_vol;
+  double density = mass_custom[ibody] / bodyLS[ibody].grid_vol;
   bodyLS[ibody].grid_stride *= scale;
-  if (domain->dimension == 3) {
+  if (dimension == 3) {
     bodyLS[ibody].node_area *= scale2;
     bodyLS[ibody].grid_vol *= scale3;
-    MathExtra::scale3(density * scale2 * scale3, body[ibody].inertia);
+    for (int a = 0; a < 6; a++)
+      itensor_custom[ibody][a] *= density * scale2 * scale3;
   } else {
     bodyLS[ibody].node_area *= scale;
     bodyLS[ibody].grid_vol *= scale2;
-    MathExtra::scale3(density * scale2 * scale2, body[ibody].inertia);
+    for (int a = 0; a < 6; a++)
+      itensor_custom[ibody][a] *= density * scale2 * scale2;
   }
 }
 
