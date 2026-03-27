@@ -182,7 +182,7 @@ void FixRigidSmallLSDEM::init()
     for (int i = 0; i < nlocal_body; i++)
       mass_custom[i] = -1;
 
-     read_infile();
+    read_infile();
 
     for (int i = 0; i < nlocal_body; i++)
       if (mass_custom[i] == -1)
@@ -1298,7 +1298,7 @@ void FixRigidSmallLSDEM::read_infile()
   auto buffer = new char[CHUNK * MAXLINE];
   int nread = 0;
   int me = comm->me;
-  int mem_style, set_size;
+  int mem_style, set_size, skip, m;
   double scale;
   LSData mydata;
   while (nread < nlines) {
@@ -1331,16 +1331,22 @@ void FixRigidSmallLSDEM::read_infile()
         if (id <= 0 || id > maxmol)
           error->all(FLERR,"Invalid rigid body molecule ID {} in fix {} file", id, style);
 
+        skip = 0;
         if (hash.find(id) == hash.end()) {
-          buf = next + 1;
-          continue;
+          skip = 1;
+        } else {
+          m = hash[id];
+          skip = 0;
         }
-        int m = hash[id];
 
-        mass_custom[m] = values.next_double();
-        xcm_custom[m][0] = values.next_double();
-        xcm_custom[m][1] = values.next_double();
-        xcm_custom[m][2] = values.next_double();
+        if (!skip) {
+          mass_custom[m] = values.next_double();
+          xcm_custom[m][0] = values.next_double();
+          xcm_custom[m][1] = values.next_double();
+          xcm_custom[m][2] = values.next_double();
+        } else {
+          values.skip(4);
+        }
 
         values.skip(15);
         mem_style = values.next_int();
@@ -1371,10 +1377,14 @@ void FixRigidSmallLSDEM::read_infile()
         gridfile_data[gridfile].scales.push_back(scale);
 
         if (read_quat) {
-          quat_custom[m][0] = values.next_double();
-          quat_custom[m][1] = values.next_double();
-          quat_custom[m][2] = values.next_double();
-          quat_custom[m][3] = values.next_double();
+          if (!skip) {
+            quat_custom[m][0] = values.next_double();
+            quat_custom[m][1] = values.next_double();
+            quat_custom[m][2] = values.next_double();
+            quat_custom[m][3] = values.next_double();
+          } else {
+            values.skip(4);
+          }
         }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/small/ls/dem infile: {}", e.what());
