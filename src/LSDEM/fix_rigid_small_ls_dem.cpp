@@ -65,7 +65,7 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 
 FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr), global_grids_min(nullptr),
-  global_grids_size(nullptr), id_fix(nullptr), id_fix2(nullptr)
+  global_grids_size(nullptr), id_fix(nullptr), id_fix2(nullptr), quat_custom(nullptr)
 {
   maxcut = -1;
   stored_flag = 0;
@@ -123,6 +123,7 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
   memory->destroy(itensor_custom);
   memory->destroy(xcm_custom);
   memory->destroy(mass_custom);
+  memory->destroy(quat_custom);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -165,11 +166,12 @@ void FixRigidSmallLSDEM::init()
   if (stored_flag) return;
   // set in setup_pre_neighbor()
 
-  // allocate storage for LS-derived quantities (used in FixRigidSmall::setup_pre_neighbor())
+  // allocate storage for LS-derived quantities (used in FixRigidSmall::setup_pre_neighbor() except for quat)
 
   memory->create(itensor_custom, nlocal_body, 6, "rigid/small:itensor_custom");
   memory->create(xcm_custom, nlocal_body, 3, "rigid/small:xcm_custom");
   memory->create(mass_custom, nlocal_body, "rigid/small:mass_custom");
+  memory->create(quat_custom, nlocal_body, 4, "rigid/small:quat_custom");
 
   // Create complete list of LS gridfile names and data
   //   run in init b/c need to calculate size for fix property/atom
@@ -276,7 +278,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
     int iatom;
     double quat_conj[4];
-    for (int ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
+    for (int ibody = 0; ibody < nlocal_body; ibody++) {
       bodyLS[ibody].node_area /= body[ibody].natoms;
 
       // calculate relative rotation from inerital frame to LS grid
@@ -284,9 +286,11 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       //   (user could incorrectly use diplace_atoms on subset)
       int iatom = body[ibody].ilocal;
 
-      if (!read_quat) {
+      if (read_quat) {
         MathExtra::qconjugate(body[ibody].quat, quat_conj);
-        MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
+        MathExtra::quatquat(quat_conj, quat_custom[ibody], bodyLS[ibody].quatd2g);
+      } else {
+        MathExtra::qconjugate(body[ibody].quat, bodyLS[ibody].quatd2g);
       }
 
       if (!inpfile) {
@@ -300,9 +304,17 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       }
     }
 
+    commflag_ls = FULL_BODY_LS;
+    comm->forward_comm(this, 1 + bodysizeLS);
+    commflag_ls = PARENT;
+
+    commflag = FULL_BODY;
+    comm->forward_comm(this);
+
     memory->destroy(itensor_custom);
     memory->destroy(xcm_custom);
     memory->destroy(mass_custom);
+    memory->destroy(quat_custom);
 
     stored_flag = 1;
   }
@@ -782,6 +794,139 @@ void FixRigidSmallLSDEM::set_arrays(int i)
 }
 
 /* ----------------------------------------------------------------------
+   write out restart info for mass, COM, inertia tensor to file
+   identical format to inpfile option, so info can be read in when restarting
+   each proc contributes info for rigid bodies it owns
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::write_restart_file(const char *file)
+{
+  FILE *fp;
+
+  // do not write file if bodies have not yet been initialized
+
+  if (!setupflag) return;
+
+  // proc 0 opens file and writes header
+
+  if (comm->me == 0) {
+    auto outfile = std::string(file) + ".rigid";
+    fp = fopen(outfile.c_str(),"w");
+    if (fp == nullptr)
+      error->one(FLERR, "Cannot open fix {} restart file {}: {}",
+                 style, outfile, utils::getsyserror());
+
+    utils::print(fp,"# fix rigid mass, COM, inertia tensor info for "
+               "{} bodies on timestep {}\n\n",nbody,update->ntimestep);
+    utils::print(fp,"{}\n",nbody);
+  }
+
+  // communication buffer for all my rigid body info
+  // max_size = largest buffer needed by any proc
+  // ncol = # of values per line in output file
+
+  int ncol = ATTRIBUTE_PERBODY + n_extra_attributes + 4;
+  int sendrow = nlocal_body;
+  int maxrow;
+  MPI_Allreduce(&sendrow,&maxrow,1,MPI_INT,MPI_MAX,world);
+
+  double **buf;
+  if (comm->me == 0) memory->create(buf,MAX(1,maxrow),ncol,"rigid/small:buf");
+  else memory->create(buf,MAX(1,sendrow),ncol,"rigid/small/ls/dem:buf");
+
+  // pack my rigid body info into buf
+  // compute I tensor against xyz axes from diagonalized I and current quat
+  // Ispace = P Idiag P_transpose
+  // P is stored column-wise in exyz_space
+
+  double p[3][3],pdiag[3][3],ispace[3][3];
+
+  for (int i = 0; i < nlocal_body; i++) {
+    MathExtra::col2mat(body[i].ex_space,body[i].ey_space,body[i].ez_space,p);
+    MathExtra::times3_diag(p,body[i].inertia,pdiag);
+    MathExtra::times3_transpose(pdiag,p,ispace);
+
+    buf[i][0] = atom->molecule[body[i].ilocal];
+    buf[i][1] = body[i].mass;
+    buf[i][2] = body[i].xcm[0];
+    buf[i][3] = body[i].xcm[1];
+    buf[i][4] = body[i].xcm[2];
+    buf[i][5] = ispace[0][0];
+    buf[i][6] = ispace[1][1];
+    buf[i][7] = ispace[2][2];
+    buf[i][8] = ispace[0][1];
+    buf[i][9] = ispace[0][2];
+    buf[i][10] = ispace[1][2];
+    buf[i][11] = body[i].vcm[0];
+    buf[i][12] = body[i].vcm[1];
+    buf[i][13] = body[i].vcm[2];
+    buf[i][14] = body[i].angmom[0];
+    buf[i][15] = body[i].angmom[1];
+    buf[i][16] = body[i].angmom[2];
+    buf[i][17] = (body[i].image & IMGMASK) - IMGMAX;
+    buf[i][18] = (body[i].image >> IMGBITS & IMGMASK) - IMGMAX;
+    buf[i][19] = (body[i].image >> IMG2BITS) - IMGMAX;
+
+    // LSDEM quantities
+    buf[i][20] = (double) bodyLS[i].style;
+    buf[i][21] = bodyLS[i].grid_scale;
+    buf[i][22] = (double) bodyLS[i].file_id;
+    buf[i][23] = body[i].quat[0];
+    buf[i][24] = body[i].quat[1];
+    buf[i][25] = body[i].quat[2];
+    buf[i][26] = body[i].quat[3];
+  }
+
+  // write one chunk of rigid body info per proc to file
+  // proc 0 pings each proc, receives its chunk, writes to file
+  // all other procs wait for ping, send their chunk to proc 0
+
+  int tmp,recvrow;
+
+  if (comm->me == 0) {
+    MPI_Status status;
+    MPI_Request request;
+    for (int iproc = 0; iproc < comm->nprocs; iproc++) {
+      if (iproc) {
+        MPI_Irecv(&buf[0][0],maxrow*ncol,MPI_DOUBLE,iproc,0,world,&request);
+        MPI_Send(&tmp,0,MPI_INT,iproc,0,world);
+        MPI_Wait(&request,&status);
+        MPI_Get_count(&status,MPI_DOUBLE,&recvrow);
+        recvrow /= ncol;
+      } else recvrow = sendrow;
+
+      for (int i = 0; i < recvrow; i++)
+        fprintf(fp,"%d %-1.16e %-1.16e %-1.16e %-1.16e "
+                "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
+                "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d "
+                "%d %-1.16e %s %-1.16e %-1.16e %-1.16e %-1.16e\n",
+                static_cast<int> (buf[i][0]),buf[i][1],
+                buf[i][2],buf[i][3],buf[i][4],
+                buf[i][5],buf[i][6],buf[i][7],
+                buf[i][8],buf[i][9],buf[i][10],
+                buf[i][11],buf[i][12],buf[i][13],
+                buf[i][14],buf[i][15],buf[i][16],
+                static_cast<int> (buf[i][17]),
+                static_cast<int> (buf[i][18]),
+                static_cast<int> (buf[i][19]),
+                static_cast<int> (buf[i][20]), // Start of LS
+                buf[i][21],
+                id_to_gridfile[static_cast<int> (buf[i][22])].c_str(),
+                buf[i][23],buf[i][24],buf[i][25],buf[i][26]);
+    }
+
+  } else {
+    MPI_Recv(&tmp,0,MPI_INT,0,0,world,MPI_STATUS_IGNORE);
+    MPI_Rsend(&buf[0][0],sendrow*ncol,MPI_DOUBLE,0,0,world);
+  }
+
+  // clean up and close file
+
+  memory->destroy(buf);
+  if (comm->me == 0) fclose(fp);
+}
+
+/* ----------------------------------------------------------------------
    initialize a molecule inserted by another fix, e.g. deposit or pour
    called when molecule is created
    nlocalprev = # of atoms on this proc before molecule inserted
@@ -1167,9 +1312,9 @@ void FixRigidSmallLSDEM::read_infile()
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords = (ATTRIBUTE_PERBODY + n_extra_attributes)) {
+    if (nwords == (ATTRIBUTE_PERBODY + n_extra_attributes)) {
       read_quat = 0;
-    } else if (nwords = (ATTRIBUTE_PERBODY + n_extra_attributes + 4)) {
+    } else if (nwords == (ATTRIBUTE_PERBODY + n_extra_attributes + 4)) {
       read_quat = 1;
     } else {
       error->all(FLERR, "Incorrect rigid body format in fix rigid/small/ls/dem file");
@@ -1184,7 +1329,7 @@ void FixRigidSmallLSDEM::read_infile()
         id = values.next_tagint();
 
         if (id <= 0 || id > maxmol)
-          error->all(FLERR,"Invalid rigid body molecude ID {} in fix {} file", id, style);
+          error->all(FLERR,"Invalid rigid body molecule ID {} in fix {} file", id, style);
 
         if (hash.find(id) == hash.end()) {
           buf = next + 1;
@@ -1226,10 +1371,10 @@ void FixRigidSmallLSDEM::read_infile()
         gridfile_data[gridfile].scales.push_back(scale);
 
         if (read_quat) {
-          bodyLS[m].quatd2g[0] = values.next_double();
-          bodyLS[m].quatd2g[1] = values.next_double();
-          bodyLS[m].quatd2g[2] = values.next_double();
-          bodyLS[m].quatd2g[3] = values.next_double();
+          quat_custom[m][0] = values.next_double();
+          quat_custom[m][1] = values.next_double();
+          quat_custom[m][2] = values.next_double();
+          quat_custom[m][3] = values.next_double();
         }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/small/ls/dem infile: {}", e.what());
