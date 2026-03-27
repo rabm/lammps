@@ -2499,7 +2499,8 @@ void FixRigidSmall::readfile(int which, double **array, int *inbody)
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
+    if ((nwords != ATTRIBUTE_PERBODY && n_extra_attributes == 0) ||
+        nwords < ATTRIBUTE_PERBODY)
       error->all(FLERR,"Incorrect rigid body format in fix {} file", style);
 
     // loop over lines of rigid body attributes

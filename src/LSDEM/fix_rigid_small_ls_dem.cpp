@@ -175,11 +175,12 @@ void FixRigidSmallLSDEM::init()
   //   run in init b/c need to calculate size for fix property/atom
   //   to set comm limits for distributed grid
 
+  read_quat = 0;
   if (inpfile) {
     for (int i = 0; i < nlocal_body; i++)
       mass_custom[i] = -1;
 
-    read_infile();
+     read_infile();
 
     for (int i = 0; i < nlocal_body; i++)
       if (mass_custom[i] == -1)
@@ -283,8 +284,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       //   (user could incorrectly use diplace_atoms on subset)
       int iatom = body[ibody].ilocal;
 
-      MathExtra::qconjugate(body[ibody].quat, quat_conj);
-      MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
+      if (!read_quat) {
+        MathExtra::qconjugate(body[ibody].quat, quat_conj);
+        MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
+      }
 
       if (!inpfile) {
         // scale velocities by # of nodes unlike in rigid b/c nodal count is arbitrary
@@ -1164,8 +1167,13 @@ void FixRigidSmallLSDEM::read_infile()
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
+    if (nwords = (ATTRIBUTE_PERBODY + n_extra_attributes)) {
+      read_quat = 0;
+    } else if (nwords = (ATTRIBUTE_PERBODY + n_extra_attributes + 4)) {
+      read_quat = 1;
+    } else {
       error->all(FLERR, "Incorrect rigid body format in fix rigid/small/ls/dem file");
+    }
 
     for (int i = 0; i < nchunk; i++) {
       next = strchr(buf,'\n');
@@ -1194,10 +1202,13 @@ void FixRigidSmallLSDEM::read_infile()
 
         if (mem_style != DISTRIBUTED && mem_style != GLOBAL)
           throw TokenizerException("invalid_rigid memory model ", std::to_string(mem_style));
-        if (mem_style == 1)
+        if (mem_style == DISTRIBUTED)
           distributed_flag = 1;
 
         scale = values.next_double();
+        if (scale <= 0)
+          error->one(FLERR, "Invalid scaling factor {}", scale);
+
         gridfile = values.next_string();
         if (gridfile_data.find(gridfile) == gridfile_data.end()) {
           set_size = gridfile_data.size();
@@ -1213,6 +1224,13 @@ void FixRigidSmallLSDEM::read_infile()
 
         gridfile_data[gridfile].bodies.push_back(id);
         gridfile_data[gridfile].scales.push_back(scale);
+
+        if (read_quat) {
+          bodyLS[m].quatd2g[0] = values.next_double();
+          bodyLS[m].quatd2g[1] = values.next_double();
+          bodyLS[m].quatd2g[2] = values.next_double();
+          bodyLS[m].quatd2g[3] = values.next_double();
+        }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/small/ls/dem infile: {}", e.what());
       }

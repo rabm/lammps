@@ -57,7 +57,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr),
     grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr),
-    quatd2g(nullptr)
+    quatd2g(nullptr), gridfiles(nullptr), quat_custom(nullptr)
 {
   comm_forward = 1;
   maxcut = -1;
@@ -78,6 +78,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
+  memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
@@ -108,8 +109,10 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(grid_vol);
   memory->destroy(node_area);
   memory->destroy(quatd2g);
+  memory->destroy(gridfiles);
 
   memory->destroy(itensor_custom);
+  memory->destroy(quat_custom);
 
   // delete global memory data
 
@@ -157,6 +160,7 @@ void FixRigidLSDEM::init()
   // allocate storage for LS-derived quantities (used in FixRigid::init())
 
   memory->create(itensor_custom, nbody, 6, "rigid:itensor_custom");
+  memory->create(quat_custom, nbody, 4, "rigid:quat_custom");
 
   int iatom, ibody, i, a;
   int dimension = domain->dimension;
@@ -167,10 +171,8 @@ void FixRigidLSDEM::init()
     touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
   int *ntotal_global;
-  char **gridfiles;
   memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
-  memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
-  read_infile(gridfiles);
+  int read_quat = read_infile(gridfiles);
 
   // Read grid dimensions for all bodies
   std::map <std::string, std::set<int>> file_map;
@@ -357,13 +359,11 @@ void FixRigidLSDEM::init()
     }
   }
 
-  memory->destroy(gridfiles);
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
 
   FixRigid::init();
 
-  memory->destroy(itensor_custom);
 
   // extra calculations using values from parent
 
@@ -376,8 +376,16 @@ void FixRigidLSDEM::init()
       if (body[iatom] == ibody) break;
 
     MathExtra::qconjugate(quat[ibody], quat_conj);
-    MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
+    if (read_quat) {
+      MathExtra::qconjugate(quat[ibody], quat_conj);
+      MathExtra::quatquat(quat_conj, quat_custom[ibody], quatd2g[ibody]);
+    } else {
+      MathExtra::qconjugate(quat[ibody], quatd2g[ibody]);
+    }
   }
+
+  memory->destroy(itensor_custom);
+  memory->destroy(quat_custom);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -529,7 +537,46 @@ void FixRigidLSDEM::write_restart_file(const char *file)
 {
   if (comm->me) return;
 
-  FixRigid::write_restart_file(file); // Todo, save LS DEM data
+
+  auto outfile = std::string(file) + ".rigid";
+  FILE *fp = fopen(outfile.c_str(),"w");
+  if (fp == nullptr)
+    error->one(FLERR,"Cannot open fix rigid restart file {}: {}",outfile,utils::getsyserror());
+
+  utils::print(fp,"# fix rigid mass, COM, inertia tensor info for {} bodies on timestep {}\n\n",nbody,update->ntimestep);
+  utils::print(fp,"{}\n",nbody);
+
+  // compute I tensor against xyz axes from diagonalized I and current quat
+  // Ispace = P Idiag P_transpose
+  // P is stored column-wise in exyz_space
+
+  int xbox,ybox,zbox;
+  double p[3][3],pdiag[3][3],ispace[3][3];
+
+  int id;
+  for (int i = 0; i < nbody; i++) {
+    if (rstyle == SINGLE || rstyle == GROUP) id = i+1;
+    else id = body2mol[i];
+
+    MathExtra::col2mat(ex_space[i],ey_space[i],ez_space[i],p);
+    MathExtra::times3_diag(p,inertia[i],pdiag);
+    MathExtra::times3_transpose(pdiag,p,ispace);
+
+    xbox = (imagebody[i] & IMGMASK) - IMGMAX;
+    ybox = (imagebody[i] >> IMGBITS & IMGMASK) - IMGMAX;
+    zbox = (imagebody[i] >> IMG2BITS) - IMGMAX;
+
+    fprintf(fp,"%d %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
+            "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d "
+            "%d %-1.16e %s %-1.16e %-1.16e %-1.16e %-1.16e\n",
+            id,masstotal[i],xcm[i][0],xcm[i][1],xcm[i][2],ispace[0][0],ispace[1][1],ispace[2][2],
+            ispace[0][1],ispace[0][2],ispace[1][2],vcm[i][0],vcm[i][1],vcm[i][2],
+            angmom[i][0],angmom[i][1],angmom[i][2],xbox,ybox,zbox,
+            grid_style[i], grid_scale[i], gridfiles[i],
+            quat[i][0], quat[i][1], quat[i][2], quat[i][3]);
+  }
+
+  fclose(fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -548,10 +595,10 @@ double FixRigidLSDEM::memory_usage()
    one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
-void FixRigidLSDEM::read_infile(char **gridfiles)
+int FixRigidLSDEM::read_infile(char **gridfiles)
 {
   tagint id;
-  int nchunk, eofflag, nlines;
+  int nchunk, eofflag, nlines, read_quat;
   FILE *fp;
   char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
@@ -575,7 +622,7 @@ void FixRigidLSDEM::read_infile(char **gridfiles)
   // empty file with 0 lines is needed to trigger initial restart file
   // generation when no infile was previously used.
 
-  if (nlines == 0) return;
+  if (nlines == 0) return 0;
   else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
 
   auto buffer = new char[CHUNK * MAXLINE];
@@ -592,8 +639,14 @@ void FixRigidLSDEM::read_infile(char **gridfiles)
     int nwords = utils::count_words(utils::trim_comment(buf));
     *next = '\n';
 
-    if (nwords != (ATTRIBUTE_PERBODY + n_extra_attributes))
+    read_quat = 0;
+    if (nwords == (ATTRIBUTE_PERBODY + n_extra_attributes)) {
+      read_quat = 0;
+    } else if (nwords == (ATTRIBUTE_PERBODY + n_extra_attributes + 4)) {
+      read_quat = 1;
+    } else {
       error->all(FLERR, "Incorrect rigid body format in fix rigid/ls/dem file");
+    }
 
     // loop over lines of rigid body attributes
     // tokenize the line into values
@@ -625,12 +678,20 @@ void FixRigidLSDEM::read_infile(char **gridfiles)
         values.skip(15);
 
         grid_style[id] = values.next_int();
-        if (grid_style[id] != 0 && grid_style[id] != 1)
+        if (grid_style[id] != DISTRIBUTED && grid_style[id] != GLOBAL)
           throw TokenizerException("invalid_rigid memory model ", std::to_string(grid_style[id]));
 
         grid_scale[id] = values.next_double();
+        if (grid_scale[id] <= 0)
+          error->one(FLERR, "Invalid scaling factor {}", grid_scale[id]);
 
         strcpy(gridfiles[id], values.next_string().data());
+        if (read_quat) {
+          quat_custom[id][0] = values.next_double();
+          quat_custom[id][1] = values.next_double();
+          quat_custom[id][2] = values.next_double();
+          quat_custom[id][3] = values.next_double();
+        }
       } catch (TokenizerException &e) {
         error->all(FLERR, "Invalid fix rigid/ls/dem infile: {}", e.what());
       }
@@ -641,6 +702,8 @@ void FixRigidLSDEM::read_infile(char **gridfiles)
 
   if (comm->me == 0) fclose(fp);
   delete[] buffer;
+
+  return read_quat;
 }
 
 /* ----------------------------------------------------------------------

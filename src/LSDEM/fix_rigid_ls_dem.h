@@ -65,6 +65,8 @@ class FixRigidLSDEM : public FixRigid {
   double *grid_vol;
   double *node_area;
 
+  char **gridfiles;
+  double **quat_custom;         // temporary storage of infile quat
   double **quatd2g;             // quaternion that rotates from diagonal to grid frame for each rigid body
 
   double **global_grids;
@@ -75,7 +77,7 @@ class FixRigidLSDEM : public FixRigid {
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);
-  void read_infile(char **);
+  int read_infile(char **);
 };
 
 }    // namespace LAMMPS_NS

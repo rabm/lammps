@@ -2486,6 +2486,8 @@ void Molecule::read(int flag)
         grid_file = values.next_string();
         grid_style = values.next_int();
         grid_scale = values.next_double();
+        if (grid_scale <= 0)
+          error->all(FLERR, "Invalid grid scale values {}", grid_scale);
         nwant = 4;
       } else if (values.matches("^\\s*\\d+\\s+\\S+\\s+types\\s*$")) {
         error->all(FLERR, fileiarg, "Found data file header keyword '{}' in molecule file", text);
