@@ -305,7 +305,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         MathExtra::qconjugate(body[ibody].quat, quat_conj);
         MathExtra::quatquat(quat_conj, quat_custom[ibody], bodyLS[ibody].quatd2g);
       } else {
-        MathExtra::qconjugate(body[ibody].quat, bodyLS[ibody].quatd2g);
+        MathExtra::qconjugate(body[ibody].quat, quat_conj);
+        MathExtra::quatquat(quat_conj, atom->quat[iatom], bodyLS[ibody].quatd2g);
       }
 
       if (!inpfile) {

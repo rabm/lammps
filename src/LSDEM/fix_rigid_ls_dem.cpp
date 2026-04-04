@@ -386,7 +386,8 @@ void FixRigidLSDEM::init()
       MathExtra::qconjugate(quat[ibody], quat_conj);
       MathExtra::quatquat(quat_conj, quat_custom[ibody], quatd2g[ibody]);
     } else {
-      MathExtra::qconjugate(quat[ibody], quatd2g[ibody]);
+      MathExtra::qconjugate(quat[ibody], quat_conj);
+      MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
     }
   }
 
