@@ -115,6 +115,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   tagint *tag = atom->tag;
   int *type = atom->type;
+  int *mask = atom->mask;
   tagint *molecule = atom->molecule;
   int nlocal = atom->nlocal;
   double *special_lj = force->special_lj;
@@ -126,18 +127,21 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **grain_omega = atom->omega;
   std::unordered_map<long, std::pair<int, double>> min_distances;
 
-  int *mybody, maxbodyID;
+  int *mybody_large, maxbodyID_large;
+  int *mybody_small, maxbodyID_small;
   double *grain_vol, *node_area;
+  int maxbodyID_i, maxbodyID_j, offset_i, offset_j;
   FixRigidSmallLSDEM::BodyLS *bodyLS;
   if (fix_rigid) { // How is nbody updated during fix pour?
-    mybody = fix_rigid->get_body_array();
-    maxbodyID = fix_rigid->get_nbody();
+    mybody_large = fix_rigid->get_body_array();
+    maxbodyID_large = fix_rigid->get_nbody();
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
-  } else {
-    mybody = fix_rigid_small->get_atom2body_array();
+  }
+  if (fix_rigid_small) {
+    mybody_small = fix_rigid_small->get_atom2body_array();
+    maxbodyID_small = fix_rigid_small->get_maxmol();
     bodyLS = fix_rigid_small->get_bodyLS_array();
-    maxbodyID = fix_rigid_small->get_maxmol();
   }
 
   inum = list->inum;
@@ -154,8 +158,17 @@ void PairLSDEM::compute(int eflag, int vflag)
     xitmp = x[i][0];
     yitmp = x[i][1];
     zitmp = x[i][2];
-    if (fix_rigid) ibodyID = mybody[i];
-    else ibodyID = (int) molecule[i]; // could also use bodytag
+    if (fix_rigid && (mask[i] & groupbit_large)) {
+      ibodyID = mybody_large[i];
+      maxbodyID_i = maxbodyID_large;
+      offset_i = 0;
+    } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+      ibodyID = (int) molecule[i]; // could also use bodytag
+      maxbodyID_i = maxbodyID_small;
+      offset_i = 1;
+    } else {
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+    }
     itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -170,8 +183,17 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Make the neighbour mask an integer again (discarding history flags etc.)
       j &= NEIGHMASK;
 
-      if (fix_rigid) jbodyID = mybody[j];
-      else jbodyID = (int) molecule[j];
+      if (fix_rigid && (mask[j] & groupbit_large)) {
+        jbodyID = mybody_large[j];
+        maxbodyID_j = maxbodyID_large;
+        offset_j = 0;
+      } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+        jbodyID = (int) molecule[j];
+        maxbodyID_j = maxbodyID_small;
+        offset_j = 1;
+      } else {
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+      }
 
       jtag = tag[j];
 
@@ -186,7 +208,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Create a dictionary for each grain that holds the
       // tag of the closest interacting node on the other grain.
-      key = maxbodyID * itag + jbodyID;
+      key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
       // If first interation between i and j's grain, create entry
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(jtag, r);
@@ -197,7 +219,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       // Do the same for node j
-      key = maxbodyID * jtag + ibodyID;
+      key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
       if (min_distances.find(key) == min_distances.end()) {
         min_distances[key] = std::make_pair(itag, r);
       } else {
@@ -224,12 +246,22 @@ void PairLSDEM::compute(int eflag, int vflag)
     vyitmp = v[i][1];
     vzitmp = v[i][2];
     itype = type[i];
-    if (fix_rigid) {
-      ibody = mybody[i];
+    if (fix_rigid && (mask[i] & groupbit_large)) {
+      ibody = mybody_large[i];
       ibodyID = ibody;
-    } else {
-      ibody = mybody[i];
+      ivol = grain_vol[ibody];
+      areai = node_area[ibody];
+      maxbodyID_i = maxbodyID_large;
+      offset_i = 0;
+    } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+      ibody = mybody_small[i];
       ibodyID = (int) molecule[i];
+      ivol = bodyLS[ibody].grid_vol;
+      areai = bodyLS[ibody].node_area;
+      maxbodyID_i = maxbodyID_small;
+      offset_i = 1;
+    } else {
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
     }
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
@@ -237,14 +269,6 @@ void PairLSDEM::compute(int eflag, int vflag)
     iomegax = grain_omega[i][0];
     iomegay = grain_omega[i][1];
     iomegaz = grain_omega[i][2];
-
-    if (fix_rigid) {
-      ivol = grain_vol[ibody];
-      areai = node_area[ibody];
-    } else {
-      ivol = bodyLS[ibody].grid_vol;
-      areai = bodyLS[ibody].node_area;
-    }
 
     itag = tag[i];
     jlist = firstneigh[i];
@@ -263,12 +287,22 @@ void PairLSDEM::compute(int eflag, int vflag)
       vxjtmp = v[j][0];
       vyjtmp = v[j][1];
       vzjtmp = v[j][2];
-      if (fix_rigid) {
-        jbody = mybody[j];
+      if (fix_rigid && (mask[j] & groupbit_large)) {
+        jbody = mybody_large[j];
         jbodyID = jbody;
-      } else {
-        jbody = mybody[j];
+        jvol = grain_vol[jbody];
+        areaj = node_area[jbody];
+        maxbodyID_j = maxbodyID_large;
+        offset_j = 0;
+      } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+        jbody = mybody_small[j];
         jbodyID = (int) molecule[j];
+        jvol = bodyLS[jbody].grid_vol;
+        areaj = bodyLS[jbody].node_area;
+        maxbodyID_j = maxbodyID_small;
+        offset_j = 1;
+      } else {
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       }
       jtag = tag[j];
       jtype = type[j];
@@ -278,14 +312,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       jomegax = grain_omega[j][0];
       jomegay = grain_omega[j][1];
       jomegaz = grain_omega[j][2];
-
-      if (fix_rigid) {
-        jvol = grain_vol[jbody];
-        areaj = node_area[jbody];
-      } else {
-        jvol = bodyLS[jbody].grid_vol;
-        areaj = bodyLS[jbody].node_area;
-      }
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
@@ -298,13 +324,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Use the nodes of the smallest grain.
       if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
         // Grain i is smaller, use nodes of i and level set of j.
-        key = maxbodyID * itag + jbodyID;
+        key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
         if (min_distances.find(key) != min_distances.end())
           if (jtag == min_distances[key].first)
             calc_force_of_i_on_j = 1;
       } else {
         // Grain j is smaller, use nodes of j and level set of i.
-        key = maxbodyID * jtag + ibodyID;
+        key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
         if (min_distances.find(key) != min_distances.end())
           if (itag == min_distances[key].first)
             calc_force_of_j_on_i = 1;
@@ -324,15 +350,19 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (calc_force_of_i_on_j) { // Use node of i.
         // Level set is by definition negative inside the particle,
         // so swap the sign to get the overlap distance.
-        if (fix_rigid)
+        if (fix_rigid && (mask[j] & groupbit_large))
           u = - fix_rigid->get_ls_value(i, j, normal);
-        else
+        else if (fix_rigid_small && (mask[j] & groupbit_small))
           u = - fix_rigid_small->get_ls_value(i, j, normal);
-      } else { // Use node of j.
-        if (fix_rigid)
-          u = - fix_rigid->get_ls_value(j, i, normal);
         else
+          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+      } else { // Use node of j.
+        if (fix_rigid && (mask[i] & groupbit_large))
+          u = - fix_rigid->get_ls_value(j, i, normal);
+        else if (fix_rigid_small && (mask[i] & groupbit_small))
           u = - fix_rigid_small->get_ls_value(j, i, normal);
+        else
+          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       }
 
       // No adhesion, cohesion, or ranged forces.
@@ -901,11 +931,57 @@ void PairLSDEM::setup()
   auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
   auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
 
-  if (fixlist1.size() + fixlist2.size() != 1)
-    error->all(FLERR, "Must have one, and only one, instance of fix rigid/ls/dem or fix rigid/small/ls/dem for pair LS-DEM.");
+  if (fixlist1.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/ls/dem");
+  if (fixlist2.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
 
-  if (fixlist1.size() == 1) fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
-  if (fixlist2.size() == 1) fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+  if (fixlist1.size() == 0 && fixlist2.size() == 0)
+    error->all(FLERR, "Pair ls/dem requires at least one instance of fix rigid/ls/dem or rigid/small/ls/dem");
+
+
+  int igroup_large, igroup_small;
+  groupbit_large = -1;
+  if (fixlist1.size() == 1) {
+    fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
+    groupbit_large = fix_rigid->groupbit;
+    igroup_large = fix_rigid->igroup;
+  }
+
+  groupbit_small = -1;
+  if (fixlist2.size() == 1) {
+    fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+    groupbit_small = fix_rigid_small->groupbit;
+    igroup_small = fix_rigid_small->igroup;
+  }
+
+  if (groupbit_small == -1 && igroup_large != 0)
+    error->all(FLERR, "If only using fix rigid/ls/dem, it must use group all");
+
+  if (groupbit_large == -1 && igroup_small != 0)
+    error->all(FLERR, "If only using fix rigid/small/ls/dem, it must use group all");
+
+  if (groupbit_small != -1 && groupbit_large != -1) {
+    int missing_atoms = 0;
+    int overlap_atoms = 0;
+    int *mask = atom->mask;
+    for (size_t i = 0; i < atom->nlocal; i++) {
+      if ((mask[i] & groupbit_small) && (mask[i] & groupbit_large)) {
+        overlap_atoms++;
+      } else if (!(mask[i] & groupbit_small) && !(mask[i] & groupbit_large)) {
+        missing_atoms++;
+      }
+    }
+
+    int total_atoms;
+    MPI_Allreduce(&missing_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
+    if (total_atoms > 0)
+      error->all(FLERR, "All atoms must be in group of either fix rigid/ls/dem or fix rigid/small/ls/dem");
+
+    MPI_Allreduce(&overlap_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
+    if (total_atoms > 0)
+      error->all(FLERR, "No atoms may be in both groups fix rigid/ls/dem or fix rigid/small/ls/dem");
+  }
 
   int tmp1, tmp2;
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);

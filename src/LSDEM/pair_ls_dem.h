@@ -47,6 +47,8 @@ class PairLSDEM : public Pair {
  protected:
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
 
+  int groupbit_small, groupbit_large;
+
   int index_ls_dem_vol;
   int index_ls_dem_n;
   int index_ls_dem_fs;

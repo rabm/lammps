@@ -132,13 +132,18 @@ int FixRigidLSDEM::setmask()
 
 void FixRigidLSDEM::post_constructor()
 {
-  // Store positional information of grain on all atoms
-  id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
-  modify->add_fix(fmt::format(
-    "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
-     id_fix));
   int tmp1, tmp2;
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
+
+  // May be defined by another fix rigid/ls/dem
+  if (index_ls_dem_touch_id == -1) {
+    // Store positional information of grain on all atoms
+    id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
+    modify->add_fix(fmt::format(
+      "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+       id_fix));
+    index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -166,9 +171,11 @@ void FixRigidLSDEM::init()
   int dimension = domain->dimension;
   int index_global_grid = 0;
   int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  int *mask = atom->mask;
 
   for (i = 0; i < atom->nlocal; i++)
-    touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
+    if (mask[i] & groupbit)
+      touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
   int *ntotal_global;
   memory->create(ntotal_global, nbody, "rigid/ls/dem:ntotal_global");
@@ -220,15 +227,21 @@ void FixRigidLSDEM::init()
   if (distributed_flag) {
     for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
     if (dimension == 2) subgrid_size[2] = 1;
-    id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-    ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-    if (ntotal > RECOMMENDED_MAX_NGRID)
-      error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-    modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
 
     int tmp1, tmp2;
     index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
     index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+
+    if (index_grid_values == -1) {
+      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+      int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+      if (ntotal > RECOMMENDED_MAX_NGRID)
+        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
+      modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
+
+      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
+      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    }
   }
 
   if (index_global_grid) {
@@ -286,6 +299,7 @@ void FixRigidLSDEM::init()
 
     if (need_distributed) {
       for (i = 0; i < atom->nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
         ibody = body[i];
 
         if (pair.second.find(ibody) == pair.second.end())
@@ -372,8 +386,10 @@ void FixRigidLSDEM::init()
     // calculate relative rotation from inerital frame to LS grid
     //   assume all atoms in body have equivalent initial quaterions
     //   (user could incorrectly use diplace_atoms on subset)
-    for (iatom = 0; iatom < atom->nlocal; iatom++)
+    for (iatom = 0; iatom < atom->nlocal; iatom++) {
+      if (!(mask[iatom] & groupbit)) continue;
       if (body[iatom] == ibody) break;
+    }
 
     MathExtra::qconjugate(quat[ibody], quat_conj);
     if (read_quat) {
@@ -408,12 +424,14 @@ void FixRigidLSDEM::initial_integrate(int vflag)
 {
   FixRigid::initial_integrate(vflag);
 
+  int *mask = atom->mask;
   double **grain_com = atom->xcom;
   double **grain_quat = atom->quat;
   double **grain_omega = atom->omega;
 
   int ibody;
   for (int i = 0; i < atom->nlocal; i++) {
+    if (!(mask[i] & groupbit)) continue;
     ibody = body[i];
 
     grain_com[i][0] = xcm[ibody][0];
@@ -472,6 +490,7 @@ void FixRigidLSDEM::compute_forces_and_torques()
 
   // sum over atoms to get force and torque on rigid body
 
+  int *mask = atom->mask;
   double **f = atom->f;
   double **torque_one = atom->torque;
   int nlocal = atom->nlocal;
@@ -483,6 +502,7 @@ void FixRigidLSDEM::compute_forces_and_torques()
 
   for (i = 0; i < nlocal; i++) {
     if (body[i] < 0) continue;
+    if (!(mask[i] & groupbit)) continue;
     ibody = body[i];
 
     sum[ibody][0] += f[i][0];
