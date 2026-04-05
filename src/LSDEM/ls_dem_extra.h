@@ -21,6 +21,7 @@ namespace LSDEMExtra {
   double compute_surface_area(int, int *, double, double *);
   double compute_grid_properties(int *, double, double *, double *, double *, int);
   double interpolate_LS(int, double *, int, int, int, double, double, double, double[3], double);
+  int store_distributed(int, int, int *, int *, double, double, double, double *, double *, double *, double *, double *, double *);
 }
 
 #endif

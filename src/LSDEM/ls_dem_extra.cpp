@@ -14,6 +14,7 @@
 
 #include "ls_dem_extra.h"
 
+#include "error.h"
 #include "math_const.h"
 #include "math_extra.h"
 #include "rigid_ls_dem_const.h"
@@ -285,6 +286,72 @@ double interpolate_LS(int dimension, double *mygrid, int ncol, int nrow, int nsl
   MathExtra::norm3(normal);
 
   return dist;
+}
+
+/* ----------------------------------------------------------------------
+  Store local grid values and calculate grid minima
+-------------------------------------------------------------------------*/
+
+int store_distributed(int i, int dimension, int *nx, int *subgrid_size, double stride, double scale, double rcell,
+                      double *dx, double *gmin, double *qatom, double *global_grid_values, double *gmin_local, double *grid_values)
+{
+  int need_padding = 0;
+
+  // Rotate to LS frame (for now, just the atomic quaternion)
+  double quat_conj[4], dx_local[3];
+  MathExtra::qconjugate(qatom, quat_conj);
+  MathExtra::quatrotvec(quat_conj, dx, dx_local);
+
+  // Location of atom/node relative to entire grain grid minimum.
+  MathExtra::sub3(dx_local, gmin, dx_local);
+
+  // Index of atom/node in entire grain grid.
+  int ix_node[3];
+  ix_node[0] = int(dx_local[0] / stride);
+  ix_node[1] = int(dx_local[1] / stride);
+  ix_node[2] = int(dx_local[2] / stride);
+
+  // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
+  int index_grid_min_local[3];
+  index_grid_min_local[0] = ix_node[0] - rcell;
+  index_grid_min_local[1] = ix_node[1] - rcell;
+  index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
+
+  // Location of local grid minimum relative to CoM
+  gmin_local[0] = index_grid_min_local[0] * stride + gmin[0];
+  gmin_local[1] = index_grid_min_local[1] * stride + gmin[1];
+  gmin_local[2] = index_grid_min_local[2] * stride + gmin[2];
+
+  int ix_global, iy_global, iz_global, index_local, index_global;
+  for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
+    for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
+      for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
+        index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
+
+        // Shift local cell to global cell
+        ix_global = ix_local + index_grid_min_local[0];
+        iy_global = iy_local + index_grid_min_local[1];
+        iz_global = iz_local + index_grid_min_local[2];
+
+        // Explicit bounds check per dimension (safer and clearer)
+        if (ix_global < 0 || ix_global >= nx[0] ||
+            iy_global < 0 || iy_global >= nx[1] ||
+            iz_global < 0 || iz_global >= nx[2]) {
+          need_padding = 1;
+          grid_values[index_local] = BIG;
+        } else {
+          // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
+          index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
+          if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
+            return -1;
+
+          grid_values[index_local] = global_grid_values[index_global] * scale;
+        }
+      }
+    }
+  }
+
+  return need_padding;
 }
 
 }

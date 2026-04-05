@@ -467,9 +467,8 @@ void FixRigidSmallLSDEM::process_levelsets()
     memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
   }
 
-  int need_padding, index_local, index_global;
-  int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
-  double stride, dx[3], dx_local[3], quat_conj[4], gmin[3];
+  double dx[3], gmin[3];
+  int index_local, index_global, error_code, error_code_global, nx[3];
   for (const auto& pair : gridfile_data) {
     gridfile = pair.first;
 
@@ -503,74 +502,27 @@ void FixRigidSmallLSDEM::process_levelsets()
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
 
-        need_padding = 0;
-
         nx[0] = gridfile_data[gridfile].grid_size[0];
         nx[1] = gridfile_data[gridfile].grid_size[1];
         nx[2] = gridfile_data[gridfile].grid_size[2];
 
-        gmin[0] = gridfile_data[gridfile].grid_min[0] * bodyLS[ibody].grid_scale;
-        gmin[1] = gridfile_data[gridfile].grid_min[1] * bodyLS[ibody].grid_scale;
-        gmin[2] = gridfile_data[gridfile].grid_min[2] * bodyLS[ibody].grid_scale;
+        MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
 
-        // Location of atom/node relative to CoM (not yet defined in body structure)
+        // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
         MathExtra::sub3(x[i], xcm_custom[ibody], dx);
-
-        // Account for PBCs
         domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
-        // Rotate to LS frame (for now, just the atomic quaternion)
-        MathExtra::qconjugate(quat_atom[i], quat_conj);
-        MathExtra::quatrotvec(quat_conj, dx, dx_local);
+        // Calculate local grid values and minima
+        error_code = store_distributed(i, dimension, nx, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
+                                       rcell, dx, gmin, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
 
-        // Location of atom/node relative to entire grain grid minimum.
-        MathExtra::sub3(dx_local, gmin, dx_local);
+        if (error_code == -1)
+          error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-        // Index of atom/node in entire grain grid.
-        stride = bodyLS[ibody].grid_stride;
-        ix_node[0] = int(dx_local[0] / stride);
-        ix_node[1] = int(dx_local[1] / stride);
-        ix_node[2] = int(dx_local[2] / stride);
-
-        // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
-        index_grid_min_local[0] = ix_node[0] - rcell;
-        index_grid_min_local[1] = ix_node[1] - rcell;
-        index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
-
-        // Location of local grid minimum relative to CoM
-        grid_min_local[i][0] = index_grid_min_local[0] * stride + gmin[0];
-        grid_min_local[i][1] = index_grid_min_local[1] * stride + gmin[1];
-        grid_min_local[i][2] = index_grid_min_local[2] * stride + gmin[2];
-
-        for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
-          for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
-            for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
-              index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
-
-              // Shift local cell to global cell
-              ix_global = ix_local + index_grid_min_local[0];
-              iy_global = iy_local + index_grid_min_local[1];
-              iz_global = iz_local + index_grid_min_local[2];
-
-              // Explicit bounds check per dimension (safer and clearer)
-              if (ix_global < 0 || ix_global >= nx[0] ||
-                  iy_global < 0 || iy_global >= nx[1] ||
-                  iz_global < 0 || iz_global >= nx[2]) {
-                need_padding += 1;
-                grid_values[i][index_local] = BIG;
-              } else {
-                // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
-                index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
-                if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
-                  error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
-                grid_values[i][index_local] = temp_grid_values[index_global] * bodyLS[ibody].grid_scale;
-              }
-            }
-          }
-        }
-
-        if (need_padding && comm->me == 0)
-          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+        MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
+        if (error_code_global && comm->me == 0)
+          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
+            "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
   }

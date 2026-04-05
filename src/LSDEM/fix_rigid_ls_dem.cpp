@@ -264,9 +264,8 @@ void FixRigidLSDEM::init()
   double **x = atom->x;
   double **quat_atom = atom->quat;
 
-  int need_distributed, need_global, need_padding, index_local, index_global;
-  int ix_global, iy_global, iz_global, nx[3], ix_node[3], index_grid_min_local[3];
-  double stride, dx[3], dx_local[3], quat_conj[4];
+  double dx[3];
+  int need_distributed, need_global, error_code, error_code_global, index_global;
   for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
@@ -305,70 +304,21 @@ void FixRigidLSDEM::init()
         if (pair.second.find(ibody) == pair.second.end())
           continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
-        need_padding = 0;
-
-        nx[0] = grid_size[ibody][0];
-        nx[1] = grid_size[ibody][1];
-        nx[2] = grid_size[ibody][2];
-
-        // Location of atom/node relative to CoM
+        // Location of atom/node relative to CoM + remap periodically
         MathExtra::sub3(x[i], xcm[ibody], dx);
-
-        // Account for PBCs
         domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
-        // Rotate to LS frame (for now, just the atomic quaternion)
-        MathExtra::qconjugate(quat_atom[i], quat_conj);
-        MathExtra::quatrotvec(quat_conj, dx, dx_local);
+        // Calculate local grid values and minima
+        error_code = store_distributed(i, dimension, grid_size[ibody], subgrid_size, grid_stride[ibody], grid_scale[ibody],
+                                      rcell, dx, grid_min[ibody], quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
 
-        // Location of atom/node relative to entire grain grid minimum.
-        MathExtra::sub3(dx_local, grid_min[ibody], dx_local);
+        if (error_code == -1)
+          error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-        // Index of atom/node in entire grain grid.
-        stride = grid_stride[ibody];
-        ix_node[0] = int(dx_local[0] / stride);
-        ix_node[1] = int(dx_local[1] / stride);
-        ix_node[2] = int(dx_local[2] / stride);
-
-        // Index of local grid minimum in entire grain grid. If any goes below zero, error below catches it.
-        index_grid_min_local[0] = ix_node[0] - rcell;
-        index_grid_min_local[1] = ix_node[1] - rcell;
-        index_grid_min_local[2] = (dimension == 3) ? ix_node[2] - rcell : 0;
-
-        // Location of local grid minimum relative to CoM
-        grid_min_local[i][0] = index_grid_min_local[0] * stride + grid_min[ibody][0];
-        grid_min_local[i][1] = index_grid_min_local[1] * stride + grid_min[ibody][1];
-        grid_min_local[i][2] = index_grid_min_local[2] * stride + grid_min[ibody][2];
-
-        for (int iz_local = 0; iz_local < subgrid_size[2]; iz_local++) {
-          for (int iy_local = 0; iy_local < subgrid_size[1]; iy_local++) {
-            for (int ix_local = 0; ix_local < subgrid_size[0]; ix_local++) {
-              index_local = ix_local + iy_local * subgrid_size[0] + iz_local * subgrid_size[0] * subgrid_size[1];
-
-              // Shift local cell to global cell
-              ix_global = ix_local + index_grid_min_local[0];
-              iy_global = iy_local + index_grid_min_local[1];
-              iz_global = iz_local + index_grid_min_local[2];
-
-              // Explicit bounds check per dimension (safer and clearer)
-              if (ix_global < 0 || ix_global >= nx[0] ||
-                  iy_global < 0 || iy_global >= nx[1] ||
-                  iz_global < 0 || iz_global >= nx[2]) {
-                need_padding = 1;
-                grid_values[i][index_local] = BIG;
-              } else {
-                // True (scaled) level-set stored for DISTRIBUTED approach where unique local grid is saved on node
-                index_global = ix_global + iy_global * nx[0] + iz_global * nx[0] * nx[1];
-                if (index_global < 0 || index_global >= nx[0] * nx[1] * nx[2])
-                  error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, indices {} {} {}", ix_global, iy_global, iz_global);
-                grid_values[i][index_local] = temp_grid_values[index_global] * grid_scale[ibody];
-              }
-            }
-          }
-        }
-
-        if (need_padding && comm->me == 0)
-          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+        MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
+        if (error_code_global && comm->me == 0)
+          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
+            "atom {}\nyLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
   }
@@ -381,6 +331,7 @@ void FixRigidLSDEM::init()
 
   // extra calculations using values from parent
 
+  double quat_conj[4];
   for (int ibody = 0; ibody < nbody; ibody++) {
 
     // calculate relative rotation from inerital frame to LS grid
