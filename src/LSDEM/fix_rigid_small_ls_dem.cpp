@@ -81,6 +81,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   for (int i = 0; i < nmax_bodyLS; i++)
     bodyLS[i].style = -1;
 
+  // always write restart file
+  restart_file = 1;
+
   // set bodyownLS for owned atoms
 
   tagint *tag = atom->tag;

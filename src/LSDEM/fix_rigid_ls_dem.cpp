@@ -69,6 +69,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
 
+  // always write restart file
+  restart_file = 1;
+
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
 

@@ -739,13 +739,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         torque[j][2] += torque_pair[2];
       }
 
-      // Virial contribution: need to check
-      fpair_mag = MathExtra::len3(fpair);
-
-      if (fpair_mag == 0.0)
-        error->one(FLERR, "Invalid force between atoms {} {} on bodies {} {}", tag[i], tag[j], ibodyID, jbodyID);
-
-      if (evflag) ev_tally(i, j, nlocal, 0, evdwl, 0.0, fpair_mag, fpair[0]/fpair_mag, fpair[1]/fpair_mag, fpair[2]/fpair_mag);
+      if (evflag) ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2], normal[0] * u, normal[1] * u, normal[2] * u);
     }
   }
 
