@@ -59,6 +59,8 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 // Todo: should fix we have different instance of fix property/atom
 //   for distributed memory when there are different cutoffs between
 //   two types of grains?
+// Todo: do we want to manually handle communication of distributed data to skip global atoms?
+//    and if so, skip that stored_distributed call?
 // Todo: can create_atoms be used twice with two run commands?
 
 /* ---------------------------------------------------------------------- */
@@ -69,6 +71,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 {
   maxcut = -1;
   stored_flag = 0;
+  global_flag = 0;
   distributed_flag = 0;
   n_extra_attributes = 3;
 
@@ -217,7 +220,9 @@ void FixRigidSmallLSDEM::init()
           error->all(FLERR, "Grid file {} has two different memory styles across molecules", gridfile);
       }
 
-      if (onemol->grid_style == DISTRIBUTED)
+      if (onemol->grid_style == GLOBAL)
+        global_flag = 1;
+      else if (onemol->grid_style == DISTRIBUTED)
         distributed_flag = 1;
     }
   }
@@ -461,7 +466,9 @@ void FixRigidSmallLSDEM::process_levelsets()
     grid_min_local = atom->darray[index_grid_min];
   }
 
-  if (index_global_grid) {
+  if (global_flag) {
+    if (index_global_grid == 0)
+      error->all(FLERR, "No global grids defined but global_flag set");
     memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
     memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
     memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
@@ -483,10 +490,9 @@ void FixRigidSmallLSDEM::process_levelsets()
 
     if (gridfile_data[gridfile].style == GLOBAL) {
       index_global_grid = gridfile_data[gridfile].grid_index;
-      for (int n = 0; n < ntotal_global[index_global_grid]; n++) {
-        // Unscaled grid values (and mins) of grains stored globally to avoid duplicating memory
+      for (int n = 0; n < ntotal_global[index_global_grid]; n++)
+        // Unscaled values (and min) stored globally to avoid duplicating memory
         global_grids[index_global_grid][n] = temp_grid_values[n];
-      }
 
       for (a = 0; a < 3; a++) {
         global_grids_min[index_global_grid][a] = gridfile_data[gridfile].grid_min[a];
@@ -1328,6 +1334,9 @@ void FixRigidSmallLSDEM::read_infile()
 
         if (mem_style != DISTRIBUTED && mem_style != GLOBAL)
           throw TokenizerException("invalid_rigid memory model ", std::to_string(mem_style));
+
+        if (mem_style == GLOBAL)
+          global_flag = 1;
         if (mem_style == DISTRIBUTED)
           distributed_flag = 1;
 

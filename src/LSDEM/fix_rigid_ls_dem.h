@@ -49,7 +49,7 @@ class FixRigidLSDEM : public FixRigid {
   double get_ls_value(int, int, double*);
 
  protected:
-  int stored_flag, distributed_flag;
+  int stored_flag, global_flag, distributed_flag, watershed_flag;
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;
 

@@ -79,7 +79,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double get_ls_value(int, int, double*);
 
  protected:
-  int stored_flag, distributed_flag;
+  int stored_flag, global_flag, distributed_flag;
   int read_quat;
   int commflag_ls;
   char *id_fix, *id_fix2;

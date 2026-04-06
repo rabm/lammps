@@ -45,7 +45,7 @@ using namespace MathConst;
 using namespace RigidConst;
 using namespace LSDEMExtra;
 
-enum {GLOBAL, DISTRIBUTED};
+enum {GLOBAL, DISTRIBUTED, WATERSHED};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
@@ -62,7 +62,10 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   comm_forward = 1;
   maxcut = -1;
   stored_flag = 0;
+
+  global_flag = 0;
   distributed_flag = 0;
+  watershed_flag = 0;
 
   n_extra_attributes = 3;
 
@@ -211,10 +214,11 @@ void FixRigidLSDEM::init()
         ntotal_global[index_global_grid] = grid_size_flat;
         index_global_grid += 1;
       }
-    } else {
-      distributed_flag = 1;
     }
   }
+
+  if (watershed_flag && distributed_flag)
+    error->all(FLERR, "Watershed and distributed level set styles cannot be combined");
 
   // ------------------------------ //
   // Allocate memory for level sets //
@@ -244,6 +248,19 @@ void FixRigidLSDEM::init()
     }
   }
 
+  if (watershed_flag) {
+    // Allocate peratom storage after sizing
+
+    int tmp1, tmp2;
+    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+
+    if (index_grid_min == -1) {
+      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
+      modify->add_fix(fmt::format("{} all property/atom d2_grid_min {} writedata no ghost yes", id_fix2, 3));
+      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    }
+  }
+
   if (index_global_grid) {
     memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/ls/dem:global_grids");
   }
@@ -261,11 +278,15 @@ void FixRigidLSDEM::init()
     grid_min_local = atom->darray[index_grid_min];
   }
 
+  if (watershed_flag) {
+    grid_min_local = atom->darray[index_grid_min];
+  }
+
   double **x = atom->x;
   double **quat_atom = atom->quat;
 
   double dx[3];
-  int need_distributed, need_global, error_code, error_code_global, index_global;
+  int error_code, error_code_global, index_global;
   for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
@@ -279,28 +300,28 @@ void FixRigidLSDEM::init()
 
     // Start handling memory of LS grid
 
-    need_distributed = 0; // Save relevant grid snippet at node, regardless of duplicity
-    need_global = 0;  // Save the entire grid as a shared memory stucture between grains with the same grid
-    for (const auto& jbody : file_map[filename]) {
-      if (grid_style[jbody] == DISTRIBUTED) {
-        need_distributed = 1;
-      } else if (grid_style[jbody] == GLOBAL) {
-        need_global = 1;
-        index_global = grid_index[jbody];
+    if (global_flag) {
+      // Check if this file used by a body with global memory
+      index_global = -1;
+      for (const auto& jbody : pair.second) {
+        if (grid_style[jbody] == GLOBAL) {
+          index_global = grid_index[jbody];
+          break;
+        }
       }
+
+      if (index_global != -1)
+        for (int n = 0; n < ntotal_global[index_global]; n++)
+          // Unscaled values stored globally to avoid duplicating memory
+          global_grids[index_global][n] = temp_grid_values[n];
     }
 
-    if (need_global) {
-      for (int n = 0; n < ntotal_global[index_global]; n++)
-        // Unscaled grid values of grains stored globally to avoid duplicating memory
-        global_grids[index_global][n] = temp_grid_values[n];
-    }
-
-    if (need_distributed) {
+    if (distributed_flag) {
       for (i = 0; i < atom->nlocal; i++) {
         if (!(mask[i] & groupbit)) continue;
         ibody = body[i];
 
+        // Check if atom belongs to body with distributed memory
         if (pair.second.find(ibody) == pair.second.end())
           continue; // Ideally would have list of all atoms in a rigid body... not sure if exists...
 
@@ -321,6 +342,24 @@ void FixRigidLSDEM::init()
             "atom {}\nyLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
+
+    if (watershed_flag) {
+      // Calculate watershed and temporarily store peratom data
+
+      std::vector<int> current_atoms;
+
+      for (i = 0; i < atom->nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
+        ibody = body[i];
+      }
+
+
+    }
+  }
+
+  if (watershed_flag) {
+    // calculate max size (MPI_Allreduce)
+    // create property atom fix + store
   }
 
   memory->destroy(temp_grid_values);
@@ -649,8 +688,15 @@ int FixRigidLSDEM::read_infile(char **gridfiles)
         values.skip(15);
 
         grid_style[id] = values.next_int();
-        if (grid_style[id] != DISTRIBUTED && grid_style[id] != GLOBAL)
+        if (grid_style[id] != DISTRIBUTED && grid_style[id] != GLOBAL && grid_style[id] != WATERSHED)
           throw TokenizerException("invalid_rigid memory model ", std::to_string(grid_style[id]));
+
+        if (grid_style[id] == GLOBAL)
+          global_flag = 1;
+        if (grid_style[id] == DISTRIBUTED)
+          distributed_flag = 1;
+        if (grid_style[id] == WATERSHED)
+          watershed_flag = 1;
 
         grid_scale[id] = values.next_double();
         if (grid_scale[id] <= 0)
