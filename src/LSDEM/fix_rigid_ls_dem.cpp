@@ -349,14 +349,110 @@ void FixRigidLSDEM::init()
     if (watershed_flag) {
       // Calculate watershed and temporarily store peratom data
 
-      std::vector<int> current_atoms;
+      // Todo: think about parallel
+      //       go away from property/atom - need custom packing
+      //       can we adjust comm size per atom?
+      //       make changes to pair style
 
-      for (i = 0; i < atom->nlocal; i++) {
-        if (!(mask[i] & groupbit)) continue;
-        ibody = body[i];
+      std::set <int> unvisisted_bins;
+      std::vector <std::set <int>> bin_owners(ntotal);
+      std::vector <std::pair <int, int>> walkers;
+      std::vector <std::pair <int, int>> next_walkers;
+
+      int nx, ny, nz, ns, ntotal, ix[3], itotal, inew, current_walker;
+      double quat_conj[4];
+      std::vector<int> atoms;
+      std::vector<std::tuple<int, int, int>> atom_bins;
+      for (ibody = 0; ibody < nbody; ibody++) {
+        walkers.erase();
+        unvisisted_bins.erase();
+        for (i = 0; i < ntotal; ++i) {
+          unvisited_bins.insert(i);
+          bin_owners[i].erase();
+        }
+
+
+        if (pair.second.find(ibody) == pair.second.end())
+          continue;
+
+        nx = grid_size[ibody][0];
+        ny = grid_size[ibody][1];
+        nz = grid_size[ibody][2];
+        ntotal = nx * ny * nz;
+
+        for (i = 0; i < atom->nlocal; i++) {
+          if (!(mask[i] & groupbit)) continue;
+          if (ibody != body[i]) continue;
+          current_atoms.insert(i);
+        }
+
+        MathExtra::sub3(x[i], grain_com[i], dx);
+        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+
+        MathExtra::qconjugate(quat_atom[j], quat_conj);
+        MathExtra::quatrotvec(quat_conj, dx, dx_local);
+        MathExtra::sub3(x_local, grid_min[ibody], x_local);
+        MathExtra::scale3(1.0 / grid_stride[ibody], x_local)
+
+        ix[0] = int(x_local[0]);
+        ix[1] = int(x_local[1]);
+        ix[2] = int(x_local[2]);
+
+        atom_bins.insert(std::make_tuple(ix[0], ix[1], ix[2]));
+
+        itotal = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+
+        bin_owners[itotal].insert(itotal);
+        walkers.insert(std::make_pair(i, itotal));
+        unvisited_bins.erase(itotal);
       }
 
+      while (!unvisited_bins.empty()) {
+        // find unvisited sites and add new walkers
+        //   if a walker borders a visited site, only add owner to create a buffer
+        for (auto walker : walkers) {
+          i = walker.first;
+          itotal = walker.second;
 
+          for (int a = 0; a < domain->dimension; a++) {
+            if (a == 0) ns = 1;
+            else if (a == 1) ns = nx;
+            else ns = nx * ny;
+
+            inew = itotal + ns;
+            if (inew >= 0 && inew < ntotal) {
+              if (bin_owners[inew].empty()) {
+
+get value, if away from surface skip walking
+
+                next_walker.insert(std::make_pair(i, inew));
+              } else if (bin_owners[inew].find(i) == bin_owners[inew].end()) {
+                bin_owners[inew].insert(i);
+              }
+            }
+
+            inew = itotal - ns;
+            if (inew >= 0 && inew < ntotal) {
+              if (bin_owners[inew].empty()) {
+                next_walker.insert(std::make_pair(i, inew));
+              } else if (bin_owners[inew].find(i) == bin_owners[inew].end()) {
+                bin_owners[inew].insert(i);
+              }
+            }
+          }
+        }
+
+        // add ownership from all of these walkers
+        for (auto walker : walkers) {
+          i = walker.first;
+          itotal = walker.second;
+          bin_owners[inew].insert(i);
+        }
+
+        // replace walkers
+        std::swap(walker, next_walker);
+        next_walker.erase();
+      }
     }
   }
 
