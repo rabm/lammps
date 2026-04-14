@@ -281,8 +281,12 @@ void FixRigidLSDEM::init()
     grid_min_local = atom->darray[index_grid_min];
   }
 
+
+  int nlocal = atom->nlocal;
+  std::vector <std::set <int>> atom_bins;
   if (watershed_flag) {
     grid_min_local = atom->darray[index_grid_min];
+    atom_bins.resize(nlocal);
   }
 
   double **x = atom->x;
@@ -342,7 +346,7 @@ void FixRigidLSDEM::init()
         MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
         if (error_code_global && comm->me == 0)
           error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-            "atom {}\nyLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+            "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
       }
     }
 
@@ -355,7 +359,7 @@ void FixRigidLSDEM::init()
       //       make changes to pair style
 
       int nx, ny, nz;
-      int ntotal_max = -1;
+      int nbin_max = -1;
       for (ibody = 0; ibody < nbody; ibody++) {
         if (pair.second.find(ibody) == pair.second.end())
           continue;
@@ -363,33 +367,28 @@ void FixRigidLSDEM::init()
         nx = grid_size[ibody][0];
         ny = grid_size[ibody][1];
         nz = grid_size[ibody][2];
-        ntotal_max = MAX(ntotal_max, nx * ny * nz);
+        nbin_max = MAX(nbin_max, nx * ny * nz);
       }
 
-      std::vector <std::set <int>> bin_owners(ntotal_max);
+      int j, ns, nbin, ix[3], mybin, newbin, current_walker;
+      int ntotal = nlocal + atom->nghost;
+      double x_local[3], quat_conj[4];
+      std::vector <std::set <int>> bin_owners(nbin_max);
       std::vector <std::pair <int, int>> walkers;
       std::vector <std::pair <int, int>> next_walkers;
-
-      int j, ns, ntotal, ix[3], mybin, newbin, current_walker;
-      double x_local[3], quat_conj[4];
-      std::vector<int> atoms;
-      std::vector<std::tuple<int, int, int>> atom_bins;
-      //for (ibody = 0; ibody < nbody; ibody++) {
-
-
-      for (ibody = 0; ibody < 1; ibody++) {
+      for (ibody = 0; ibody < nbody; ibody++) {
 
         nx = grid_size[ibody][0];
         ny = grid_size[ibody][1];
         nz = grid_size[ibody][2];
-        ntotal = nx * ny * nz;
+        nbin = nx * ny * nz;
 
         walkers.clear();
         next_walkers.clear();
-        for (i = 0; i < ntotal; ++i)
+        for (i = 0; i < nbin; ++i)
           bin_owners[i].clear();
 
-        for (i = 0; i < atom->nlocal; i++) {
+        for (i = 0; i < ntotal; i++) {
           if (!(mask[i] & groupbit)) continue;
           if (body[i] != ibody) continue;
 
@@ -405,11 +404,11 @@ void FixRigidLSDEM::init()
           ix[1] = int(x_local[1]);
           ix[2] = int(x_local[2]);
 
-          atom_bins.emplace_back(std::make_tuple(ix[0], ix[1], ix[2]));
-
           mybin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
 
           bin_owners[mybin].insert(i);
+          if (i < nlocal)
+            atom_bins[i].insert(mybin);
           walkers.emplace_back(std::make_pair(i, mybin));
         }
 
@@ -423,7 +422,7 @@ void FixRigidLSDEM::init()
 
             cycle += 1;
 
-            for (int a = 0; a < domain->dimension; a++) {
+            for (int a = 0; a < dimension; a++) {
               if (a == 0) ns = 1;
               else if (a == 1) ns = nx;
               else ns = nx * ny;
@@ -431,8 +430,9 @@ void FixRigidLSDEM::init()
 
                 newbin = mybin + sign * ns;
 
-                if (newbin < 0 || newbin >= ntotal) continue;
+                if (newbin < 0 || newbin >= nbin) continue;
                 if (temp_grid_values[newbin] > grid_stride[ibody]) continue;
+                if (temp_grid_values[newbin] < -rcell) continue;
 
                 // if unvisited, add walker
                 // if coming from a bin with a single owner (i.e. not a buffer), add owner to bin
@@ -441,6 +441,8 @@ void FixRigidLSDEM::init()
                   next_walkers.emplace_back(std::make_pair(i, newbin));
                 } else if (bin_owners[mybin].size() == 1) {
                   bin_owners[newbin].insert(i);
+                  if (i < nlocal)
+                    atom_bins[i].insert(newbin);
                 }
               }
             }
@@ -452,12 +454,14 @@ void FixRigidLSDEM::init()
             i = walker.first;
             mybin = walker.second;
             bin_owners[mybin].insert(i);
+            if (i < nlocal)
+              atom_bins[i].insert(mybin);
           }
 
 
           /*  Print for debugging
           printf("\n------------- Body %d -------------\n", cycle);
-          for (int n = 0; n < ntotal; n++) {
+          for (int n = 0; n < nbin; n++) {
             if (bin_owners[n].size() == 0)
               printf(".   ");
             else if (bin_owners[n].size() == 1)
@@ -488,8 +492,13 @@ void FixRigidLSDEM::init()
   }
 
   if (watershed_flag) {
+    int max_nbins = -1;
+    for (i = 0; i < atom->nlocal; i++)
+      max_nbins = MAX(max_nbins, int(atom_bins[i].size()));
 
-    // calculate max size (MPI_Allreduce)
+    int max_nbins_global;
+    MPI_Allreduce(&max_nbins, &max_nbins_global, 1, MPI_INT, MPI_MAX, world);
+
     // create property atom fix + store
   }
 
