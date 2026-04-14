@@ -354,109 +354,141 @@ void FixRigidLSDEM::init()
       //       can we adjust comm size per atom?
       //       make changes to pair style
 
-      std::set <int> unvisisted_bins;
-      std::vector <std::set <int>> bin_owners(ntotal);
-      std::vector <std::pair <int, int>> walkers;
-      std::vector <std::pair <int, int>> next_walkers;
-
-      int nx, ny, nz, ns, ntotal, ix[3], itotal, inew, current_walker;
-      double quat_conj[4];
-      std::vector<int> atoms;
-      std::vector<std::tuple<int, int, int>> atom_bins;
+      int nx, ny, nz;
+      int ntotal_max = -1;
       for (ibody = 0; ibody < nbody; ibody++) {
-        walkers.erase();
-        unvisisted_bins.erase();
-        for (i = 0; i < ntotal; ++i) {
-          unvisited_bins.insert(i);
-          bin_owners[i].erase();
-        }
-
-
         if (pair.second.find(ibody) == pair.second.end())
           continue;
 
         nx = grid_size[ibody][0];
         ny = grid_size[ibody][1];
         nz = grid_size[ibody][2];
+        ntotal_max = MAX(ntotal_max, nx * ny * nz);
+      }
+
+      std::vector <std::set <int>> bin_owners(ntotal_max);
+      std::vector <std::pair <int, int>> walkers;
+      std::vector <std::pair <int, int>> next_walkers;
+
+      int j, ns, ntotal, ix[3], mybin, newbin, current_walker;
+      double x_local[3], quat_conj[4];
+      std::vector<int> atoms;
+      std::vector<std::tuple<int, int, int>> atom_bins;
+      //for (ibody = 0; ibody < nbody; ibody++) {
+
+
+      for (ibody = 0; ibody < 1; ibody++) {
+
+        nx = grid_size[ibody][0];
+        ny = grid_size[ibody][1];
+        nz = grid_size[ibody][2];
         ntotal = nx * ny * nz;
+
+        walkers.clear();
+        next_walkers.clear();
+        for (i = 0; i < ntotal; ++i)
+          bin_owners[i].clear();
 
         for (i = 0; i < atom->nlocal; i++) {
           if (!(mask[i] & groupbit)) continue;
-          if (ibody != body[i]) continue;
-          current_atoms.insert(i);
+          if (body[i] != ibody) continue;
+
+          MathExtra::sub3(x[i], xcm[ibody], dx);
+          domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+
+          MathExtra::qconjugate(quat_atom[j], quat_conj);
+          MathExtra::quatrotvec(quat_conj, dx, x_local);
+          MathExtra::sub3(x_local, grid_min[ibody], x_local);
+          MathExtra::scale3(1.0 / grid_stride[ibody], x_local);
+
+          ix[0] = int(x_local[0]);
+          ix[1] = int(x_local[1]);
+          ix[2] = int(x_local[2]);
+
+          atom_bins.emplace_back(std::make_tuple(ix[0], ix[1], ix[2]));
+
+          mybin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+
+          bin_owners[mybin].insert(i);
+          walkers.emplace_back(std::make_pair(i, mybin));
         }
 
-        MathExtra::sub3(x[i], grain_com[i], dx);
-        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+        while (!walkers.empty()) {
+          // find unvisited sites and add new walkers
+          //   if a walker borders a visited site, only add owner to create a buffer
+          int cycle = 0;
+          for (auto walker : walkers) {
+            i = walker.first;
+            mybin = walker.second;
 
-        MathExtra::qconjugate(quat_atom[j], quat_conj);
-        MathExtra::quatrotvec(quat_conj, dx, dx_local);
-        MathExtra::sub3(x_local, grid_min[ibody], x_local);
-        MathExtra::scale3(1.0 / grid_stride[ibody], x_local)
+            cycle += 1;
 
-        ix[0] = int(x_local[0]);
-        ix[1] = int(x_local[1]);
-        ix[2] = int(x_local[2]);
+            for (int a = 0; a < domain->dimension; a++) {
+              if (a == 0) ns = 1;
+              else if (a == 1) ns = nx;
+              else ns = nx * ny;
+              for (int sign = -1; sign <= 1; sign += 2) {
 
-        atom_bins.insert(std::make_tuple(ix[0], ix[1], ix[2]));
+                newbin = mybin + sign * ns;
 
-        itotal = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+                if (newbin < 0 || newbin >= ntotal) continue;
+                if (temp_grid_values[newbin] > grid_stride[ibody]) continue;
 
-        bin_owners[itotal].insert(itotal);
-        walkers.insert(std::make_pair(i, itotal));
-        unvisited_bins.erase(itotal);
-      }
+                // if unvisited, add walker
+                // if coming from a bin with a single owner (i.e. not a buffer), add owner to bin
 
-      while (!unvisited_bins.empty()) {
-        // find unvisited sites and add new walkers
-        //   if a walker borders a visited site, only add owner to create a buffer
-        for (auto walker : walkers) {
-          i = walker.first;
-          itotal = walker.second;
-
-          for (int a = 0; a < domain->dimension; a++) {
-            if (a == 0) ns = 1;
-            else if (a == 1) ns = nx;
-            else ns = nx * ny;
-
-            inew = itotal + ns;
-            if (inew >= 0 && inew < ntotal) {
-              if (bin_owners[inew].empty()) {
-
-get value, if away from surface skip walking
-
-                next_walker.insert(std::make_pair(i, inew));
-              } else if (bin_owners[inew].find(i) == bin_owners[inew].end()) {
-                bin_owners[inew].insert(i);
-              }
-            }
-
-            inew = itotal - ns;
-            if (inew >= 0 && inew < ntotal) {
-              if (bin_owners[inew].empty()) {
-                next_walker.insert(std::make_pair(i, inew));
-              } else if (bin_owners[inew].find(i) == bin_owners[inew].end()) {
-                bin_owners[inew].insert(i);
+                if (bin_owners[newbin].empty()) {
+                  next_walkers.emplace_back(std::make_pair(i, newbin));
+                } else if (bin_owners[mybin].size() == 1) {
+                  bin_owners[newbin].insert(i);
+                }
               }
             }
           }
-        }
 
-        // add ownership from all of these walkers
-        for (auto walker : walkers) {
-          i = walker.first;
-          itotal = walker.second;
-          bin_owners[inew].insert(i);
-        }
 
-        // replace walkers
-        std::swap(walker, next_walker);
-        next_walker.erase();
+          // add ownership from all of these walkers
+          for (auto walker : walkers) {
+            i = walker.first;
+            mybin = walker.second;
+            bin_owners[mybin].insert(i);
+          }
+
+
+          /*  Print for debugging
+          printf("\n------------- Body %d -------------\n", cycle);
+          for (int n = 0; n < ntotal; n++) {
+            if (bin_owners[n].size() == 0)
+              printf(".   ");
+            else if (bin_owners[n].size() == 1)
+              printf("%d   ", *bin_owners[n].begin());
+            else {
+              int tmp = 0;
+              for (auto k : bin_owners[n]) {
+                printf("%d", k);
+                tmp += 1;
+                if (tmp < bin_owners[n].size())
+                  printf(",");
+                else
+                  printf(" ");
+              }
+            }
+            if ((n+1) % nx == 0)
+              printf("\n");
+          }
+          printf("\n");
+          */
+
+          // replace walkers
+          std::swap(walkers, next_walkers);
+          next_walkers.clear();
+        }
       }
     }
   }
 
   if (watershed_flag) {
+
     // calculate max size (MPI_Allreduce)
     // create property atom fix + store
   }
