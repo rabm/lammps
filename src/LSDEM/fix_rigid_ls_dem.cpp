@@ -54,10 +54,10 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 /* ---------------------------------------------------------------------- */
 
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
-    FixRigid(lmp, narg, arg), id_fix(nullptr), id_fix2(nullptr), global_grids(nullptr),
+    FixRigid(lmp, narg, arg), id_fix(nullptr),  global_grids(nullptr),
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr),
     grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr),
-    quatd2g(nullptr), gridfiles(nullptr), quat_custom(nullptr)
+    quatd2g(nullptr), gridfiles(nullptr), quat_custom(nullptr), dist_grid_values(nullptr), dist_grid_min(nullptr)
 {
   comm_forward = 1;
   maxcut = -1;
@@ -68,6 +68,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   watershed_flag = 0;
 
   n_extra_attributes = 3;
+  maxexchange = 0;
 
   // always write restart file
   restart_file = 1;
@@ -86,6 +87,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
   memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
 
+  atom->add_callback(Atom::BORDER);
+
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/ls/dem");
 
@@ -101,8 +104,6 @@ FixRigidLSDEM::~FixRigidLSDEM()
 
   if (id_fix && modify->nfix) modify->delete_fix(id_fix);
   delete[] id_fix;
-  if (id_fix2 && modify->nfix) modify->delete_fix(id_fix2);
-  delete[] id_fix2;
 
   // delete nbody-length arrays
 
@@ -116,6 +117,9 @@ FixRigidLSDEM::~FixRigidLSDEM()
   memory->destroy(node_area);
   memory->destroy(quatd2g);
   memory->destroy(gridfiles);
+
+  memory->destroy(dist_grid_values);
+  memory->destroy(dist_grid_min);
 
   memory->destroy(itensor_custom);
   memory->destroy(quat_custom);
@@ -191,7 +195,7 @@ void FixRigidLSDEM::init()
   std::map <std::string, std::set<int>> file_map;
   std::string filename;
   int grid_size_flat, max_grid_size_flat(0);
-  double min_stride = DBL_MAX;
+  min_stride = DBL_MAX;
   for (ibody = 0; ibody < nbody; ibody++) {
     filename.assign(gridfiles[ibody]); // Retrieve file name
     read_gridfile(ibody, 0, filename, grid_size, nullptr); // Get only grid sizes (which 0)
@@ -227,41 +231,26 @@ void FixRigidLSDEM::init()
   // Allocate memory for level sets //
   // ------------------------------ //
 
-  int ntotal;
   // All local grids sized on finest grid (fix property/atom requiresfixed-size containers)
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
 
   if (distributed_flag) {
     for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
     if (dimension == 2) subgrid_size[2] = 1;
+    n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
 
-    int tmp1, tmp2;
-    index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
+    maxexchange = n_dist_grid + 4; // +1 for flag to indicate whether grid info included
+                                   // +3 for minimum values
 
-    if (index_grid_values == -1) {
-      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-      int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-      if (ntotal > RECOMMENDED_MAX_NGRID)
-        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-      modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
-
-      index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-    }
+    grow_arrays(atom->nmax);
   }
 
+  int nlocal = atom->nlocal;
+  std::vector <std::set <int>> atom_bins;
   if (watershed_flag) {
-    // Allocate peratom storage after sizing
-
-    int tmp1, tmp2;
-    index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-
-    if (index_grid_min == -1) {
-      id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-      modify->add_fix(fmt::format("{} all property/atom d2_grid_min {} writedata no ghost yes", id_fix2, 3));
-      index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
-    }
+    // calculate size
+    grow_arrays(atom->nmax);
+    atom_bins.resize(nlocal);
   }
 
   if (index_global_grid) {
@@ -274,20 +263,6 @@ void FixRigidLSDEM::init()
 
   double *temp_grid_values;
   memory->create(temp_grid_values, max_grid_size_flat, "rigid/lsdem:temp_grid_values");
-
-  double **grid_values, **grid_min_local;
-  if (distributed_flag) {
-    grid_values = atom->darray[index_grid_values];
-    grid_min_local = atom->darray[index_grid_min];
-  }
-
-
-  int nlocal = atom->nlocal;
-  std::vector <std::set <int>> atom_bins;
-  if (watershed_flag) {
-    grid_min_local = atom->darray[index_grid_min];
-    atom_bins.resize(nlocal);
-  }
 
   double **x = atom->x;
   double **quat_atom = atom->quat;
@@ -338,7 +313,7 @@ void FixRigidLSDEM::init()
 
         // Calculate local grid values and minima
         error_code = store_distributed(i, dimension, grid_size[ibody], subgrid_size, grid_stride[ibody], grid_scale[ibody],
-                                      rcell, dx, grid_min[ibody], quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
+                                      rcell, dx, grid_min[ibody], quat_atom[i], temp_grid_values, dist_grid_min[i], dist_grid_values[i]);
 
         if (error_code == -1)
           error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
@@ -743,6 +718,143 @@ double FixRigidLSDEM::memory_usage()
 }
 
 /* ----------------------------------------------------------------------
+   allocate atom-based array
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::grow_arrays(int nmax)
+{
+  FixRigid::grow_arrays(nmax);
+
+  if (distributed_flag) {
+    if (n_dist_grid > RECOMMENDED_MAX_NGRID)
+      error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for "
+        "distributed level sets with a cutoff of {} and a min stride of {}",
+        subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
+
+    memory->grow(dist_grid_values, nmax, n_dist_grid, "rigid/ls/dem:dist_grid_values");
+    memory->grow(dist_grid_min, nmax, 3, "rigid/ls/dem:dist_grid_min");
+  }
+}
+
+/* ----------------------------------------------------------------------
+   copy values within local atom-based array
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
+{
+  FixRigid::copy_arrays(i, j, 0);
+
+  if (distributed_flag) {
+    if (grid_style[body[j]] != DISTRIBUTED)
+      return;
+
+    for (int m = 0; m < n_dist_grid; m++) dist_grid_values[j][m] = dist_grid_values[i][m];
+    dist_grid_min[j][0] = dist_grid_min[i][0];
+    dist_grid_min[j][1] = dist_grid_min[i][1];
+    dist_grid_min[j][2] = dist_grid_min[i][2];
+  }
+}
+
+/* ----------------------------------------------------------------------
+   pack values for border communication at re-neighboring
+------------------------------------------------------------------------- */
+
+int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
+{
+  int i, j, k;
+  int m = 0;
+  if (distributed_flag) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      if (grid_style[body[j]] != DISTRIBUTED) {
+        buf[m++] = 0;
+        continue;
+      }
+
+      buf[m++] = 1;
+
+      for (k = 0; k < n_dist_grid; k++) buf[m++] = dist_grid_values[j][k];
+      buf[m++] = dist_grid_min[j][0];
+      buf[m++] = dist_grid_min[j][1];
+      buf[m++] = dist_grid_min[j][2];
+    }
+  }
+  return m;
+}
+
+/* ----------------------------------------------------------------------
+   unpack values for border communication at re-neighboring
+------------------------------------------------------------------------- */
+
+int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
+{
+  int i, k, last, flag;
+
+  int m = 0;
+  last = first + n;
+  if (distributed_flag) {
+    for (i = first; i < last; i++) {
+      flag = buf[m++];
+      if (flag == 0) continue; // no grid info for this atom
+
+      for (k = 0; k < n_dist_grid; k++) dist_grid_values[i][k] = buf[m++];
+      dist_grid_min[i][0] = buf[m++];
+      dist_grid_min[i][1] = buf[m++];
+      dist_grid_min[i][2] = buf[m++];
+    }
+  }
+
+  return m;
+}
+
+/* ----------------------------------------------------------------------
+   pack values in local atom-based array for exchange with another proc
+------------------------------------------------------------------------- */
+
+int FixRigidLSDEM::pack_exchange(int i, double *buf)
+{
+  int m = FixRigid::pack_exchange(i, buf);
+
+  if (distributed_flag) {
+    if (grid_style[body[i]] != DISTRIBUTED) {
+      buf[m++] = 0;
+      return m;
+    }
+
+    buf[m++] = 1;
+
+    for (int n = 0; n < n_dist_grid; n++) buf[m++] = dist_grid_values[i][n];
+    buf[m++] = dist_grid_min[i][0];
+    buf[m++] = dist_grid_min[i][1];
+    buf[m++] = dist_grid_min[i][2];
+  }
+
+  return m;
+}
+
+/* ----------------------------------------------------------------------
+   unpack values in local atom-based array from exchange with another proc
+------------------------------------------------------------------------- */
+
+int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
+{
+  int m = FixRigid::unpack_exchange(nlocal, buf);
+
+  if (distributed_flag) {
+    int flag = buf[m++];
+    if (flag == 0)
+      return m;
+
+    for (int n = 0; n < n_dist_grid; n++) dist_grid_values[nlocal][n] = buf[m++];
+    dist_grid_min[nlocal][0] = buf[m++];
+    dist_grid_min[nlocal][1] = buf[m++];
+    dist_grid_min[nlocal][2] = buf[m++];
+  }
+
+  return m;
+}
+
+/* ----------------------------------------------------------------------
    one-time reading of file names for LS grid
 ------------------------------------------------------------------------- */
 
@@ -1090,13 +1202,12 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
   int ncol, nrow, nslice;
   double *mygrid;
   if (grid_style[jbody] == DISTRIBUTED) {
-    mygrid = atom->darray[index_grid_values][j];
+    mygrid = dist_grid_values[j];
     // Translate local coordinates such that they are relative
     // to the lower corner of the node's level set grid.
-    double **local_grid_min = atom->darray[index_grid_min];
-    x_local[0] -= local_grid_min[j][0];
-    x_local[1] -= local_grid_min[j][1];
-    x_local[2] -= local_grid_min[j][2];
+    x_local[0] -= dist_grid_min[j][0];
+    x_local[1] -= dist_grid_min[j][1];
+    x_local[2] -= dist_grid_min[j][2];
 
     ncol = subgrid_size[0];
     nrow = subgrid_size[1];

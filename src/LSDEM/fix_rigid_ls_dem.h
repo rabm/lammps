@@ -39,6 +39,13 @@ class FixRigidLSDEM : public FixRigid {
   void set_arrays(int) override;
   void write_restart_file(const char *) override;
 
+  void grow_arrays(int) override;
+  void copy_arrays(int, int, int) override;
+  int pack_border(int, int *, double *) override;
+  int unpack_border(int, int, double *) override;
+  int pack_exchange(int, double *) override;
+  int unpack_exchange(int, double *) override;
+
   double memory_usage() override;
 
   inline double *get_vol_array() { return grid_vol; };
@@ -50,11 +57,13 @@ class FixRigidLSDEM : public FixRigid {
 
  protected:
   int stored_flag, global_flag, distributed_flag, watershed_flag;
-  char *id_fix, *id_fix2;
+  char *id_fix;
   int index_ls_dem_touch_id;
 
-  int index_grid_values;
-  int index_grid_min;
+  int n_dist_grid;
+  double **dist_grid_values;
+  double **dist_grid_min;
+  double min_stride;
 
   int **grid_size;              // size of each grid
   int subgrid_size[3];          // number of distributed subgrid points in each dimension
