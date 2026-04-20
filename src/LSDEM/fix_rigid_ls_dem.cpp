@@ -59,7 +59,6 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     grid_index(nullptr), grid_size(nullptr), grid_vol(nullptr), node_area(nullptr),
     quatd2g(nullptr), gridfiles(nullptr), quat_custom(nullptr), dist_grid_values(nullptr), dist_grid_min(nullptr)
 {
-  comm_forward = 1;
   maxcut = -1;
   stored_flag = 0;
 
@@ -69,6 +68,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
   maxexchange = 0;
+  comm_border = 1;
 
   // always write restart file
   restart_file = 1;
@@ -233,14 +233,16 @@ void FixRigidLSDEM::init()
 
   // All local grids sized on finest grid (fix property/atom requiresfixed-size containers)
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
-
   if (distributed_flag) {
     for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
     if (dimension == 2) subgrid_size[2] = 1;
     n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
 
-    maxexchange = n_dist_grid + 4; // +1 for flag to indicate whether grid info included
+    maxexchange = n_dist_grid + 5; // +1 for flag to indicate whether grid info included
                                    // +3 for minimum values
+                                   // +1 for body (always run)
+
+    comm_border = n_dist_grid + 5;
 
     grow_arrays(atom->nmax);
   }
@@ -332,6 +334,10 @@ void FixRigidLSDEM::init()
       //       go away from property/atom - need custom packing
       //       can we adjust comm size per atom?
       //       make changes to pair style
+
+      // redo algorithm
+      // do it with no overlaps. Break ties with... distance to center of box
+      // then do one more walk and add buffer
 
       int nx, ny, nz;
       int nbin_max = -1;
@@ -512,20 +518,6 @@ void FixRigidLSDEM::init()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidLSDEM::setup_pre_force(int vflag)
-{
-  pre_force(vflag);
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixRigidLSDEM::pre_force(int vflag)
-{
-  comm->forward_comm(this);
-}
-
-/* ---------------------------------------------------------------------- */
-
 void FixRigidLSDEM::initial_integrate(int vflag)
 {
   FixRigid::initial_integrate(vflag);
@@ -551,32 +543,6 @@ void FixRigidLSDEM::initial_integrate(int vflag)
     grain_omega[i][1] = omega[ibody][1];
     grain_omega[i][2] = omega[ibody][2];
   }
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixRigidLSDEM::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
-{
-  int i, j, m;
-
-  m = 0;
-  for (i = 0; i < n; i++) {
-    j = list[i];
-    buf[m++] = ubuf(body[j]).d;
-  }
-  return m;
-}
-
-/* ---------------------------------------------------------------------- */
-
-void FixRigidLSDEM::unpack_forward_comm(int n, int first, double *buf)
-{
-  int i, m, last;
-
-  m = 0;
-  last = first + n;
-  for (i = first; i < last; i++)
-    body[i] = (int) ubuf(buf[m++]).i;
 }
 
 /* ----------------------------------------------------------------------
@@ -763,17 +729,18 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
 {
   int i, j, k;
   int m = 0;
-  if (distributed_flag) {
-    for (i = 0; i < n; i++) {
-      j = list[i];
+
+  for (i = 0; i < n; i++) {
+    j = list[i];
+    buf[m++] = ubuf(body[j]).d;
+    if (distributed_flag) {
       if (grid_style[body[j]] != DISTRIBUTED) {
         buf[m++] = 0;
         continue;
       }
-
       buf[m++] = 1;
-
-      for (k = 0; k < n_dist_grid; k++) buf[m++] = dist_grid_values[j][k];
+      for (k = 0; k < n_dist_grid; k++)
+        buf[m++] = dist_grid_values[j][k];
       buf[m++] = dist_grid_min[j][0];
       buf[m++] = dist_grid_min[j][1];
       buf[m++] = dist_grid_min[j][2];
@@ -792,8 +759,9 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
 
   int m = 0;
   last = first + n;
-  if (distributed_flag) {
-    for (i = first; i < last; i++) {
+  for (i = first; i < last; i++) {
+    body[i] = (int) ubuf(buf[m++]).i;
+    if (distributed_flag) {
       flag = buf[m++];
       if (flag == 0) continue; // no grid info for this atom
 

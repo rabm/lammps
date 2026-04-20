@@ -30,12 +30,8 @@ class FixRigidLSDEM : public FixRigid {
   ~FixRigidLSDEM() override;
   int setmask() override;
   void post_constructor() override;
-  int pack_forward_comm(int, int *, double *, int, int *) override;
-  void unpack_forward_comm(int, int, double *) override;
   void init() override;
-  void setup_pre_force(int) override;
   void initial_integrate(int) override;
-  void pre_force(int) override;
   void set_arrays(int) override;
   void write_restart_file(const char *) override;
 
