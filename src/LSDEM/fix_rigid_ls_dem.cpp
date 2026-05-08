@@ -249,10 +249,12 @@ void FixRigidLSDEM::init()
 
   int nlocal = atom->nlocal;
   std::vector <std::set <int>> atom_bins;
+  std::vector <std::set <int>> atom_buffer_bins;
   if (watershed_flag) {
     // calculate size
     grow_arrays(atom->nmax);
     atom_bins.resize(nlocal);
+    atom_buffer_bins.resize(nlocal);
   }
 
   if (index_global_grid) {
@@ -331,8 +333,7 @@ void FixRigidLSDEM::init()
       // Calculate watershed and temporarily store peratom data
 
       // Todo: think about parallel
-      //       go away from property/atom - need custom packing
-      //       can we adjust comm size per atom?
+      //       need to add communication
       //       make changes to pair style
 
       // redo algorithm
@@ -354,7 +355,8 @@ void FixRigidLSDEM::init()
       int j, ns, nbin, ix[3], mybin, newbin, current_walker;
       int ntotal = nlocal + atom->nghost;
       double x_local[3], quat_conj[4];
-      std::vector <std::set <int>> bin_owners(nbin_max);
+      tagint *tag = atom->tag;
+      std::vector <tagint> bin_owners(nbin_max);
       std::vector <std::pair <int, int>> walkers;
       std::vector <std::pair <int, int>> next_walkers;
       for (ibody = 0; ibody < nbody; ibody++) {
@@ -367,7 +369,7 @@ void FixRigidLSDEM::init()
         walkers.clear();
         next_walkers.clear();
         for (i = 0; i < nbin; ++i)
-          bin_owners[i].clear();
+          bin_owners[i] = -1;
 
         for (i = 0; i < ntotal; i++) {
           if (!(mask[i] & groupbit)) continue;
@@ -376,7 +378,7 @@ void FixRigidLSDEM::init()
           MathExtra::sub3(x[i], xcm[ibody], dx);
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
-          MathExtra::qconjugate(quat_atom[j], quat_conj);
+          MathExtra::qconjugate(quat_atom[i], quat_conj);
           MathExtra::quatrotvec(quat_conj, dx, x_local);
           MathExtra::sub3(x_local, grid_min[ibody], x_local);
           MathExtra::scale3(1.0 / grid_stride[ibody], x_local);
@@ -387,7 +389,7 @@ void FixRigidLSDEM::init()
 
           mybin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
 
-          bin_owners[mybin].insert(i);
+          bin_owners[mybin] = i;
           if (i < nlocal)
             atom_bins[i].insert(mybin);
           walkers.emplace_back(std::make_pair(i, mybin));
@@ -416,66 +418,95 @@ void FixRigidLSDEM::init()
                 if (temp_grid_values[newbin] < -rcell) continue;
 
                 // if unvisited, add walker
-                // if coming from a bin with a single owner (i.e. not a buffer), add owner to bin
-
-                if (bin_owners[newbin].empty()) {
+                if (bin_owners[newbin] == -1)
                   next_walkers.emplace_back(std::make_pair(i, newbin));
-                } else if (bin_owners[mybin].size() == 1) {
-                  bin_owners[newbin].insert(i);
-                  if (i < nlocal)
-                    atom_bins[i].insert(newbin);
-                }
               }
             }
           }
 
 
           // add ownership from all of these walkers
+          //   break ties depending on which atom owns fewer bins
           for (auto walker : walkers) {
             i = walker.first;
             mybin = walker.second;
-            bin_owners[mybin].insert(i);
-            if (i < nlocal)
-              atom_bins[i].insert(mybin);
+
+            if (bin_owners[mybin] == -1) {
+              bin_owners[mybin] = i;
+               if (i < nlocal)
+                atom_bins[i].insert(mybin);
+            } else {
+              j = bin_owners[mybin];
+              if (atom_bins[i].size() < atom_bins[j].size()) {
+                bin_owners[mybin] = i;
+                if (i < nlocal)
+                  atom_bins[i].insert(mybin);
+                atom_bins[j].erase(mybin);
+              }
+            }
           }
 
 
-          /*  Print for debugging
+          /*  //Print for debugging
           printf("\n------------- Body %d -------------\n", cycle);
           for (int n = 0; n < nbin; n++) {
-            if (bin_owners[n].size() == 0)
-              printf(".   ");
-            else if (bin_owners[n].size() == 1)
-              printf("%d   ", *bin_owners[n].begin());
-            else {
-              int tmp = 0;
-              for (auto k : bin_owners[n]) {
-                printf("%d", k);
-                tmp += 1;
-                if (tmp < bin_owners[n].size())
-                  printf(",");
-                else
-                  printf(" ");
-              }
-            }
+            printf("%3d ", tag[bin_owners[n]]);
+
             if ((n+1) % nx == 0)
               printf("\n");
           }
           printf("\n");
           */
 
+
           // replace walkers
           std::swap(walkers, next_walkers);
           next_walkers.clear();
         }
       }
+
+      // Create buffer
+      for (i = 0; i < nlocal; i++) {
+        for (const auto& mybin : atom_bins[i]) {
+          for (int a = 0; a < dimension; a++) {
+            if (a == 0) ns = 1;
+            else if (a == 1) ns = nx;
+            else ns = nx * ny;
+            for (int sign = -1; sign <= 1; sign += 2) {
+              newbin = mybin + sign * ns;
+              if (bin_owners[newbin] == -1 || tag[bin_owners[newbin]] != tag[i])
+                atom_buffer_bins[i].insert(newbin);
+            }
+          }
+        }
+      }
+
+
+      /*  //Print one buffer for debugging
+      for (i = 0; i < nlocal; i++)
+        if (tag[i] == 133) break;
+      printf("\n------------- Buffer 133 -------------\n");
+      for (int n = 0; n < nbin; n++) {
+        if (atom_bins[i].find(n) != atom_bins[i].end()) {
+          printf("X ");
+        } else if (atom_buffer_bins[i].find(n) != atom_buffer_bins[i].end()) {
+          printf("Y ");
+        } else {
+          printf(". ");
+        }
+        if ((n+1) % nx == 0)
+          printf("\n");
+      }
+      printf("\n");
+      */
+
     }
   }
 
   if (watershed_flag) {
     int max_nbins = -1;
     for (i = 0; i < atom->nlocal; i++)
-      max_nbins = MAX(max_nbins, int(atom_bins[i].size()));
+      max_nbins = MAX(max_nbins, int(atom_bins[i].size()) + int(atom_buffer_bins[i].size()));
 
     int max_nbins_global;
     MPI_Allreduce(&max_nbins, &max_nbins_global, 1, MPI_INT, MPI_MAX, world);

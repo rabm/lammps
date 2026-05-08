@@ -39,6 +39,9 @@ using namespace MathConst;
 //TODO:
 //  add checks for key overflow
 //  add checks to rigid/small/ls/dem nbodies < 2bil (or generalize)
+//  should watershed be a 2nd toggle and not a memory style? Such that global also creates (but does not communicates) the data?
+//    primarily, is it faster than doing the 2nd nlist loop?
+//  create a 2nd set of page files and process nlist whenever built to skip far atoms
 
 /* ---------------------------------------------------------------------- */
 
