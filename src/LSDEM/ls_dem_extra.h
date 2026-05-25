@@ -14,13 +14,16 @@
 #ifndef LMP_LS_DEM_EXTRA_H
 #define LMP_LS_DEM_EXTRA_H
 
+#include <unordered_map>
+
 namespace LSDEMExtra {
 
   double smeared_heaviside_step(double);
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);
   double compute_grid_properties(int *, double, double *, double *, double *, int);
-  double interpolate_LS(int, double *, int, int, int, double, double, double, double[3], double);
+  double interpolate_LS_array(int, double *, int, int, int, double, double, double, double[3], double);
+  double interpolate_LS_watershed(int, std::unordered_map<int, double> *, std::unordered_map<int, double> *, int, int, int, double *, int *, double *, double);
   int store_distributed(int, int, int *, int *, double, double, double, double *, double *, double *, double *, double *, double *);
 }
 

@@ -22,6 +22,8 @@ FixStyle(rigid/ls/dem,FixRigidLSDEM);
 
 #include "fix_rigid.h"
 
+#include <unordered_map>
+
 namespace LAMMPS_NS {
 
 class FixRigidLSDEM : public FixRigid {
@@ -48,11 +50,12 @@ class FixRigidLSDEM : public FixRigid {
   inline double *get_area_array() { return node_area; };
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
+  inline int get_storage_model() { return storage_flag; };
 
   double get_ls_value(int, int, double*);
 
  protected:
-  int stored_flag, global_flag, distributed_flag, watershed_flag;
+  int ls_read_flag, global_flag, distributed_flag, storage_flag;
   char *id_fix;
   int index_ls_dem_touch_id;
 
@@ -79,10 +82,19 @@ class FixRigidLSDEM : public FixRigid {
   double maxcut;
   int rcell;
 
+  std::vector<std::vector <std::unordered_map<int, double>>> global_ws_tables;
+  std::vector<std::vector <std::unordered_map<int, double>>> global_ws_buffers;
+  std::vector<std::unordered_map<int, double>> dist_ws_tables;
+  std::vector<std::unordered_map<int, double>> dist_ws_buffers;
+  int *node_type;
+  int nmax_node_type;
+
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);
   int read_infile(char **);
+  double get_ls_value_array(int, int, double*);
+  double get_ls_value_watershed(int, int, double*);
 };
 
 }    // namespace LAMMPS_NS

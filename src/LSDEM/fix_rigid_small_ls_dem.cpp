@@ -70,7 +70,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   global_grids_size(nullptr), id_fix(nullptr), id_fix2(nullptr), quat_custom(nullptr)
 {
   maxcut = -1;
-  stored_flag = 0;
+  ls_read_flag = 0;
   global_flag = 0;
   distributed_flag = 0;
   n_extra_attributes = 3;
@@ -174,7 +174,7 @@ void FixRigidSmallLSDEM::init()
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
-  if (stored_flag) return;
+  if (ls_read_flag) return;
   // set in setup_pre_neighbor()
 
   // allocate storage for LS-derived quantities (used in FixRigidSmall::setup_pre_neighbor() except for quat)
@@ -276,7 +276,7 @@ void FixRigidSmallLSDEM::init()
 
 void FixRigidSmallLSDEM::setup_pre_neighbor()
 {
-  if (!stored_flag) {
+  if (!ls_read_flag) {
     // acquire ghost bodies via forward comm
     // set atom2body for ghost atoms via forward comm
     // set atom2body for other owned atoms via reset_atom2body()
@@ -291,7 +291,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
   FixRigidSmall::setup_pre_neighbor();
 
-  if (!stored_flag) {
+  if (!ls_read_flag) {
     // extra calculations using values from parent
 
     int iatom;
@@ -335,7 +335,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     memory->destroy(mass_custom);
     memory->destroy(quat_custom);
 
-    stored_flag = 1;
+    ls_read_flag = 1;
   }
 
   // Sanity check for agreement with parent
@@ -1604,7 +1604,7 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
   double z_red = x_local[2] * strideinv;
 
   int dim = domain->dimension;
-  double dist = interpolate_LS(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
+  double dist = interpolate_LS_array(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
 
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
