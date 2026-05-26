@@ -573,6 +573,13 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR, "Fix {} exclude/gravity group ID {} does not exist", style, id_dilate);
       iarg += 2;
 
+    } else if (strcmp(arg[iarg], "ls/storage") == 0) {
+      if (!utils::strmatch(style, "ls"))
+        error->all(FLERR, "Illegal fix {} command option ls/storage", style);
+      if (iarg + 2 > narg)
+        utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
+      iarg += 2;
+
     } else
       error->all(FLERR, "Illegal fix {} command", style);
   }

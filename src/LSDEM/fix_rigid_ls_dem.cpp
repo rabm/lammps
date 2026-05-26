@@ -42,7 +42,6 @@
 // todo: make watershed/array an argument
 //       check serial watershed
 //       check parallel watershed + array
-//       add argument
 //       make changes to pair style
 //       port to small
 
@@ -72,7 +71,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   global_flag = 0;
   distributed_flag = GLOBAL;
-  storage_flag = ARRAY // WATERSHED;
+  storage_flag = ARRAY; // Default is array
 
   n_extra_attributes = 3;
   maxexchange = 0;
@@ -80,6 +79,23 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   // always write restart file
   restart_file = 1;
+
+  int iarg = 0;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg], "ls/storage") == 0) {
+      if (iarg + 2 > narg)
+        utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
+      if (strcmp(arg[iarg + 1], "array") == 0)
+        storage_flag = ARRAY;
+      else if (strcmp(arg[iarg + 1], "watershed") == 0)
+        storage_flag = WATERSHED;
+      else
+        error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
+      iarg += 2;
+    } else {
+      iarg ++;
+    }
+  }
 
   if (!inpfile)
     error->all(FLERR, "Must specify infile with level set for fix rigid/ls/dem");
