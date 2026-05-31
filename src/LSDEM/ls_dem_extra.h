@@ -22,8 +22,8 @@ namespace LSDEMExtra {
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);
   double compute_grid_properties(int *, double, double *, double *, double *, int);
-  double interpolate_LS_array(int, double *, int, int, int, double, double, double, double[3], double);
-  double interpolate_LS_watershed(int, std::unordered_map<int, double> *, std::unordered_map<int, double> *, int, int, int, double *, int *, double *, double);
+  double interpolate_LS_array(int, int, double *, int *, double *, int *, double[3], double);
+  double interpolate_LS_watershed(int, int, std::unordered_map<int, double> *, std::unordered_map<int, double> *, int[3], double[3], int *, double[3], double);
   int store_distributed(int, int, int *, int *, double, double, double, double *, double *, double *, double *, double *, double *);
 }
 

@@ -93,6 +93,7 @@ class FixRigidLSDEM : public FixRigid {
   void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);
   int read_infile(char **);
+  int get_bin(int, int, int*, double*, int*);
   double get_ls_value_array(int, int, double*);
   double get_ls_value_watershed(int, int, double*);
 };

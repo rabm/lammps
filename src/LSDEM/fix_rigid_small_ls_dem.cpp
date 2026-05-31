@@ -1599,12 +1599,25 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
     nslice = global_grids_size[gi][2];
   }
 
-  double x_red = x_local[0] * strideinv;
-  double y_red = x_local[1] * strideinv;
-  double z_red = x_local[2] * strideinv;
+  double x_red[3];
+  x_red[0] = x_local[0] * strideinv;
+  x_red[1] = x_local[1] * strideinv;
+  x_red[2] = x_local[2] * strideinv;
+
+  int ix[3];
+  ix[0] = int(x_red[0]);
+  ix[1] = int(x_red[1]);
+  ix[2] = int(x_red[2]);
+
+  int ngrid[3];
+  ngrid[0] = ncol;
+  ngrid[1] = nrow;
+  ngrid[2] = nslice;
+
+  int mybin = ix[0] + ix[1] * ngrid[0] + ix[2] * ngrid[0] * ngrid[1];
 
   int dim = domain->dimension;
-  double dist = interpolate_LS_array(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
+  double dist = interpolate_LS_array(dim, mybin, mygrid, ngrid, x_red, ix, normal, jstride);
 
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);

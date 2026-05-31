@@ -206,27 +206,18 @@ double compute_grid_properties(int *grid_size, double stride, double *grid_value
   Perform trilinear interpolation to get level-set value and normal
 -------------------------------------------------------------------------*/
 
-double interpolate_LS_array(int dimension, double *mygrid, int ncol, int nrow, int nslice,
-                                 double x_red, double y_red, double z_red, double normal[3], double stride)
+double interpolate_LS_array(int dimension, int mybin, double *mygrid, int *ngrid, double *x_red, int *ix, double nvec[3], double stride)
 {
-  double dist, nx, ny, nz(0.0);
-
-  // Calculate index from relative coordinate, being careful with integer division.
-  int ind_x = int(x_red);
-  int ind_y = int(y_red);
-  int ind_z = int(z_red); // zero in 2D.
+  double dist;
 
   // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
   // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ((ind_x < 0 || ind_x >= (ncol - 1)) || (ind_y < 0 || ind_y >= (nrow - 1)) ||
-      ((dimension == 3) && (ind_z < 0 || ind_z >= (nslice - 1))))
+  if ((ix[0] < 0 || ix[0] >= (ngrid[0] - 1)) || (ix[1] < 0 || ix[1] >= (ngrid[1] - 1)) ||
+      ((dimension == 3) && (ix[2] < 0 || ix[2] >= (ngrid[2] - 1))))
     return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
 
-  //  Interpolate
-  int my_index = ind_x + ind_y * ncol + ind_z * ncol * nrow;
-
   // Level-set value of lower corner
-  double ls000 = mygrid[my_index];
+  double ls000 = mygrid[mybin];
 
   // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
   // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
@@ -236,98 +227,9 @@ double interpolate_LS_array(int dimension, double *mygrid, int ncol, int nrow, i
   }
 
   // Rest of the level-set values on the grid points in the lower z plane (ind_z)
-  double ls100 = mygrid[my_index + 1];
-  double ls010 = mygrid[my_index + ncol];
-  double ls110 = mygrid[my_index + 1 + ncol]; // move this and // Interpolate upwards, add short circuit!!
-
-  // The normalised coordinates within the current grid cell.
-  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  x_red = x_red - static_cast<double>(ind_x);
-  y_red = y_red - static_cast<double>(ind_y);
-  z_red = z_red - static_cast<double>(ind_z); // Should always be zero in 2D.
-
-  // Bi-linear interpolation in the lower z plane (ind_z)
-  double lsxy0 = ls000 + y_red * (ls010 - ls000) +
-                 x_red * (ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000));
-  dist = lsxy0;
-
-  // Computing normal as the gradient of trilinear interpolation
-  // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
-  // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
-  nx = ls100 - ls000 + y_red * (ls110 - ls100 - ls010 + ls000);
-  ny = ls010 - ls000 + x_red * (ls110 - ls100 - ls010 + ls000);
-
-  if (dimension == 3) { // 3D
-    // Level-set values on the grid points in the upper z plane (ind_z+1)
-    double ls001 = mygrid[my_index + ncol * nrow];
-    double ls101 = mygrid[my_index + 1 + ncol * nrow];
-    double ls011 = mygrid[my_index + ncol + ncol * nrow];
-    double ls111 = mygrid[my_index + 1 + ncol + ncol * nrow];
-
-    // Bi-linear interpolation in the upper z plane (ind_z+1)
-    double lsxy1 = ls001 + y_red * (ls011 - ls001) +
-                   x_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
-
-    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-    dist = z_red * (lsxy1 - lsxy0) + lsxy0;
-    nx *= 1 - z_red;
-    nx += z_red * (ls101 - ls001 + y_red * (ls111 - ls101 - ls011 + ls001));
-    ny *= 1 - z_red;
-    ny += z_red * (ls011 - ls001 + x_red * (ls111 - ls101 - ls011 + ls001));
-    nz = lsxy1 - lsxy0;
-  }
-
-  // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
-  // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
-
-  // Assign normal
-  normal[0] = nx;
-  normal[1] = ny;
-  normal[2] = nz;
-  MathExtra::norm3(normal);
-
-  return dist;
-}
-
-/* ----------------------------------------------------------------------
-  Perform trilinear interpolation to get level-set value and normal
--------------------------------------------------------------------------*/
-
-double interpolate_LS_watershed(int dimension, std::unordered_map<int, double> *mytable, std::unordered_map<int, double> *mybuffer,
-                                int nx, int ny, int nz, double x_red[3], int ix[3], double normal[3], double stride)
-{
-  double dist;
-
-  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
-  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ((ix[0] < 0 || ix[0] >= (nx - 1)) || (ix[1] < 0 || ix[1] >= (ny - 1)) ||
-      ((dimension == 3) && (ix[2] < 0 || ix[2] >= (nz - 1))))
-    return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
-
-  //  Interpolate
-  int my_index = ix[0] + ix[1] * nx + ix[2] * nx * ny;
-
-  // Level-set value of lower corner
-  if (mytable->find(my_index) == mytable->end())
-    return BIG;
-
-  double ls000 = mytable->at(my_index);
-
-
-  // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
-  // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
-  // so 2.0 is safe.
-  if (ls000 > 2.0 * stride)
-    return ls000;
-
-  // Rest of the level-set values on the grid points in the lower z plane (ind_z)
-  if (mytable->find(my_index + 1) == mytable->end() ||
-      mytable->find(my_index + nx) == mytable->end() ||
-      mytable->find(my_index + 1 + nx) == mytable->end())
-    return BIG;
-  double ls100 = mytable->at(my_index + 1);
-  double ls010 = mytable->at(my_index + nx);
-  double ls110 = mytable->at(my_index + 1 + nx);
+  double ls100 = mygrid[mybin + 1];
+  double ls010 = mygrid[mybin + ngrid[0]];
+  double ls110 = mygrid[mybin + 1 + ngrid[0]]; // move this and // Interpolate upwards, add short circuit!!
 
   // The normalised coordinates within the current grid cell.
   // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
@@ -344,20 +246,16 @@ double interpolate_LS_watershed(int dimension, std::unordered_map<int, double> *
   // Computing normal as the gradient of trilinear interpolation
   // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
   // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
-  double normx = ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000);
-  double normy = ls010 - ls000 + x_red_local[0] * (ls110 - ls100 - ls010 + ls000);
-  double normz = 0.0;
+  nvec[0] = ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000);
+  nvec[1] = ls010 - ls000 + x_red_local[0] * (ls110 - ls100 - ls010 + ls000);
+  nvec[2] = 0.0;
+
   if (dimension == 3) { // 3D
     // Level-set values on the grid points in the upper z plane (ind_z+1)
-    if (mytable->find(my_index + nx * ny) == mytable->end() ||
-        mytable->find(my_index + 1 + nx * ny) == mytable->end() ||
-        mytable->find(my_index + nx + nx * ny) == mytable->end() ||
-        mytable->find(my_index + 1 + nx + nx * ny) == mytable->end())
-      return BIG;
-    double ls001 = mytable->at(my_index + nx * ny);
-    double ls101 = mytable->at(my_index + 1 + nx * ny);
-    double ls011 = mytable->at(my_index + nx + nx * ny);
-    double ls111 = mytable->at(my_index + 1 + nx + nx * ny);
+    double ls001 = mygrid[mybin + ngrid[0] * ngrid[1]];
+    double ls101 = mygrid[mybin + 1 + ngrid[0] * ngrid[1]];
+    double ls011 = mygrid[mybin + ngrid[0] + ngrid[0] * ngrid[1]];
+    double ls111 = mygrid[mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]];
 
     // Bi-linear interpolation in the upper z plane (ind_z+1)
     double lsxy1 = ls001 + x_red_local[1] * (ls011 - ls001) +
@@ -365,21 +263,105 @@ double interpolate_LS_watershed(int dimension, std::unordered_map<int, double> *
 
     // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
     dist = x_red_local[2] * (lsxy1 - lsxy0) + lsxy0;
-    normx *= 1 - x_red_local[2];
-    normx += x_red_local[2] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
-    normy *= 1 - x_red_local[2];
-    normy += x_red_local[2] * (ls011 - ls001 + x_red_local[0] * (ls111 - ls101 - ls011 + ls001));
-    normz = lsxy1 - lsxy0;
+    nvec[0] *= 1 - x_red_local[2];
+    nvec[0] += x_red_local[2] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
+    nvec[1] *= 1 - x_red_local[2];
+    nvec[1] += x_red_local[2] * (ls011 - ls001 + x_red_local[0] * (ls111 - ls101 - ls011 + ls001));
+    nvec[2] = lsxy1 - lsxy0;
   }
 
   // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
   // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
 
-  // Assign normal
-  normal[0] = normx;
-  normal[1] = normy;
-  normal[2] = normz;
-  MathExtra::norm3(normal);
+  MathExtra::norm3(nvec);
+
+  return dist;
+}
+
+/* ----------------------------------------------------------------------
+  Perform trilinear interpolation to get level-set value and normal
+-------------------------------------------------------------------------*/
+
+double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int, double> *mytable, std::unordered_map<int, double> *mybuffer,
+                                int ngrid[3], double x_red[3], int ix[3], double nvec[3], double stride)
+{
+  double dist;
+
+  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
+  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
+  if ((ix[0] < 0 || ix[0] >= (ngrid[0] - 1)) || (ix[1] < 0 || ix[1] >= (ngrid[1] - 1)) ||
+      ((dimension == 3) && (ix[2] < 0 || ix[2] >= (ngrid[2] - 1))))
+    return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
+
+  // Level-set value of lower corner
+  if (mytable->find(mybin) == mytable->end())
+    return BIG;
+
+  double ls000 = mytable->at(mybin);
+
+
+  // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
+  // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
+  // so 2.0 is safe.
+  if (ls000 > 2.0 * stride)
+    return ls000;
+
+  // Rest of the level-set values on the grid points in the lower z plane (ind_z)
+  if (mytable->find(mybin + 1) == mytable->end() ||
+      mytable->find(mybin + ngrid[0]) == mytable->end() ||
+      mytable->find(mybin + 1 + ngrid[0]) == mytable->end())
+    return BIG;
+  double ls100 = mytable->at(mybin + 1);
+  double ls010 = mytable->at(mybin + ngrid[0]);
+  double ls110 = mytable->at(mybin + 1 + ngrid[0]);
+
+  // The normalised coordinates within the current grid cell.
+  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
+  double x_red_local[3];
+  x_red_local[0] = x_red[0] - static_cast<double>(ix[0]);
+  x_red_local[1] = x_red[1] - static_cast<double>(ix[1]);
+  x_red_local[2] = x_red[2] - static_cast<double>(ix[2]); // Should always be zero in 2D.
+
+  // Bi-linear interpolation in the lower z plane (ind_z)
+  double lsxy0 = ls000 + x_red_local[1] * (ls010 - ls000) +
+                 x_red_local[0] * (ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000));
+  dist = lsxy0;
+
+  // Computing normal as the gradient of trilinear interpolation
+  // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
+  // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
+  nvec[0] = ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000);
+  nvec[1] = ls010 - ls000 + x_red_local[0] * (ls110 - ls100 - ls010 + ls000);
+  nvec[2] = 0.0;
+  if (dimension == 3) { // 3D
+    // Level-set values on the grid points in the upper z plane (ind_z+1)
+    if (mytable->find(mybin + ngrid[0] * ngrid[1]) == mytable->end() ||
+        mytable->find(mybin + 1 + ngrid[0] * ngrid[1]) == mytable->end() ||
+        mytable->find(mybin + ngrid[0] + ngrid[0] * ngrid[1]) == mytable->end() ||
+        mytable->find(mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]) == mytable->end())
+      return BIG;
+    double ls001 = mytable->at(mybin + ngrid[0] * ngrid[1]);
+    double ls101 = mytable->at(mybin + 1 + ngrid[0] * ngrid[1]);
+    double ls011 = mytable->at(mybin + ngrid[0] + ngrid[0] * ngrid[1]);
+    double ls111 = mytable->at(mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]);
+
+    // Bi-linear interpolation in the upper z plane (ind_z+1)
+    double lsxy1 = ls001 + x_red_local[1] * (ls011 - ls001) +
+                   x_red_local[0] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
+
+    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
+    dist = x_red_local[2] * (lsxy1 - lsxy0) + lsxy0;
+    nvec[0] *= 1 - x_red_local[2];
+    nvec[0] += x_red_local[2] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
+    nvec[1] *= 1 - x_red_local[2];
+    nvec[1] += x_red_local[2] * (ls011 - ls001 + x_red_local[0] * (ls111 - ls101 - ls011 + ls001));
+    nvec[2] = lsxy1 - lsxy0;
+  }
+
+  // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
+  // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
+
+  MathExtra::norm3(nvec);
 
   return dist;
 }

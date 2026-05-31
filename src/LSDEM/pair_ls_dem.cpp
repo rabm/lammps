@@ -163,79 +163,81 @@ void PairLSDEM::compute(int eflag, int vflag)
 
   // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
   // Loop over local + ghost atoms to find closest neighbors
-  for (ii = 0; ii < allnum; ii++) {
-    // Loop through local nodes
-    i = ilist[ii];
-    xitmp = x[i][0];
-    yitmp = x[i][1];
-    zitmp = x[i][2];
-    if (fix_rigid && (mask[i] & groupbit_large)) {
-      ibodyID = mybody_large[i];
-      maxbodyID_i = maxbodyID_large;
-      offset_i = 0;
-    } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-      ibodyID = (int) molecule[i]; // could also use bodytag
-      maxbodyID_i = maxbodyID_small;
-      offset_i = 1;
-    } else {
-      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-    }
-    itag = tag[i];
-    jlist = firstneigh[i];
-    jnum = numneigh[i];
-
-    for (jj = 0; jj < jnum; jj++) {
-      // Loop through neighbouring nodes
-      j = jlist[jj];
-      factor_lj = special_lj[sbmask(j)];
-
-      if (factor_lj == 0) continue;
-
-      // Make the neighbour mask an integer again (discarding history flags etc.)
-      j &= NEIGHMASK;
-
-      if (fix_rigid && (mask[j] & groupbit_large)) {
-        jbodyID = mybody_large[j];
-        maxbodyID_j = maxbodyID_large;
-        offset_j = 0;
-      } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-        jbodyID = (int) molecule[j];
-        maxbodyID_j = maxbodyID_small;
-        offset_j = 1;
+  if (watershed_flag == 0) {
+    for (ii = 0; ii < allnum; ii++) {
+      // Loop through local nodes
+      i = ilist[ii];
+      xitmp = x[i][0];
+      yitmp = x[i][1];
+      zitmp = x[i][2];
+      if (fix_rigid && (mask[i] & groupbit_large)) {
+        ibodyID = mybody_large[i];
+        maxbodyID_i = maxbodyID_large;
+        offset_i = 0;
+      } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+        ibodyID = (int) molecule[i]; // could also use bodytag
+        maxbodyID_i = maxbodyID_small;
+        offset_i = 1;
       } else {
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
       }
+      itag = tag[i];
+      jlist = firstneigh[i];
+      jnum = numneigh[i];
 
-      jtag = tag[j];
+      for (jj = 0; jj < jnum; jj++) {
+        // Loop through neighbouring nodes
+        j = jlist[jj];
+        factor_lj = special_lj[sbmask(j)];
 
-      // Separation distance between the two nodes
-      double *xj = x[j];
-      delx = xitmp - xj[0];
-      dely = yitmp - xj[1];
-      delz = zitmp - xj[2];
-      rsq = delx * delx + dely * dely + delz * delz;
+        if (factor_lj == 0) continue;
 
-      if (rsq > maxcutsq) continue;
+        // Make the neighbour mask an integer again (discarding history flags etc.)
+        j &= NEIGHMASK;
 
-      // Create a dictionary for each grain that holds the
-      // tag of the closest interacting node on the other grain.
-      // We compare squared distances (rsq); the ordering, and hence the winning
-      // node tag stored in .first, is identical to comparing the distance r.
-      key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-      // If first interation between i and j's grain, create entry.
-      // Overwrite if i and j are closer (single lookup via try_emplace).
-      {
-        auto res = min_distances.try_emplace(key, jtag, rsq);
-        if (!res.second && rsq < res.first->second.second)
-          res.first->second = std::make_pair((int) jtag, rsq);
-      }
+        if (fix_rigid && (mask[j] & groupbit_large)) {
+          jbodyID = mybody_large[j];
+          maxbodyID_j = maxbodyID_large;
+          offset_j = 0;
+        } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+          jbodyID = (int) molecule[j];
+          maxbodyID_j = maxbodyID_small;
+          offset_j = 1;
+        } else {
+          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+        }
 
-      // Do the same for node j
-      key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-      {
-        auto res = min_distances.try_emplace(key, itag, rsq);
-        if (!res.second && rsq < res.first->second.second)
-          res.first->second = std::make_pair((int) itag, rsq);
+        jtag = tag[j];
+
+        // Separation distance between the two nodes
+        double *xj = x[j];
+        delx = xitmp - xj[0];
+        dely = yitmp - xj[1];
+        delz = zitmp - xj[2];
+        rsq = delx * delx + dely * dely + delz * delz;
+
+        if (rsq > maxcutsq) continue;
+
+        // Create a dictionary for each grain that holds the
+        // tag of the closest interacting node on the other grain.
+        // We compare squared distances (rsq); the ordering, and hence the winning
+        // node tag stored in .first, is identical to comparing the distance r.
+        key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+        // If first interation between i and j's grain, create entry.
+        // Overwrite if i and j are closer (single lookup via try_emplace).
+        {
+          auto res = min_distances.try_emplace(key, jtag, rsq);
+          if (!res.second && rsq < res.first->second.second)
+            res.first->second = std::make_pair((int) jtag, rsq);
+        }
+
+        // Do the same for node j
+        key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
+        {
+          auto res = min_distances.try_emplace(key, itag, rsq);
+          if (!res.second && rsq < res.first->second.second)
+            res.first->second = std::make_pair((int) itag, rsq);
+        }
       }
     }
   }
@@ -922,20 +924,29 @@ void PairLSDEM::setup()
     error->all(FLERR, "Pair ls/dem requires at least one instance of fix rigid/ls/dem or rigid/small/ls/dem");
 
 
-  int igroup_large, igroup_small;
+  int igroup_large, igroup_small, ws_large, ws_small;
   groupbit_large = -1;
+  ws_large = -1;
   if (fixlist1.size() == 1) {
     fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
     groupbit_large = fix_rigid->groupbit;
     igroup_large = fix_rigid->igroup;
+    ws_large = fix_rigid->get_storage_model();
   }
 
   groupbit_small = -1;
+  ws_small = -1;
   if (fixlist2.size() == 1) {
     fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
     groupbit_small = fix_rigid_small->groupbit;
     igroup_small = fix_rigid_small->igroup;
+    //ws_small = fix_rigid_small->get_storage_model();
   }
+
+  if (ws_large != -1 && ws_small != -1)
+    if (ws_large != ws_small)
+      error->all(FLERR, "Must use same storage option for rigid/ls/dem and rigid/small/ls/dem");
+  watershed_flag = MAX(ws_large, ws_small);
 
   if (groupbit_small == -1 && igroup_large != 0)
     error->all(FLERR, "If only using fix rigid/ls/dem, it must use group all");

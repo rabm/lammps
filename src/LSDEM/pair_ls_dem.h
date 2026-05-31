@@ -48,6 +48,7 @@ class PairLSDEM : public Pair {
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
 
   int groupbit_small, groupbit_large;
+  int watershed_flag;
 
   int index_ls_dem_vol;
   int index_ls_dem_n;

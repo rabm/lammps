@@ -1323,14 +1323,12 @@ double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
 
 /* ---------------------------------------------------------------------- */
 
-double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
+int FixRigidLSDEM::get_bin(int i, int j, int *ngrid, double *x_local, int *ix)
 {
   double **x = atom->x;
   double **grain_com = atom->xcom;
   double **grain_quat = atom->quat;
-
   int jbody = body[j];
-  double jstride = grid_stride[jbody];
 
   // Calculate position of node i in node j's grid using:
   //   x[i][0-2] = location of i
@@ -1348,7 +1346,6 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
 
   // Apply quaternion rotation to move into local reference frame of grain j grid.
   // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.
-  double x_local[3];
   double dx[3] = {delx, dely, delz};
   double grain_quat_conj[4];
 
@@ -1356,35 +1353,54 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
   // See comments above functions in math_extra.h/cpp for details
 
-  int nx = grid_size[jbody][0];
-  int ny = grid_size[jbody][1];
-  int nz = grid_size[jbody][2];
+  if (storage_flag == ARRAY && grid_style[jbody] == DISTRIBUTED) {
+    // Translate local coordinates relative to lower corner of the node's grid
+    MathExtra::sub3(x_local, dist_grid_min[j], x_local);
 
-  // Translate local coordinates such that they are relative
-  //   to the lower corner of the grain's level set grid.
-  MathExtra::sub3(x_local, grid_min[jbody], x_local);
+    ngrid[0] = subgrid_size[0];
+    ngrid[1] = subgrid_size[1];
+    ngrid[2] = subgrid_size[2];
+  } else {
+    // Translate local coordinates relative to lower corner of the grain's grid
+    MathExtra::sub3(x_local, grid_min[jbody], x_local);
+
+    ngrid[0] = grid_size[jbody][0];
+    ngrid[1] = grid_size[jbody][1];
+    ngrid[2] = grid_size[jbody][2];
+  }
 
   // Normalise the coordinates to be in units of the number of grid cells.
-  MathExtra::scale3(1.0 / jstride, x_local);
+  MathExtra::scale3(1.0 / grid_stride[jbody], x_local);
 
-  int ix[3];
   ix[0] = int(x_local[0]);
   ix[1] = int(x_local[1]);
   ix[2] = int(x_local[2]);
 
-  int mybin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+  int mybin = ix[0] + ix[1] * ngrid[0] + ix[2] * ngrid[0] * ngrid[1];
+
+  return mybin;
+}
+
+/* ---------------------------------------------------------------------- */
+
+double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
+{
+  int ngrid[3], ix[3];
+  double x_local[3];
+  int jbody = body[j];
+  int mybin = get_bin(i, j, ngrid, x_local, ix);
 
   int dim = domain->dimension;
-
   std::unordered_map<int, double> *mytable = &dist_ws_tables[j];
   std::unordered_map<int, double> *mybuffer = &dist_ws_buffers[j];
 
-  double dist = interpolate_LS_watershed(dim, mytable, mybuffer, nx, ny, nz, x_local, ix, normal, jstride);
+  double dist = interpolate_LS_watershed(dim, mybin, mytable, mybuffer, ngrid, x_local, ix, normal, grid_stride[jbody]);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
   // Rotate normal back to global coordinates
+  double **grain_quat = atom->quat;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
@@ -1394,76 +1410,26 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
 
 double FixRigidLSDEM::get_ls_value_array(int i, int j, double *normal)
 {
-  double **x = atom->x;
-  double **grain_com = atom->xcom;
-  double **grain_quat = atom->quat;
-
-  int jbody = body[j];
-  double jstride = grid_stride[jbody];
-  double strideinv = 1.0 / jstride;
-
-  // Calculate position of node i in node j's grid using:
-  //   x[i][0-2] = location of i
-  //   x[j][0-2] = location of j
-  //   grain_com[j][0-2] = CoM of j's grain
-  //   grain_quat[j][0-3] = quat of j's grain
-
-  // Location of the node (atom) of i relative to the centre of mass (CoM) of j
-  double delx = x[i][0] - grain_com[j][0];
-  double dely = x[i][1] - grain_com[j][1];
-  double delz = x[i][2] - grain_com[j][2];
-
-  // Account for PBCs
-  domain->minimum_image(FLERR, delx, dely, delz);
-
-  // Apply quaternion rotation to move into local reference frame of grain j grid.
-  // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.
+  int ngrid[3], ix[3];
   double x_local[3];
-  double dx[3] = {delx, dely, delz};
-  double grain_quat_conj[4];
+  int jbody = body[j];
+  int mybin = get_bin(i, j, ngrid, x_local, ix);
 
-  MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
-  MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
-  // See comments above functions in math_extra.h/cpp for details
-
-  int ncol, nrow, nslice;
   double *mygrid;
   if (grid_style[jbody] == DISTRIBUTED) {
     mygrid = dist_grid_values[j];
-    // Translate local coordinates such that they are relative
-    // to the lower corner of the node's level set grid.
-    x_local[0] -= dist_grid_min[j][0];
-    x_local[1] -= dist_grid_min[j][1];
-    x_local[2] -= dist_grid_min[j][2];
-
-    ncol = subgrid_size[0];
-    nrow = subgrid_size[1];
-    nslice = subgrid_size[2];
   } else {
     mygrid = global_grids[grid_index[jbody]];
-    // Translate local coordinates such that they are relative
-    // to the lower corner of the grain's level set grid.
-    x_local[0] -= grid_min[jbody][0];
-    x_local[1] -= grid_min[jbody][1];
-    x_local[2] -= grid_min[jbody][2];
-
-    ncol = grid_size[jbody][0];
-    nrow = grid_size[jbody][1];
-    nslice = grid_size[jbody][2];
   }
 
-  // Normalise the coordinates to be in units of the number of grid cells.
-  double x_red = x_local[0] * strideinv;
-  double y_red = x_local[1] * strideinv;
-  double z_red = x_local[2] * strideinv;
-
   int dim = domain->dimension;
-  double dist = interpolate_LS_array(dim, mygrid, ncol, nrow, nslice, x_red, y_red, z_red, normal, jstride);
+  double dist = interpolate_LS_array(dim, mybin, mygrid, ngrid, x_local, ix, normal, grid_stride[jbody]);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
   // Rotate normal back to global coordinates
+  double **grain_quat = atom->quat;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
