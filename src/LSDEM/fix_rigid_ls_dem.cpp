@@ -460,6 +460,8 @@ void FixRigidLSDEM::init()
       for (i = 0; i < nmax_node_current; i++) {
         mybin = global_node_bins[i];
 
+        printf("i = %d mybin = %d / %d\n", i, mybin, nmax_node_current);
+
         bin_owners[mybin] = i;
         if (i < nlocal)
           node_bins[i].insert(mybin);
@@ -1313,17 +1315,17 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
    Find the value of node (atom) i in j's LS grid.
 ------------------------------------------------------------------------- */
 
-double FixRigidLSDEM::get_ls_value(int i, int j, double *normal)
+double FixRigidLSDEM::get_ls_value(int i, int j, int mybin, double *normal, double *x_local)
 {
   if (storage_flag == WATERSHED)
-    return get_ls_value_watershed(i, j, normal);
+    return get_ls_value_watershed(i, j, mybin, normal, x_local);
   else
     return get_ls_value_array(i, j, normal);
 }
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidLSDEM::get_bin(int i, int j, int *ngrid, double *x_local, int *ix)
+int FixRigidLSDEM::get_bin(int i, int j, double *x_local)
 {
   double **x = atom->x;
   double **grain_com = atom->xcom;
@@ -1351,19 +1353,17 @@ int FixRigidLSDEM::get_bin(int i, int j, int *ngrid, double *x_local, int *ix)
 
   MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
-  // See comments above functions in math_extra.h/cpp for details
 
+  int ngrid[3];
   if (storage_flag == ARRAY && grid_style[jbody] == DISTRIBUTED) {
     // Translate local coordinates relative to lower corner of the node's grid
     MathExtra::sub3(x_local, dist_grid_min[j], x_local);
-
     ngrid[0] = subgrid_size[0];
     ngrid[1] = subgrid_size[1];
     ngrid[2] = subgrid_size[2];
   } else {
     // Translate local coordinates relative to lower corner of the grain's grid
     MathExtra::sub3(x_local, grid_min[jbody], x_local);
-
     ngrid[0] = grid_size[jbody][0];
     ngrid[1] = grid_size[jbody][1];
     ngrid[2] = grid_size[jbody][2];
@@ -1372,23 +1372,34 @@ int FixRigidLSDEM::get_bin(int i, int j, int *ngrid, double *x_local, int *ix)
   // Normalise the coordinates to be in units of the number of grid cells.
   MathExtra::scale3(1.0 / grid_stride[jbody], x_local);
 
-  ix[0] = int(x_local[0]);
-  ix[1] = int(x_local[1]);
-  ix[2] = int(x_local[2]);
-
-  int mybin = ix[0] + ix[1] * ngrid[0] + ix[2] * ngrid[0] * ngrid[1];
+  int mybin = int(x_local[0]) + int(x_local[1]) * ngrid[0] + int(x_local[2]) * ngrid[0] * ngrid[1];
 
   return mybin;
 }
 
 /* ---------------------------------------------------------------------- */
 
-double FixRigidLSDEM::get_ls_value_watershed(int i, int j, double *normal)
+int FixRigidLSDEM::check_watershed_bin(int mybin, int j)
+{
+  if (dist_ws_tables[j].find(mybin) != dist_ws_tables[j].end())
+    return 1;
+  else
+    return 0;
+}
+
+/* ---------------------------------------------------------------------- */
+
+double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int mybin, double *normal, double *x_local)
 {
   int ngrid[3], ix[3];
-  double x_local[3];
   int jbody = body[j];
-  int mybin = get_bin(i, j, ngrid, x_local, ix);
+
+  ngrid[0] = grid_size[jbody][0];
+  ngrid[1] = grid_size[jbody][1];
+  ngrid[2] = grid_size[jbody][2];
+  ix[0] = int(x_local[0]);
+  ix[1] = int(x_local[1]);
+  ix[2] = int(x_local[2]);
 
   int dim = domain->dimension;
   std::unordered_map<int, double> *mytable = &dist_ws_tables[j];
@@ -1413,7 +1424,20 @@ double FixRigidLSDEM::get_ls_value_array(int i, int j, double *normal)
   int ngrid[3], ix[3];
   double x_local[3];
   int jbody = body[j];
-  int mybin = get_bin(i, j, ngrid, x_local, ix);
+  int mybin = get_bin(i, j, x_local);
+
+  if (grid_style[jbody] == DISTRIBUTED) {
+    ngrid[0] = subgrid_size[0];
+    ngrid[1] = subgrid_size[1];
+    ngrid[2] = subgrid_size[2];
+  } else {
+    ngrid[0] = grid_size[jbody][0];
+    ngrid[1] = grid_size[jbody][1];
+    ngrid[2] = grid_size[jbody][2];
+  }
+  ix[0] = int(x_local[0]);
+  ix[1] = int(x_local[1]);
+  ix[2] = int(x_local[2]);
 
   double *mygrid;
   if (grid_style[jbody] == DISTRIBUTED) {

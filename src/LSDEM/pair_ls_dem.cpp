@@ -248,6 +248,13 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Currently, compiler vectorisation is scrambled, which might be particularly
   // bad for any future Kokkos GPU port.
 
+  int ntotal = atom->nlocal + atom->nghost;
+  int tmp_bin;
+  double x_local[3];
+  saved_bins.resize(ntotal);
+  for (auto& my_map : saved_bins)
+    my_map.clear();
+
   // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
@@ -321,19 +328,70 @@ void PairLSDEM::compute(int eflag, int vflag)
       calc_force_of_j_on_i = 0;
       calc_force_of_i_on_j = 0;
 
-      // Use the nodes of the smallest grain.
-      if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
-        // Grain i is smaller, use nodes of i and level set of j.
-        key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-        auto it = min_distances.find(key);
-        if (it != min_distances.end() && jtag == it->second.first)
+      if (watershed_flag) {
+        // Use the nodes of the smallest grain.
+        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
           calc_force_of_i_on_j = 1;
-      } else {
-        // Grain j is smaller, use nodes of j and level set of i.
-        key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-        auto it = min_distances.find(key);
-        if (it != min_distances.end() && itag == it->second.first)
+        } else {
           calc_force_of_j_on_i = 1;
+        }
+
+        if (calc_force_of_i_on_j) {
+          if (saved_bins[i].find(jbodyID) == saved_bins[i].end()) {
+            if (fix_rigid && (mask[j] & groupbit_large))
+              tmp_bin = fix_rigid->get_bin(i, j, x_local);
+            //else if (fix_rigid_small && (mask[j] & groupbit_small))
+              // TBD tmp_bin_i = static_cast<int>(fix_rigid_small);
+            else
+              error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+            saved_bins[i][jbodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
+          } else {
+            tmp_bin = std::get<0>(saved_bins[i][jbodyID]);
+            x_local[0] = std::get<1>(saved_bins[i][jbodyID]);
+            x_local[1] = std::get<2>(saved_bins[i][jbodyID]);
+            x_local[2] = std::get<3>(saved_bins[i][jbodyID]);
+          }
+          if (fix_rigid && (mask[j] & groupbit_large))
+            if (fix_rigid->check_watershed_bin(tmp_bin, j) == 0) continue;
+        } else {
+          if (saved_bins[j].find(ibodyID) == saved_bins[j].end()) {
+            if (fix_rigid && (mask[i] & groupbit_large))
+              tmp_bin = fix_rigid->get_bin(j, i, x_local);
+            //else if (fix_rigid_small && (mask[i] & groupbit_small))
+              // TBD tmp_bin_j = static_cast<int>(fix_rigid_small);
+            else
+              error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+            saved_bins[j][ibodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
+          } else {
+            tmp_bin = std::get<0>(saved_bins[j][ibodyID]);
+            x_local[0] = std::get<1>(saved_bins[j][ibodyID]);
+            x_local[1] = std::get<2>(saved_bins[j][ibodyID]);
+            x_local[2] = std::get<3>(saved_bins[j][ibodyID]);
+          }
+          if (fix_rigid && (mask[i] & groupbit_large))
+            if (fix_rigid->check_watershed_bin(tmp_bin, i) == 0) continue;
+        }
+      } else {
+
+        // Use the nodes of the smallest grain.
+        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
+          // Grain i is smaller, use nodes of i and level set of j.
+          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+          auto it = min_distances.find(key);
+          if (it != min_distances.end() && jtag == it->second.first)
+            calc_force_of_i_on_j = 1;
+        } else {
+          // Grain j is smaller, use nodes of j and level set of i.
+          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
+          auto it = min_distances.find(key);
+          if (it != min_distances.end() && itag == it->second.first)
+            calc_force_of_j_on_i = 1;
+        }
+
+        tmp_bin = -1;
+        x_local[0] = 0.0;
+        x_local[1] = 0.0;
+        x_local[2] = 0.0;
       }
 
       // If no forces are calculated
@@ -351,14 +409,14 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Level set is by definition negative inside the particle,
         // so swap the sign to get the overlap distance.
         if (fix_rigid && (mask[j] & groupbit_large))
-          u = - fix_rigid->get_ls_value(i, j, normal);
+          u = - fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
         else if (fix_rigid_small && (mask[j] & groupbit_small))
           u = - fix_rigid_small->get_ls_value(i, j, normal);
         else
           error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
       } else { // Use node of j.
         if (fix_rigid && (mask[i] & groupbit_large))
-          u = - fix_rigid->get_ls_value(j, i, normal);
+          u = - fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
         else if (fix_rigid_small && (mask[i] & groupbit_small))
           u = - fix_rigid_small->get_ls_value(j, i, normal);
         else

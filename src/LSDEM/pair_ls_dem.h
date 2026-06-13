@@ -59,6 +59,7 @@ class PairLSDEM : public Pair {
 
   class FixRigidLSDEM *fix_rigid;
   class FixRigidSmallLSDEM *fix_rigid_small;
+  std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
 
   void allocate();
 };

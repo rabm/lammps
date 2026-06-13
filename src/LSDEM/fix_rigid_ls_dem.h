@@ -52,7 +52,9 @@ class FixRigidLSDEM : public FixRigid {
   inline int get_nbody() { return nbody; };
   inline int get_storage_model() { return storage_flag; };
 
-  double get_ls_value(int, int, double*);
+  double get_ls_value(int, int, int, double*, double*);
+  int get_bin(int, int, double*);
+  int check_watershed_bin(int, int);
 
  protected:
   int ls_read_flag, global_flag, distributed_flag, storage_flag;
@@ -93,9 +95,8 @@ class FixRigidLSDEM : public FixRigid {
   void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);
   int read_infile(char **);
-  int get_bin(int, int, int*, double*, int*);
   double get_ls_value_array(int, int, double*);
-  double get_ls_value_watershed(int, int, double*);
+  double get_ls_value_watershed(int, int, int, double*, double*);
 };
 
 }    // namespace LAMMPS_NS
