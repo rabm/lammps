@@ -517,19 +517,22 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Relative velocity in normal direction with sign (positive for approach)
       v_rel_n_mag = MathExtra::dot3(v_rel, normal);
 
-      // Viscous damping or dashpot (parallel, only repulsive, i.e. no attractive force if v_rel_n_mag < 0)
+      // Viscous damping or dashpot (parallel)
       if (etanij > 0.0) {
-        fn_mag += etanij * MAX(v_rel_n_mag, 0.0);
+        fn_mag += etanij * v_rel_n_mag;
       }
 
       // Maxwell arm (1st, parallel, only repulsive)
       if (etan1ij > 0.0) { // preprocessing guarantees that decayn1 > 0 if etan1 > 0
-        fn1[ni] = decayn1ij * fn1[ni] + etan1ij * (1.0 - decayn1ij) * MAX(v_rel_n_mag, 0.0);
+        fn1[ni] = decayn1ij * fn1[ni] + etan1ij * (1.0 - decayn1ij) * v_rel_n_mag;
         fn_mag += fn1[ni];
         // Maxwell arm (2nd)
         //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
         //fn_mag += fn2_mag[i]
       }
+
+      // Only repulsive, do not allow tensile force without explicit bonding / cohesion
+      fn_mag = MAX(fn_mag, 0.0);
 
       // The pair force vector should point j->i because of repulsion.
       // With normal n (i->j), we have: F_{j on i} = f(ls_value) = - fn_mag * n.
@@ -680,9 +683,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       // Placeholder for viscous and viscoelastic stress components
       fs_mag_add = 0.0;
 
-      // Viscous damping or dashpot (parallel, only repulsive, no tensile force if v_rel_t_mag < 0)
+      // Viscous damping or dashpot (parallel, allowed in any direction)
       if(etatij > 0) {
-        fs_mag_add += etatij * MAX(v_rel_t_mag, 0.0);
+        fs_mag_add += etatij * v_rel_t_mag;
       }
 
       // Maxwell arm (1st, parallel, only repulsive)
