@@ -304,11 +304,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     double min_spacing = DBL_MAX, max_spacing = 0.0, min_size = DBL_MAX;
     const int dim = domain->dimension;
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
-      bodyLS[ibody].node_area /= body[ibody].natoms;
-
-      // node-node spacing: node_area is area/node (3D) or length/node (2D)
-      double spacing = (dim == 2) ? bodyLS[ibody].node_area
-                                  : sqrt(bodyLS[ibody].node_area);
+      // per-node area = total surface area / node count (node_area stays the
+      // total area; see BodyLS). 3D: spacing ~ sqrt(area/node); 2D: area/node.
+      double area_per_node = bodyLS[ibody].node_area / bodyLS[ibody].natoms;
+      double spacing = (dim == 2) ? area_per_node : sqrt(area_per_node);
       // grain characteristic radius from the LS volume (3D) / area (2D)
       double vol = bodyLS[ibody].grid_vol;
       double rsize = (dim == 2) ? sqrt(vol / MY_PI)
@@ -501,6 +500,10 @@ void FixRigidSmallLSDEM::process_levelsets()
     bodyLS[ibody].grid_index = mydata.grid_index;
     bodyLS[ibody].style = mydata.style;
     bodyLS[ibody].grid_stride = mydata.stride;
+    // Global node count of the body (= its molecule template's node count). Set
+    // here, before any body comm, so it travels with every BodyLS copy and the
+    // per-node area (node_area / natoms) is always well defined on ghosts too.
+    bodyLS[ibody].natoms = atom->molecules[grid_index[i]]->natoms;
   }
 
   // Send to ghosts

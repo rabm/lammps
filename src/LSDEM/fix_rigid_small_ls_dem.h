@@ -60,11 +60,15 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   struct BodyLS {
     // These are only needed by local bodies
     int ilocal;            // index of owning atom, duplicate from Body
-    int file_id;           // integer id of file
-    double grid_vol;       // volume of LS grid
-    double node_area;      // area associated with each grid node
 
-    // These are needed by local + ghost bodies
+    // These are needed by local + ghost bodies (the pair reads them for ghost
+    // partner/representative bodies, so they must be communicated and must not
+    // depend on a separate post-comm mutation step).
+    int file_id;           // integer id of file
+    int natoms;            // # of surface nodes in the body (global node count)
+    double grid_vol;       // volume of LS grid
+    double node_area;      // TOTAL surface area of the body; per-node area is
+                           // node_area / natoms, computed at point of use
     int style;             // style of memory, GLOBAL or distributed
     int grid_index;        // index of body's global memory
     double grid_scale;     // scale factor for grid values, only needed for GLOBAL

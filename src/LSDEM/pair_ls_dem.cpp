@@ -284,7 +284,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       ibody = mybody_small[i];
       ibodyID = (int) molecule[i];
       ivol = bodyLS[ibody].grid_vol;
-      areai = bodyLS[ibody].node_area;
+      // per-node area = total surface area / node count (see BodyLS); using the
+      // body's own natoms keeps this correct for ghost bodies that straddle a
+      // process boundary.
+      areai = bodyLS[ibody].node_area / bodyLS[ibody].natoms;
       maxbodyID_i = maxbodyID_small;
       offset_i = 1;
     } else {
@@ -319,7 +322,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         jbody = mybody_small[j];
         jbodyID = (int) molecule[j];
         jvol = bodyLS[jbody].grid_vol;
-        areaj = bodyLS[jbody].node_area;
+        areaj = bodyLS[jbody].node_area / bodyLS[jbody].natoms;   // per-node area
         maxbodyID_j = maxbodyID_small;
         offset_j = 1;
       } else {
