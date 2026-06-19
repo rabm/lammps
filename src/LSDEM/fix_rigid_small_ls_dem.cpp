@@ -42,6 +42,7 @@
 #include <map>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -716,75 +717,64 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
   int nlocal = atom->nlocal;
   double *fcm,*tcm;
 
-  for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
-    fcm = body[ibody].fcm;
-    fcm[0] = fcm[1] = fcm[2] = 0.0;
-    tcm = body[ibody].torque;
-    tcm[0] = tcm[1] = tcm[2] = 0.0;
-  }
+  // --- Body force/torque reduction, robust to cross-rank straddling ---
+  // Sum each node's contact force and torque (the pair already computes the torque
+  // about the body COM) by GLOBAL body/molecule id, then MPI_Allreduce. This
+  // guarantees a body's total reaches its OWNER even when the body's contact nodes
+  // are on a different rank than the owner. The parent FORCE_TORQUE reverse_comm
+  // dropped that contribution for boundary-straddling grains (the contact force
+  // lands on a ghost/periodic copy that is not aggregated back to the owner), so
+  // the body saw ZERO net force/torque and never responded to contacts in MPI.
+  // NB: O(maxmol) buffer + one Allreduce/step. Fine for current sizes; for very
+  // large body counts the item-3 restructure can use a scalable owner reduction.
+  tagint *molecule = atom->molecule;
+  const int nm = maxmol + 1;
+  std::vector<double> ftloc(6 * nm, 0.0), ftall(6 * nm, 0.0);
 
   for (i = 0; i < nlocal; i++) {
     if (!(mask[i] & groupbit)) continue;
     if (atom2body[i] < 0) continue;
-    Body *b = &body[atom2body[i]];
-
-    fcm = b->fcm;
-    fcm[0] += f[i][0];
-    fcm[1] += f[i][1];
-    fcm[2] += f[i][2];
-
-    tcm = b->torque;
-    tcm[0] += torque[i][0];
-    tcm[1] += torque[i][1];
-    tcm[2] += torque[i][2];
+    double *p = &ftloc[6 * (int) molecule[i]];
+    p[0] += f[i][0];  p[1] += f[i][1];  p[2] += f[i][2];
+    p[3] += torque[i][0];  p[4] += torque[i][1];  p[5] += torque[i][2];
   }
 
-  // subtract gravity forces from any atoms
-
+  // subtract per-atom gravity (re-added at the COM below), matching the parent
   if (id_gravity) {
     int *type = atom->type;
-    int *mask = atom->mask;
     double *rmass = atom->rmass;
     double *mass = atom->mass;
-    double massone;
     for (i = 0; i < nlocal; i++) {
       if (!(mask[i] & groupbit)) continue;
       if (!(mask[i] & grav_group_bit)) continue;
       if (atom2body[i] < 0) continue;
-      Body *b = &body[atom2body[i]];
-
-      fcm = b->fcm;
-
-      if (rmass)
-        massone = rmass[i];
-      else
-        massone = mass[type[i]];
-
-      fcm[0] -= gvec[0] * massone;
-      fcm[1] -= gvec[1] * massone;
-      fcm[2] -= gvec[2] * massone;
+      double massone = rmass ? rmass[i] : mass[type[i]];
+      double *p = &ftloc[6 * (int) molecule[i]];
+      p[0] -= gvec[0] * massone;
+      p[1] -= gvec[1] * massone;
+      p[2] -= gvec[2] * massone;
     }
   }
 
-  // reverse communicate fcm, torque of all bodies
+  MPI_Allreduce(ftloc.data(), ftall.data(), 6 * nm, MPI_DOUBLE, MPI_SUM, world);
 
-  commflag = FORCE_TORQUE;
-  comm->reverse_comm(this, 6);
+  // assign the global totals to each owned body
+  for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
+    double *g = &ftall[6 * (int) molecule[body[ibody].ilocal]];
+    fcm = body[ibody].fcm;     fcm[0] = g[0];  fcm[1] = g[1];  fcm[2] = g[2];
+    tcm = body[ibody].torque;  tcm[0] = g[3];  tcm[1] = g[4];  tcm[2] = g[5];
+  }
 
-  // add gravity force to COM of each body
-
+  // add gravity to the COM of each owned body (matching the parent)
   if (id_gravity) {
-    double mass;
-    int *mask = atom->mask;
     for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
       i = body[ibody].ilocal;
       if (!(mask[i] & grav_group_bit)) continue;
-
-      mass = body[ibody].mass;
+      double m = body[ibody].mass;
       fcm = body[ibody].fcm;
-      fcm[0] += gvec[0] * mass;
-      fcm[1] += gvec[1] * mass;
-      fcm[2] += gvec[2] * mass;
+      fcm[0] += gvec[0] * m;
+      fcm[1] += gvec[1] * m;
+      fcm[2] += gvec[2] * m;
     }
   }
 }
