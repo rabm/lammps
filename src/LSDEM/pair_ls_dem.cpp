@@ -24,14 +24,21 @@
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
+#include "molecule.h"
 #include "neigh_list.h"
 #include "neighbor.h"
 #include "utils.h"
 #include "update.h"
 #include <cmath>
+#include <cstring>
 #include <unordered_map>
 
 static constexpr double EPSILON = 1e-12;
+// "pair_style ls/dem auto": node-node cutoff = this factor x the (worst-case)
+// surface node spacing. The cutoff must exceed the node spacing so a partner
+// node stays in range at contact; the factor adds margin for staggered surfaces
+// and modest penetration while keeping the cutoff small (few false positives).
+static constexpr double LS_DEM_AUTO_CUT_FACTOR = 2.0;
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -53,6 +60,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
 {
   writedata = 1;
   single_enable = 0;
+  cutoff_auto = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -834,7 +842,15 @@ void PairLSDEM::settings(int narg, char ** arg)
   if (narg != 1)
     error->all(FLERR, "Illegal pair_style command");
 
-  maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  // "auto" estimates the node-node cutoff from the grain node spacing in
+  // init_style(); otherwise the cutoff is the given number.
+  if (strcmp(arg[0], "auto") == 0) {
+    cutoff_auto = 1;
+    maxcut = -1.0;    // sentinel, resolved in init_style()
+  } else {
+    cutoff_auto = 0;
+    maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  }
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
@@ -957,6 +973,49 @@ void PairLSDEM::init_style()
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
+  // Resolve an "auto" node-node cutoff from the LS-DEM molecule templates. This
+  // runs before Pair::init() calls init_one() -> cutsq, so the estimate drives
+  // the neighbour-list cutoff (and the fix reads pair->maxcut afterwards).
+  if (cutoff_auto) {
+    double char_spacing = -1.0;
+    for (int im = 0; im < atom->nmolecule; im++) {
+      Molecule *onemol = atom->molecules[im];
+      if (!onemol->lsdemflag) continue;
+      int nn = onemol->natoms;
+      double **mx = onemol->x;
+      // worst-case (largest) nearest-neighbour gap among this template's nodes
+      double tmpl_max_nn = 0.0;
+      for (int a = 0; a < nn; a++) {
+        double best = -1.0;
+        for (int b = 0; b < nn; b++) {
+          if (b == a) continue;
+          double dx = mx[a][0] - mx[b][0];
+          double dy = mx[a][1] - mx[b][1];
+          double dz = mx[a][2] - mx[b][2];
+          double r2 = dx * dx + dy * dy + dz * dz;
+          if (best < 0.0 || r2 < best) best = r2;
+        }
+        if (best > 0.0) tmpl_max_nn = MAX(tmpl_max_nn, sqrt(best));
+      }
+      char_spacing = MAX(char_spacing, tmpl_max_nn);
+    }
+    if (char_spacing <= 0.0)
+      error->all(FLERR, "pair ls/dem cutoff 'auto' requires LS-DEM molecule templates "
+                 "(create_atoms ... mol); set the cutoff explicitly instead");
+
+    double auto_cut = LS_DEM_AUTO_CUT_FACTOR * char_spacing;
+    maxcut = auto_cut;
+    if (allocated)
+      for (int i = 1; i <= atom->ntypes; i++)
+        for (int j = i; j <= atom->ntypes; j++)
+          if (setflag[i][j]) cut[i][j] = auto_cut;
+
+    if (comm->me == 0)
+      utils::logmesg(lmp, "pair ls/dem: auto node-node cutoff = {:.4g} "
+                     "({:g} x worst-case node spacing {:.4g})\n",
+                     auto_cut, LS_DEM_AUTO_CUT_FACTOR, char_spacing);
+  }
+
   neighbor->add_request(this, NeighConst::REQ_GHOST);
 }
 
@@ -1001,7 +1060,13 @@ void PairLSDEM::setup()
     fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
     groupbit_small = fix_rigid_small->groupbit;
     igroup_small = fix_rigid_small->igroup;
-    //ws_small = fix_rigid_small->get_storage_model();
+    // fix rigid/small/ls/dem has no watershed storage model: it always uses the
+    // ARRAY (closest-node) arbitration path. Report ARRAY (0) explicitly so that
+    // a small-only run sets watershed_flag = MAX(-1, 0) = 0 below. Leaving it at
+    // -1 both skips the closest-node loop (gated on watershed_flag == 0) and,
+    // since -1 is truthy, wrongly enters the watershed branch in the force loop
+    // (which is large-fix only) -> error/zero forces in a small-only run.
+    ws_small = 0;    // ARRAY
   }
 
   if (ws_large != -1 && ws_small != -1)

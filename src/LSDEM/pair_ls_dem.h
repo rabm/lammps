@@ -43,6 +43,7 @@ class PairLSDEM : public Pair {
   void write_data_all(FILE *) override;
 
   double maxcut;
+  int cutoff_auto;   // 1 if "pair_style ls/dem auto": cutoff estimated from node spacing
 
  protected:
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;

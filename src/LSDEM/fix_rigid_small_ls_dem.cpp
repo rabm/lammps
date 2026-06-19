@@ -296,8 +296,28 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
     int iatom;
     double quat_conj[4];
+    // Accumulate geometry for the pair-cutoff sanity check below. The pair
+    // cutoff filters NODE-NODE (atom-atom) pairs, so the relevant lower bound is
+    // the node-node spacing; the relevant "too large" reference is the grain
+    // size (a cutoff approaching the grain size pulls in nodes of non-touching
+    // grains). Both are derived from per-body geometry computed just above.
+    double min_spacing = DBL_MAX, max_spacing = 0.0, min_size = DBL_MAX;
+    const int dim = domain->dimension;
     for (int ibody = 0; ibody < nlocal_body; ibody++) {
       bodyLS[ibody].node_area /= body[ibody].natoms;
+
+      // node-node spacing: node_area is area/node (3D) or length/node (2D)
+      double spacing = (dim == 2) ? bodyLS[ibody].node_area
+                                  : sqrt(bodyLS[ibody].node_area);
+      // grain characteristic radius from the LS volume (3D) / area (2D)
+      double vol = bodyLS[ibody].grid_vol;
+      double rsize = (dim == 2) ? sqrt(vol / MY_PI)
+                                : cbrt(0.75 * vol / MY_PI);
+      if (spacing > 0.0) {
+        min_spacing = MIN(min_spacing, spacing);
+        max_spacing = MAX(max_spacing, spacing);
+      }
+      if (rsize > 0.0) min_size = MIN(min_size, rsize);
 
       // calculate relative rotation from inerital frame to LS grid
       //   assume all atoms in body have equivalent initial quaterions
@@ -322,6 +342,38 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
         body[ibody].angmom[2] /= body[ibody].natoms;
       }
     }
+
+    // --- pair-cutoff sanity check (node-node cutoff vs grain geometry) ---
+    // Reduce the per-body extremes across all ranks so the warning is global.
+    double g_min_spacing, g_max_spacing, g_min_size;
+    MPI_Allreduce(&min_spacing, &g_min_spacing, 1, MPI_DOUBLE, MPI_MIN, world);
+    MPI_Allreduce(&max_spacing, &g_max_spacing, 1, MPI_DOUBLE, MPI_MAX, world);
+    MPI_Allreduce(&min_size, &g_min_size, 1, MPI_DOUBLE, MPI_MIN, world);
+
+    if (g_max_spacing > 0.0) {
+      // Recommended floor: a partner node must stay within the cutoff at contact,
+      // so the cutoff should be at least the (largest) node-node spacing; add the
+      // expected maximum penetration depth on top of this for your workload.
+      warncut = g_max_spacing;
+      if (comm->me == 0) {
+        if (maxcut < g_min_spacing)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} is below the smallest node-node "
+                         "spacing {:.4g}; contacts will likely be MISSED. Increase the cutoff "
+                         "to at least the node spacing plus the expected penetration depth.",
+                         maxcut, g_min_spacing);
+        else if (maxcut < g_max_spacing)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} is below the largest node-node "
+                         "spacing {:.4g}; some contacts may be missed where the mesh is coarse.",
+                         maxcut, g_max_spacing);
+        if (g_min_size > 0.0 && maxcut > g_min_size)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} exceeds the smallest grain radius "
+                         "{:.4g}; this pulls in nodes of non-touching grains and wastes "
+                         "neighbour pairs (and, for distributed storage, memory ~ cutoff^3). "
+                         "A node-node cutoff near the node spacing ({:.4g}) plus the expected "
+                         "penetration is usually sufficient.", maxcut, g_min_size, g_max_spacing);
+      }
+    }
+    // --- end pair-cutoff sanity check ---
 
     commflag_ls = FULL_BODY_LS;
     comm->forward_comm(this, 1 + bodysizeLS);
@@ -1620,7 +1672,10 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
   double dist = interpolate_LS_array(dim, mybin, mygrid, ngrid, x_red, ix, normal, jstride);
 
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  // Only the contact path (dist < 0, i.e. overlap u = -dist > 0) uses the
+  // normal. On the no-contact / interpolation short-circuit path the normal is
+  // unused and may be uninitialised, so skip the back-rotation entirely.
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }

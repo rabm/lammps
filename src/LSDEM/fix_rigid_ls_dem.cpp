@@ -605,6 +605,46 @@ void FixRigidLSDEM::init()
     }
   }
 
+  // --- pair-cutoff sanity check (node-node cutoff vs grain geometry) ---
+  // The pair cutoff filters NODE-NODE (atom-atom) pairs, so the relevant lower
+  // bound is the node-node spacing; the relevant "too large" reference is the
+  // grain size (a cutoff approaching the grain size pulls in nodes of
+  // non-touching grains). node_area[]/grid_vol[] are replicated across ranks.
+  {
+    const int dim = domain->dimension;
+    double min_spacing = DBL_MAX, max_spacing = 0.0, min_size = DBL_MAX;
+    for (int ibody = 0; ibody < nbody; ibody++) {
+      double spacing = (dim == 2) ? node_area[ibody] : sqrt(node_area[ibody]);
+      double rsize = (dim == 2) ? sqrt(grid_vol[ibody] / MY_PI)
+                                : cbrt(0.75 * grid_vol[ibody] / MY_PI);
+      if (spacing > 0.0) {
+        min_spacing = MIN(min_spacing, spacing);
+        max_spacing = MAX(max_spacing, spacing);
+      }
+      if (rsize > 0.0) min_size = MIN(min_size, rsize);
+    }
+    if (max_spacing > 0.0) {
+      if (comm->me == 0) {
+        if (maxcut < min_spacing)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} is below the smallest node-node "
+                         "spacing {:.4g}; contacts will likely be MISSED. Increase the cutoff "
+                         "to at least the node spacing plus the expected penetration depth.",
+                         maxcut, min_spacing);
+        else if (maxcut < max_spacing)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} is below the largest node-node "
+                         "spacing {:.4g}; some contacts may be missed where the mesh is coarse.",
+                         maxcut, max_spacing);
+        if (min_size > 0.0 && maxcut > min_size)
+          error->warning(FLERR, "pair ls/dem cutoff {:.4g} exceeds the smallest grain radius "
+                         "{:.4g}; this pulls in nodes of non-touching grains and wastes "
+                         "neighbour pairs (and, for distributed storage, memory ~ cutoff^3). "
+                         "A node-node cutoff near the node spacing ({:.4g}) plus the expected "
+                         "penetration is usually sufficient.", maxcut, min_size, max_spacing);
+      }
+    }
+  }
+  // --- end pair-cutoff sanity check ---
+
   memory->destroy(itensor_custom);
   memory->destroy(quat_custom);
 }
@@ -1410,9 +1450,11 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int mybin, double *no
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
-  // Rotate normal back to global coordinates
+  // Rotate normal back to global coordinates only when in contact (dist < 0,
+  // i.e. overlap u = -dist > 0); otherwise the normal is unused and may be
+  // uninitialised on the interpolation short-circuit path.
   double **grain_quat = atom->quat;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }
