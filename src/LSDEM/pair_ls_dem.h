@@ -25,6 +25,11 @@ PairStyle(ls/dem,PairLSDEM);
 #include "fix_rigid_ls_dem.h"
 #include "fix_rigid_small_ls_dem.h"
 
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 namespace LAMMPS_NS {
 
 class PairLSDEM : public Pair {
@@ -61,6 +66,10 @@ class PairLSDEM : public Pair {
   class FixRigidLSDEM *fix_rigid;
   class FixRigidSmallLSDEM *fix_rigid_small;
   std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
+  // Closest partner node per (node, partner-body) key. A member (cleared each
+  // step) rather than a per-step local so the hash table's capacity is reused
+  // instead of being reallocated every compute().
+  std::unordered_map<long, std::pair<int, double>> min_distances;
 
   void allocate();
 };

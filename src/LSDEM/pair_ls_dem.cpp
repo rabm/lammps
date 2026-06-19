@@ -139,7 +139,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Grain quantities
   double **grain_com = atom->xcom;
   double **grain_omega = atom->omega;
-  std::unordered_map<long, std::pair<int, double>> min_distances;
 
   int *mybody_large, maxbodyID_large;
   int *mybody_small, maxbodyID_small;
@@ -164,9 +163,10 @@ void PairLSDEM::compute(int eflag, int vflag)
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
-  // Reserve up front to avoid repeated rehashing while filling the map. The key
-  // count scales with the number of interacting body pairs; this is a heuristic
-  // upper estimate and only affects performance, never the stored result.
+  // Clear (keeping the allocated capacity) and reserve. The key count scales with
+  // the number of interacting body pairs; this is a heuristic upper estimate and
+  // only affects performance, never the stored result.
+  min_distances.clear();
   min_distances.reserve(static_cast<size_t>(4) * allnum);
 
   // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
@@ -180,10 +180,12 @@ void PairLSDEM::compute(int eflag, int vflag)
       zitmp = x[i][2];
       if (fix_rigid && (mask[i] & groupbit_large)) {
         ibodyID = mybody_large[i];
+        ivol = grain_vol[ibodyID];
         maxbodyID_i = maxbodyID_large;
         offset_i = 0;
       } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
         ibodyID = (int) molecule[i]; // could also use bodytag
+        ivol = bodyLS[mybody_small[i]].grid_vol;
         maxbodyID_i = maxbodyID_small;
         offset_i = 1;
       } else {
@@ -205,10 +207,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 
         if (fix_rigid && (mask[j] & groupbit_large)) {
           jbodyID = mybody_large[j];
+          jvol = grain_vol[jbodyID];
           maxbodyID_j = maxbodyID_large;
           offset_j = 0;
         } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
           jbodyID = (int) molecule[j];
+          jvol = bodyLS[mybody_small[j]].grid_vol;
           maxbodyID_j = maxbodyID_small;
           offset_j = 1;
         } else {
@@ -226,23 +230,22 @@ void PairLSDEM::compute(int eflag, int vflag)
 
         if (rsq > maxcutsq) continue;
 
-        // Create a dictionary for each grain that holds the
-        // tag of the closest interacting node on the other grain.
-        // We compare squared distances (rsq); the ordering, and hence the winning
-        // node tag stored in .first, is identical to comparing the distance r.
-        key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-        // If first interation between i and j's grain, create entry.
-        // Overwrite if i and j are closer (single lookup via try_emplace).
-        {
-          auto res = min_distances.try_emplace(key, jtag, rsq);
+        // Record, per (smaller-grain node, partner body), the closest partner
+        // node. Only the SMALLER grain's direction is stored: the force loop
+        // arbitrates with exactly the same "i smaller?" test and only ever queries
+        // that direction, so storing the other one is wasted work. We compare
+        // squared distances (rsq); the ordering, and hence the winning node tag,
+        // is identical to comparing the distance r. (single lookup via try_emplace)
+        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
+          // i is the smaller grain: closest node on body j to node i
+          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+          auto res = min_distances.try_emplace(key, (int) jtag, rsq);
           if (!res.second && rsq < res.first->second.second)
             res.first->second = std::make_pair((int) jtag, rsq);
-        }
-
-        // Do the same for node j
-        key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-        {
-          auto res = min_distances.try_emplace(key, itag, rsq);
+        } else {
+          // j is the smaller grain: closest node on body i to node j
+          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
+          auto res = min_distances.try_emplace(key, (int) itag, rsq);
           if (!res.second && rsq < res.first->second.second)
             res.first->second = std::make_pair((int) itag, rsq);
         }
