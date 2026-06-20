@@ -86,18 +86,23 @@ class PairLSDEM : public Pair {
   // winner. Cleared (capacity kept) each step.
   struct RepEntry { int pbody; char poff; int ctag; double rsq; };
   std::vector<std::vector<RepEntry>> rep_buckets;
-  // Record the closest partner node (smallest rsq; first-seen on ties, matching the
-  // old try_emplace) for representative-node bucket b on partner (body,offset).
-  inline void rep_update(std::vector<RepEntry> &b, int pbody, int poff, int ctag, double rsq) {
-    for (auto &e : b)
-      if (e.pbody == pbody && e.poff == poff) { if (rsq < e.rsq) { e.ctag = ctag; e.rsq = rsq; } return; }
-    b.push_back({pbody, (char) poff, ctag, rsq});
-  }
   // Tag of the winning partner node for (body,offset), or a sentinel that no real tag matches.
   inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const {
     for (const auto &e : b) if (e.pbody == pbody && e.poff == poff) return e.ctag;
     return -1;
   }
+
+  // CSR-style CANDIDATE SEGMENTS, rebuilt only when the neighbour list is rebuilt.
+  // For each representative node we keep, per partner body, the list of candidate
+  // partner ATOM INDICES (in neighbour-sweep order). The rep choice + partner body
+  // are constant between rebuilds (grain volumes + molecule ids don't change), so
+  // the per-step pass only re-reduces rsq over each segment to pick the winner ->
+  // it no longer redoes the group test / rep decision / bucket find for every pair.
+  // The candidate ORDER matches the old sweep, so the first-min winner is identical.
+  struct Seg { int pbody; char poff; std::vector<int> cand; };
+  std::vector<std::vector<Seg>> rep_segs;   // indexed by representative atom index
+  bigint segs_lastbuild;                    // neighbor->lastcall when rep_segs was built
+  void build_rep_segments();
 
   void allocate();
 };

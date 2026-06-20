@@ -62,6 +62,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   binfo_lastbuild = -1;
+  segs_lastbuild = -1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -124,6 +125,57 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.area = (bi >= 0) ? bodyLS[bi].node_area / bodyLS[bi].natoms : 0.0;
     } else {
       b.grp = 0; b.bidx = -1; b.bID = -1; b.off = 0; b.vol = 0.0; b.area = 0.0;
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
+   Build the per-representative-node CANDIDATE SEGMENTS from the neighbour list.
+   Called only when the list is rebuilt. No positions/rsq here: the rep choice and
+   partner body are position-independent, so the per-step pass just re-reduces rsq
+   over each segment. Candidates are appended in the SAME order the old single sweep
+   visited them -> the per-step first-min winner is bitwise-identical. (watershed_flag==0
+   only; the watershed path uses get_bin, not these segments.)
+------------------------------------------------------------------------- */
+
+void PairLSDEM::build_rep_segments()
+{
+  const int inum = list->inum, allnum = inum + list->gnum;
+  int *ilist = list->ilist, *numneigh = list->numneigh, **firstneigh = list->firstneigh;
+  const int ntotal = atom->nlocal + atom->nghost;
+  double *special_lj = force->special_lj;
+  tagint *tag = atom->tag;
+
+  if ((int) rep_segs.size() < ntotal) rep_segs.resize(ntotal);
+  for (int a = 0; a < ntotal; a++) rep_segs[a].clear();
+
+  for (int ii = 0; ii < allnum; ii++) {
+    int i = ilist[ii];
+    const BodyInfo &bi = binfo[i];
+    if (bi.grp == 0)
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+    int *jlist = firstneigh[i];
+    int jnum = numneigh[i];
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = jlist[jj];
+      if (special_lj[sbmask(j)] == 0.0) continue;
+      j &= NEIGHMASK;
+      const BodyInfo &bj = binfo[j];
+      if (bj.grp == 0)
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+      // Representative = smaller grain (volume, then body-id tie-break). Same test as
+      // the force loop. Record the candidate on the partner body of the rep node.
+      int rep, pbody, poff, cand;
+      if (bi.vol < bj.vol || (bi.vol == bj.vol && bi.bID < bj.bID)) {
+        rep = i; pbody = bj.bID; poff = bj.off; cand = j;
+      } else {
+        rep = j; pbody = bi.bID; poff = bi.off; cand = i;
+      }
+      std::vector<Seg> &segs = rep_segs[rep];
+      bool found = false;
+      for (Seg &s : segs)
+        if (s.pbody == pbody && s.poff == poff) { s.cand.push_back(cand); found = true; break; }
+      if (!found) { segs.push_back(Seg{pbody, (char) poff, {}}); segs.back().cand.push_back(cand); }
     }
   }
 }
@@ -203,66 +255,39 @@ void PairLSDEM::compute(int eflag, int vflag)
     binfo_lastbuild = neighbor->lastcall;
   }
 
+  // Rebuild the candidate segments only when the neighbour list was (re)built.
+  if (watershed_flag == 0 &&
+      (neighbor->lastcall != segs_lastbuild || (int) rep_segs.size() < ntotal)) {
+    build_rep_segments();
+    segs_lastbuild = neighbor->lastcall;
+  }
+
   // Reset the per-representative-node arbitration buckets (keep capacity).
   if ((int) rep_buckets.size() < ntotal) rep_buckets.resize(ntotal);
   for (int a = 0; a < ntotal; a++) rep_buckets[a].clear();
 
-  // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
-  // Loop over local + ghost atoms to find closest neighbors
+  // Per-step closest-node reduction over the precomputed candidate segments: for each
+  // representative node, pick the min-rsq partner within the cutoff (first on ties, in
+  // the stored neighbour-sweep order -> bitwise-identical to the old single sweep) and
+  // write it into rep_buckets for the force loop to query. The group test / rep choice /
+  // bucket find are no longer redone per pair (they live in build_rep_segments).
   if (watershed_flag == 0) {
-    for (ii = 0; ii < allnum; ii++) {
-      // Loop through local nodes
-      i = ilist[ii];
-      xitmp = x[i][0];
-      yitmp = x[i][1];
-      zitmp = x[i][2];
-      { const BodyInfo &bc = binfo[i];
-        if (bc.grp == 0)
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-        ibodyID = bc.bID; ivol = bc.vol; offset_i = bc.off; }
-      itag = tag[i];
-      jlist = firstneigh[i];
-      jnum = numneigh[i];
-
-      for (jj = 0; jj < jnum; jj++) {
-        // Loop through neighbouring nodes
-        j = jlist[jj];
-        factor_lj = special_lj[sbmask(j)];
-
-        if (factor_lj == 0) continue;
-
-        // Make the neighbour mask an integer again (discarding history flags etc.)
-        j &= NEIGHMASK;
-
-        { const BodyInfo &bc = binfo[j];
-          if (bc.grp == 0)
-            error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-          jbodyID = bc.bID; jvol = bc.vol; offset_j = bc.off; }
-
-        jtag = tag[j];
-
-        // Separation distance between the two nodes
-        double *xj = x[j];
-        delx = xitmp - xj[0];
-        dely = yitmp - xj[1];
-        delz = zitmp - xj[2];
-        rsq = delx * delx + dely * dely + delz * delz;
-
-        if (rsq > maxcutsq) continue;
-
-        // Record, per (smaller-grain node, partner body), the closest partner
-        // node. Only the SMALLER grain's direction is stored: the force loop
-        // arbitrates with exactly the same "i smaller?" test and only ever queries
-        // that direction, so storing the other one is wasted work. We compare
-        // squared distances (rsq); the ordering, and hence the winning node tag,
-        // is identical to comparing the distance r. (single lookup via try_emplace)
-        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
-          // i is the smaller grain: closest node on body j to representative node i
-          rep_update(rep_buckets[i], jbodyID, offset_j, (int) jtag, rsq);
-        } else {
-          // j is the smaller grain: closest node on body i to representative node j
-          rep_update(rep_buckets[j], ibodyID, offset_i, (int) itag, rsq);
+    for (int r = 0; r < ntotal; r++) {
+      std::vector<Seg> &segs = rep_segs[r];
+      if (segs.empty()) continue;
+      double xr0 = x[r][0], xr1 = x[r][1], xr2 = x[r][2];
+      for (Seg &s : segs) {
+        int wtag = -1;
+        double minrsq = 0.0;
+        for (int jc : s.cand) {
+          delx = xr0 - x[jc][0];
+          dely = xr1 - x[jc][1];
+          delz = xr2 - x[jc][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+          if (wtag < 0 || rsq < minrsq) { minrsq = rsq; wtag = (int) tag[jc]; }
         }
+        if (wtag >= 0) rep_buckets[r].push_back(RepEntry{s.pbody, s.poff, wtag, minrsq});
       }
     }
   }
