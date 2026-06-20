@@ -416,6 +416,63 @@ void PairLSDEM::compute(int eflag, int vflag)
       // If no forces are calculated
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
 
+      process_contact(i, j, calc_force_of_i_on_j, tmp_bin, x_local);
+    }
+  }
+
+  if (vflag_fdotr) virial_fdotr_compute();
+}
+
+/* ----------------------------------------------------------------------
+   Evaluate the LS-DEM contact model for ONE arbitration-winning node-grain pair
+   and apply the force/torque to grain i (and, newton off, to grain j when local).
+   Lifted verbatim from the in-line contact pass so a single driver can call it
+   once per winner; behaviour is bitwise-identical. calc_force_of_i_on_j picks
+   which grain owns the representative node; tmp_bin/x_local carry the watershed
+   bin (tmp_bin = -1 on the non-watershed path).
+------------------------------------------------------------------------- */
+
+void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
+                                int tmp_bin, double *x_local)
+{
+  double **x = atom->x;
+  double **v = atom->v;
+  double **f = atom->f;
+  double **torque = atom->torque;
+  double **n = atom->darray[index_ls_dem_n];
+  double **fs = atom->darray[index_ls_dem_fs];
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1];
+  double *fs1 = atom->dvector[index_ls_dem_fs1];
+  tagint *tag = atom->tag;
+  int *type = atom->type;
+  int *mask = atom->mask;
+  double **grain_com = atom->xcom;
+  double **grain_omega = atom->omega;
+  int nlocal = atom->nlocal;
+  int newton_pair = force->newton_pair;
+  double dt = update->dt;
+  double evdwl = 0.0;
+
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, u;
+  double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp;
+  double icomx, icomy, icomz, jcomx, jcomy, jcomz;
+  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz;
+  double normal[3], fn_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
+  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
+  double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
+  double normal_old[3], tangent_old[3], fs_mag_add, spin_norm, areai, areaj;
+  int itype, jtype, ibody, jbody, ibodyID, jbodyID;
+
+  itype = type[i];
+  xitmp = x[i][0]; yitmp = x[i][1]; zitmp = x[i][2];
+  vxitmp = v[i][0]; vyitmp = v[i][1]; vzitmp = v[i][2];
+  icomx = grain_com[i][0]; icomy = grain_com[i][1]; icomz = grain_com[i][2];
+  iomegax = grain_omega[i][0]; iomegay = grain_omega[i][1]; iomegaz = grain_omega[i][2];
+  { const BodyInfo &bc = binfo[i]; ibody = bc.bidx; ibodyID = bc.bID; areai = bc.area; }
+  jtype = type[j];
+  { const BodyInfo &bc = binfo[j]; jbody = bc.bidx; jbodyID = bc.bID; areaj = bc.area; }
+
       // ghosts may not find bodytag if comm distance too small
       if (ibody < 0)
         error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[i]);
@@ -469,7 +526,7 @@ void PairLSDEM::compute(int eflag, int vflag)
           n_ni[2] = 0.0;
         }
         // Skip force calculation
-        continue;
+        return;
       } else { // Physical contact!!
         // These per-neighbour quantities are only needed once contact is
         // confirmed, so they are loaded here instead of for every neighbour pair.
@@ -820,11 +877,8 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
 
       if (evflag) ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2], normal[0] * u, normal[1] * u, normal[2] * u);
-    }
-  }
-
-  if (vflag_fdotr) virial_fdotr_compute();
 }
+
 
 /* ----------------------------------------------------------------------
    allocate all arrays

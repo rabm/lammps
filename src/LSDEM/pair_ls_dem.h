@@ -104,6 +104,11 @@ class PairLSDEM : public Pair {
   bigint segs_lastbuild;                    // neighbor->lastcall when rep_segs was built
   void build_rep_segments();
 
+  // Evaluate the contact model for ONE arbitration-winning node-grain pair and
+  // apply the force/torque. Lifted out of the contact pass so a single driver can
+  // call it once per winner (the step-(b) rep-local shape / GPU contact kernel).
+  void process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_bin, double *x_local);
+
   void allocate();
 };
 
