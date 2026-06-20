@@ -584,26 +584,47 @@ void FixRigidLSDEM::init()
 
   // extra calculations using values from parent
 
+  // Relative rotation from the inertial frame to the LS grid, per body. quatd2g[]
+  // must be IDENTICAL on every rank because the bodies are REPLICATED, but it can
+  // only be read from a LOCAL atom of the body. A rank that owns no atom of a body
+  // (e.g. a boundary-straddling grain whose representative atom is on another rank,
+  // or any body with no local atoms) would otherwise leave quatd2g[] zero -> a zero
+  // grain quaternion -> get_bin collapses node positions onto the grid centre ->
+  // SPURIOUS u=radius contacts under MPI (serial is unaffected, it owns every atom).
+  // Fix: each rank computes quatd2g only from a local atom (with a found guard, so we
+  // never index atom->quat out of bounds); then replicate across ranks. Every
+  // contributing rank computes the same value (all atoms of a body share the initial
+  // quaternion), so summing and dividing by the contributor count restores it on
+  // ranks that had none.  Serial is unchanged (count == 1, no division).
   double quat_conj[4];
+  int *q2g_count;
+  memory->create(q2g_count, nbody, "rigid/ls/dem:q2g_count");
   for (int ibody = 0; ibody < nbody; ibody++) {
-
-    // calculate relative rotation from inerital frame to LS grid
-    //   assume all atoms in body have equivalent initial quaterions
-    //   (user could incorrectly use diplace_atoms on subset)
+    q2g_count[ibody] = 0;
+    quatd2g[ibody][0] = quatd2g[ibody][1] = quatd2g[ibody][2] = quatd2g[ibody][3] = 0.0;
+    int found = -1;
     for (iatom = 0; iatom < atom->nlocal; iatom++) {
       if (!(mask[iatom] & groupbit)) continue;
-      if (body[iatom] == ibody) break;
+      if (body[iatom] == ibody) { found = iatom; break; }
     }
-
+    if (found < 0) continue;   // no local atom of this body on this rank; another has it
     MathExtra::qconjugate(quat[ibody], quat_conj);
-    if (read_quat) {
-      MathExtra::qconjugate(quat[ibody], quat_conj);
+    if (read_quat)
       MathExtra::quatquat(quat_conj, quat_custom[ibody], quatd2g[ibody]);
-    } else {
-      MathExtra::qconjugate(quat[ibody], quat_conj);
-      MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
+    else
+      MathExtra::quatquat(quat_conj, atom->quat[found], quatd2g[ibody]);
+    q2g_count[ibody] = 1;
+  }
+  MPI_Allreduce(MPI_IN_PLACE, quatd2g[0], 4 * nbody, MPI_DOUBLE, MPI_SUM, world);
+  MPI_Allreduce(MPI_IN_PLACE, q2g_count, nbody, MPI_INT, MPI_SUM, world);
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    int c = q2g_count[ibody];
+    if (c > 1) {
+      quatd2g[ibody][0] /= c; quatd2g[ibody][1] /= c;
+      quatd2g[ibody][2] /= c; quatd2g[ibody][3] /= c;
     }
   }
+  memory->destroy(q2g_count);
 
   // --- pair-cutoff sanity check (node-node cutoff vs grain geometry) ---
   // The pair cutoff filters NODE-NODE (atom-atom) pairs, so the relevant lower
