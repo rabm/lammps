@@ -65,11 +65,39 @@ class PairLSDEM : public Pair {
 
   class FixRigidLSDEM *fix_rigid;
   class FixRigidSmallLSDEM *fix_rigid_small;
+
+  // Per-atom body info, cached once per compute() over local+ghost atoms so the
+  // two contact-pass loops do not recompute the group test + double-indirection
+  // body/volume/area lookups for every neighbour pair (each pair touched them ~4x).
+  // grp: 0 = not in an ls/dem group, 1 = small fix, 2 = large fix.
+  struct BodyInfo { double vol; double area; int bID; int bidx; char grp; char off; };
+  std::vector<BodyInfo> binfo;
+  bigint binfo_lastbuild;   // neighbor->lastcall when binfo was last filled (-1 = never)
+  void cache_body_info(int ntotal);
+
   std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
-  // Closest partner node per (node, partner-body) key. A member (cleared each
-  // step) rather than a per-step local so the hash table's capacity is reused
-  // instead of being reallocated every compute().
-  std::unordered_map<long, std::pair<int, double>> min_distances;
+  // Closest-partner arbitration, bucketed BY REPRESENTATIVE NODE (atom index)
+  // instead of a single global std::unordered_map<long,...>. For each smaller-grain
+  // (representative) node we keep a short list of its distinct partner bodies and,
+  // per partner body, the closest partner node + rsq. Indexing by atom index and
+  // scanning a tiny per-node list is far more cache-friendly than hashing a sparse
+  // 64-bit key for every neighbour pair (the old map's build/find dominated the
+  // contact pass at ~100 ns/pair). Same sweep order + update rule -> bitwise-identical
+  // winner. Cleared (capacity kept) each step.
+  struct RepEntry { int pbody; char poff; int ctag; double rsq; };
+  std::vector<std::vector<RepEntry>> rep_buckets;
+  // Record the closest partner node (smallest rsq; first-seen on ties, matching the
+  // old try_emplace) for representative-node bucket b on partner (body,offset).
+  inline void rep_update(std::vector<RepEntry> &b, int pbody, int poff, int ctag, double rsq) {
+    for (auto &e : b)
+      if (e.pbody == pbody && e.poff == poff) { if (rsq < e.rsq) { e.ctag = ctag; e.rsq = rsq; } return; }
+    b.push_back({pbody, (char) poff, ctag, rsq});
+  }
+  // Tag of the winning partner node for (body,offset), or a sentinel that no real tag matches.
+  inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const {
+    for (const auto &e : b) if (e.pbody == pbody && e.poff == poff) return e.ctag;
+    return -1;
+  }
 
   void allocate();
 };

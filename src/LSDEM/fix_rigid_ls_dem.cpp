@@ -263,13 +263,13 @@ void FixRigidLSDEM::init()
   int nlocal = atom->nlocal;
   std::vector <std::set <int>> node_bins;
   std::vector <std::set <int>> node_buffer_bins;
+  // pack_border always packs body[] (+1); WATERSHED additionally packs node_type[] (+1)
+  comm_border = 1;
   if (storage_flag == WATERSHED) {
     // calculate size
     node_bins.resize(nlocal);
     node_buffer_bins.resize(nlocal);
-    comm_border = 1;
-  } else {
-    comm_border = 0;
+    comm_border += 1;
   }
 
   if (distributed_flag) {

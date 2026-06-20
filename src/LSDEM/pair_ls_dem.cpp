@@ -61,6 +61,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   writedata = 1;
   single_enable = 0;
   cutoff_auto = 0;
+  binfo_lastbuild = -1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -85,13 +86,54 @@ PairLSDEM::~PairLSDEM()
   }
 }
 
+/* ----------------------------------------------------------------------
+   Cache each (local+ghost) atom's body info once per step, so the contact-pass
+   loops read it instead of redoing the group test + double-indirection
+   body/volume/area lookups for every neighbour pair. Bitwise-identical values.
+------------------------------------------------------------------------- */
+
+void PairLSDEM::cache_body_info(int ntotal)
+{
+  int *mask = atom->mask;
+  tagint *molecule = atom->molecule;
+  int *mybody_large = nullptr, *mybody_small = nullptr;
+  double *grain_vol = nullptr, *node_area = nullptr;
+  FixRigidSmallLSDEM::BodyLS *bodyLS = nullptr;
+  if (fix_rigid) {
+    mybody_large = fix_rigid->get_body_array();
+    grain_vol = fix_rigid->get_vol_array();
+    node_area = fix_rigid->get_area_array();
+  }
+  if (fix_rigid_small) {
+    mybody_small = fix_rigid_small->get_atom2body_array();
+    bodyLS = fix_rigid_small->get_bodyLS_array();
+  }
+
+  binfo.resize(ntotal);
+  for (int a = 0; a < ntotal; a++) {
+    BodyInfo &b = binfo[a];
+    if (fix_rigid && (mask[a] & groupbit_large)) {
+      int bi = mybody_large[a];
+      b.grp = 2; b.bidx = bi; b.bID = bi; b.off = 0;
+      b.vol  = (bi >= 0) ? grain_vol[bi] : 0.0;
+      b.area = (bi >= 0) ? node_area[bi] : 0.0;
+    } else if (fix_rigid_small && (mask[a] & groupbit_small)) {
+      int bi = mybody_small[a];
+      b.grp = 1; b.bidx = bi; b.bID = (int) molecule[a]; b.off = 1;
+      b.vol  = (bi >= 0) ? bodyLS[bi].grid_vol : 0.0;
+      b.area = (bi >= 0) ? bodyLS[bi].node_area / bodyLS[bi].natoms : 0.0;
+    } else {
+      b.grp = 0; b.bidx = -1; b.bID = -1; b.off = 0; b.vol = 0.0; b.area = 0.0;
+    }
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, allnum, inum, jnum, itype, jtype, ibody, jbody, ibodyID, jbodyID;
   tagint itag, jtag;
-  long key;
   double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
@@ -140,22 +182,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   double **grain_com = atom->xcom;
   double **grain_omega = atom->omega;
 
-  int *mybody_large, maxbodyID_large;
-  int *mybody_small, maxbodyID_small;
-  double *grain_vol, *node_area;
-  int maxbodyID_i, maxbodyID_j, offset_i, offset_j;
-  FixRigidSmallLSDEM::BodyLS *bodyLS;
-  if (fix_rigid) { // How is nbody updated during fix pour?
-    mybody_large = fix_rigid->get_body_array();
-    maxbodyID_large = fix_rigid->get_nbody();
-    grain_vol = fix_rigid->get_vol_array();
-    node_area = fix_rigid->get_area_array();
-  }
-  if (fix_rigid_small) {
-    mybody_small = fix_rigid_small->get_atom2body_array();
-    maxbodyID_small = fix_rigid_small->get_maxmol();
-    bodyLS = fix_rigid_small->get_bodyLS_array();
-  }
+  // Per-atom body info (grain id, volume, node area, etc.) is cached once per step
+  // in cache_body_info() below and read from `binfo` in both contact-pass loops.
+  int offset_i, offset_j;
 
   inum = list->inum;
   allnum = inum + list->gnum;
@@ -166,8 +195,17 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Clear (keeping the allocated capacity) and reserve. The key count scales with
   // the number of interacting body pairs; this is a heuristic upper estimate and
   // only affects performance, never the stored result.
-  min_distances.clear();
-  min_distances.reserve(static_cast<size_t>(4) * allnum);
+  // Cache per-atom body info; it only changes when the neighbour list is rebuilt
+  // (body assignments + ghost set are stable between builds), so refill only then.
+  int ntotal = atom->nlocal + atom->nghost;
+  if (neighbor->lastcall != binfo_lastbuild || (int) binfo.size() < ntotal) {
+    cache_body_info(ntotal);
+    binfo_lastbuild = neighbor->lastcall;
+  }
+
+  // Reset the per-representative-node arbitration buckets (keep capacity).
+  if ((int) rep_buckets.size() < ntotal) rep_buckets.resize(ntotal);
+  for (int a = 0; a < ntotal; a++) rep_buckets[a].clear();
 
   // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
   // Loop over local + ghost atoms to find closest neighbors
@@ -178,19 +216,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       xitmp = x[i][0];
       yitmp = x[i][1];
       zitmp = x[i][2];
-      if (fix_rigid && (mask[i] & groupbit_large)) {
-        ibodyID = mybody_large[i];
-        ivol = grain_vol[ibodyID];
-        maxbodyID_i = maxbodyID_large;
-        offset_i = 0;
-      } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-        ibodyID = (int) molecule[i]; // could also use bodytag
-        ivol = bodyLS[mybody_small[i]].grid_vol;
-        maxbodyID_i = maxbodyID_small;
-        offset_i = 1;
-      } else {
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      }
+      { const BodyInfo &bc = binfo[i];
+        if (bc.grp == 0)
+          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+        ibodyID = bc.bID; ivol = bc.vol; offset_i = bc.off; }
       itag = tag[i];
       jlist = firstneigh[i];
       jnum = numneigh[i];
@@ -205,19 +234,10 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Make the neighbour mask an integer again (discarding history flags etc.)
         j &= NEIGHMASK;
 
-        if (fix_rigid && (mask[j] & groupbit_large)) {
-          jbodyID = mybody_large[j];
-          jvol = grain_vol[jbodyID];
-          maxbodyID_j = maxbodyID_large;
-          offset_j = 0;
-        } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-          jbodyID = (int) molecule[j];
-          jvol = bodyLS[mybody_small[j]].grid_vol;
-          maxbodyID_j = maxbodyID_small;
-          offset_j = 1;
-        } else {
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-        }
+        { const BodyInfo &bc = binfo[j];
+          if (bc.grp == 0)
+            error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+          jbodyID = bc.bID; jvol = bc.vol; offset_j = bc.off; }
 
         jtag = tag[j];
 
@@ -237,17 +257,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         // squared distances (rsq); the ordering, and hence the winning node tag,
         // is identical to comparing the distance r. (single lookup via try_emplace)
         if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
-          // i is the smaller grain: closest node on body j to node i
-          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-          auto res = min_distances.try_emplace(key, (int) jtag, rsq);
-          if (!res.second && rsq < res.first->second.second)
-            res.first->second = std::make_pair((int) jtag, rsq);
+          // i is the smaller grain: closest node on body j to representative node i
+          rep_update(rep_buckets[i], jbodyID, offset_j, (int) jtag, rsq);
         } else {
-          // j is the smaller grain: closest node on body i to node j
-          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-          auto res = min_distances.try_emplace(key, (int) itag, rsq);
-          if (!res.second && rsq < res.first->second.second)
-            res.first->second = std::make_pair((int) itag, rsq);
+          // j is the smaller grain: closest node on body i to representative node j
+          rep_update(rep_buckets[j], ibodyID, offset_i, (int) itag, rsq);
         }
       }
     }
@@ -259,7 +273,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Currently, compiler vectorisation is scrambled, which might be particularly
   // bad for any future Kokkos GPU port.
 
-  int ntotal = atom->nlocal + atom->nghost;
   int tmp_bin;
   double x_local[3];
   saved_bins.resize(ntotal);
@@ -276,26 +289,10 @@ void PairLSDEM::compute(int eflag, int vflag)
     vyitmp = v[i][1];
     vzitmp = v[i][2];
     itype = type[i];
-    if (fix_rigid && (mask[i] & groupbit_large)) {
-      ibody = mybody_large[i];
-      ibodyID = ibody;
-      ivol = grain_vol[ibody];
-      areai = node_area[ibody];
-      maxbodyID_i = maxbodyID_large;
-      offset_i = 0;
-    } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-      ibody = mybody_small[i];
-      ibodyID = (int) molecule[i];
-      ivol = bodyLS[ibody].grid_vol;
-      // per-node area = total surface area / node count (see BodyLS); using the
-      // body's own natoms keeps this correct for ghost bodies that straddle a
-      // process boundary.
-      areai = bodyLS[ibody].node_area / bodyLS[ibody].natoms;
-      maxbodyID_i = maxbodyID_small;
-      offset_i = 1;
-    } else {
-      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-    }
+    { const BodyInfo &bc = binfo[i];   // cached per step (see cache_body_info)
+      if (bc.grp == 0)
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+      ibody = bc.bidx; ibodyID = bc.bID; ivol = bc.vol; areai = bc.area; offset_i = bc.off; }
     icomx = grain_com[i][0];
     icomy = grain_com[i][1];
     icomz = grain_com[i][2];
@@ -314,23 +311,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       if (factor_lj == 0) continue;
 
       j &= NEIGHMASK;
-      if (fix_rigid && (mask[j] & groupbit_large)) {
-        jbody = mybody_large[j];
-        jbodyID = jbody;
-        jvol = grain_vol[jbody];
-        areaj = node_area[jbody];
-        maxbodyID_j = maxbodyID_large;
-        offset_j = 0;
-      } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-        jbody = mybody_small[j];
-        jbodyID = (int) molecule[j];
-        jvol = bodyLS[jbody].grid_vol;
-        areaj = bodyLS[jbody].node_area / bodyLS[jbody].natoms;   // per-node area
-        maxbodyID_j = maxbodyID_small;
-        offset_j = 1;
-      } else {
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      }
+      { const BodyInfo &bc = binfo[j];   // cached per step (see cache_body_info)
+        if (bc.grp == 0)
+          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+        jbody = bc.bidx; jbodyID = bc.bID; jvol = bc.vol; areaj = bc.area; offset_j = bc.off; }
       jtag = tag[j];
       jtype = type[j];
 
@@ -390,15 +374,11 @@ void PairLSDEM::compute(int eflag, int vflag)
         // Use the nodes of the smallest grain.
         if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
           // Grain i is smaller, use nodes of i and level set of j.
-          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-          auto it = min_distances.find(key);
-          if (it != min_distances.end() && jtag == it->second.first)
+          if (rep_winner(rep_buckets[i], jbodyID, offset_j) == (int) jtag)
             calc_force_of_i_on_j = 1;
         } else {
           // Grain j is smaller, use nodes of j and level set of i.
-          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-          auto it = min_distances.find(key);
-          if (it != min_distances.end() && itag == it->second.first)
+          if (rep_winner(rep_buckets[j], ibodyID, offset_i) == (int) itag)
             calc_force_of_j_on_i = 1;
         }
 
