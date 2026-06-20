@@ -490,9 +490,19 @@ void PairLSDEM::compute(int eflag, int vflag)
         const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
         const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
         const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
-        contact_point[0] = npos0 - 0.5 * u * normal[0];
-        contact_point[1] = npos1 - 0.5 * u * normal[1];
-        contact_point[2] = npos2 - 0.5 * u * normal[2];
+        // The contact point is the representative node displaced HALF the overlap toward
+        // the partner's surface. With normal in the i->j frame that direction is
+        // rep->partner for the i-branch (hsign=+1) but partner->rep for the j-branch
+        // (hsign=-1), so the offset must carry hsign. Without it, a contact reached via
+        // the j-branch (which only happens under MPI domain decomposition, when local
+        // reindexing makes the representative the neighbour rather than the loop atom)
+        // placed the contact point on the WRONG side of the node -> a different lever ->
+        // a different body torque than the serial i-branch result, breaking serial==MPI
+        // for the shear/friction torque (the normal torque ~cancels for near-head-on hits,
+        // which is why this only showed up with friction on).
+        contact_point[0] = npos0 - 0.5 * u * hsign * normal[0];
+        contact_point[1] = npos1 - 0.5 * u * hsign * normal[1];
+        contact_point[2] = npos2 - 0.5 * u * hsign * normal[2];
       }
 
       // Hoist the pairwise coefficients (constant for this i-j type pair) into
