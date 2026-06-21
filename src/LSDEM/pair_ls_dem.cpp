@@ -695,21 +695,20 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
         k[1] += spin_norm*normal_old[1] + bch_coef*term1[1];
         k[2] += spin_norm*normal_old[2] + bch_coef*term1[2];
 
-        // Applying the rotation
-        double sinsq = MathExtra::lensq3(k); // sin^2(theta); avoids a sqrt then re-squaring
+        // Applying the rotation. UNNORMALISED Rodrigues (Chareyre): k already carries
+        // axis*sin(theta), so the cross term needs no sin(theta) factor and the axis needs
+        // no normalisation -- saves a sqrt (sin) + a reciprocal + the 3 normalise mults.
+        // Using (1-cos)/sin^2 == 1/(1+cos) also avoids small-angle cancellation:
+        //   fs_rot = fs*cos + (k x fs) + k*(k.fs)/(1+cos),   cos = sqrt(1 - |k|^2).
+        // Algebraically identical to the normalised form (differs only at FP rounding).
+        double sinsq = MathExtra::lensq3(k); // sin^2(theta) = |k|^2
         if (sinsq > EPSILON * EPSILON) { // Don't apply rotation if magnitude is tiny
-          sintheta = sqrt(sinsq); // Rotation magnitude
           costheta = sqrt(MAX(1.0 - sinsq, 0.0));
-          double sininv = 1.0 / sintheta; // one reciprocal instead of three divides
-          k[0] *= sininv; // Rotation axis
-          k[1] *= sininv;
-          k[2] *= sininv;
-          // Applying Rodrigues' rotation formula to get the rotated shear displacement
-          MathExtra::cross3(k, fs_tmp, term1);
-          term2 = MathExtra::dot3(k, fs_tmp) * (1.0 - costheta);
-          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
-          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
-          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
+          MathExtra::cross3(k, fs_tmp, term1);                   // k x fs (already scaled by sin)
+          term2 = MathExtra::dot3(k, fs_tmp) / (1.0 + costheta); // (k.fs)/(1+cos), 1+cos >= 1
+          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] + k[0] * term2;
+          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] + k[1] * term2;
+          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] + k[2] * term2;
         }
       }
 
