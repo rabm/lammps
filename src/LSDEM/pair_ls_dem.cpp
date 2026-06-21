@@ -724,11 +724,8 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
 
       // Tangent normal
       if (v_rel_t_mag > EPSILON) {
-        if (v_rel_t_mag != 0) {
-          v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
-        } else {
-          v_rel_t_mag_inv = 0.0;
-        }
+        // v_rel_t_mag > EPSILON (1e-12) > 0 here, so the reciprocal is always well-defined.
+        v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
         tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
         tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
         tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
@@ -844,8 +841,10 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
       f[i][1] += fpair[1];
       f[i][2] += fpair[2];
 
+#ifndef NDEBUG
       if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
         error->one(FLERR, "Bad force calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+#endif
 
       // Lever arm on grain i
       lever[0] = contact_point[0] - icomx;
@@ -862,8 +861,10 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
       torque[i][1] += torque_pair[1];
       torque[i][2] += torque_pair[2];
 
+#ifndef NDEBUG
       if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
         error->one(FLERR, "Bad torque calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+#endif
 
 
       // Mirror forces and torques on grain j
