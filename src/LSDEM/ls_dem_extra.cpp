@@ -203,80 +203,11 @@ double compute_grid_properties(int *grid_size, double stride, double *grid_value
 }
 
 /* ----------------------------------------------------------------------
-  Perform trilinear interpolation to get level-set value and normal
+  interpolate_LS_array (trilinear level-set value + normal) was MOVED to
+  ls_dem_extra_device.h as a KOKKOS_INLINE_FUNCTION so the GPU/Kokkos force
+  kernel can call it on device. ls_dem_extra.h includes that header, so the
+  CPU symbol is unchanged (ls_dem_norm3 matches MathExtra::norm3 -> bitwise).
 -------------------------------------------------------------------------*/
-
-double interpolate_LS_array(int dimension, int mybin, double *mygrid, int *ngrid, double *x_red, int *ix, double nvec[3], double stride)
-{
-  double dist;
-
-  // Checking whether x_local lies within the grid. Avoids edge cases where finite precision
-  // leads to e.g. a x=-0.1 coordinate to fall outside of a grid that starts at x=-0.1.
-  if ((ix[0] < 0 || ix[0] >= (ngrid[0] - 1)) || (ix[1] < 0 || ix[1] >= (ngrid[1] - 1)) ||
-      ((dimension == 3) && (ix[2] < 0 || ix[2] >= (ngrid[2] - 1))))
-    return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
-
-  // Level-set value of lower corner
-  double ls000 = mygrid[mybin];
-
-  // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
-  // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
-  // so 2.0 is safe.
-  if (ls000 > 2.0 * stride) {
-    return ls000;
-  }
-
-  // Rest of the level-set values on the grid points in the lower z plane (ind_z)
-  double ls100 = mygrid[mybin + 1];
-  double ls010 = mygrid[mybin + ngrid[0]];
-  double ls110 = mygrid[mybin + 1 + ngrid[0]]; // move this and // Interpolate upwards, add short circuit!!
-
-  // The normalised coordinates within the current grid cell.
-  // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
-  double x_red_local[3];
-  x_red_local[0] = x_red[0] - static_cast<double>(ix[0]);
-  x_red_local[1] = x_red[1] - static_cast<double>(ix[1]);
-  x_red_local[2] = x_red[2] - static_cast<double>(ix[2]); // Should always be zero in 2D.
-
-  // Bi-linear interpolation in the lower z plane (ind_z)
-  double lsxy0 = ls000 + x_red_local[1] * (ls010 - ls000) +
-                 x_red_local[0] * (ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000));
-  dist = lsxy0;
-
-  // Computing normal as the gradient of trilinear interpolation
-  // Chain rule: d(dist)/d(x_local) = d(dist)/d(x_red) * (1/stride)
-  // Vector eventually normalized to enforce unit normal, so 1/stride factor omitted
-  nvec[0] = ls100 - ls000 + x_red_local[1] * (ls110 - ls100 - ls010 + ls000);
-  nvec[1] = ls010 - ls000 + x_red_local[0] * (ls110 - ls100 - ls010 + ls000);
-  nvec[2] = 0.0;
-
-  if (dimension == 3) { // 3D
-    // Level-set values on the grid points in the upper z plane (ind_z+1)
-    double ls001 = mygrid[mybin + ngrid[0] * ngrid[1]];
-    double ls101 = mygrid[mybin + 1 + ngrid[0] * ngrid[1]];
-    double ls011 = mygrid[mybin + ngrid[0] + ngrid[0] * ngrid[1]];
-    double ls111 = mygrid[mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]];
-
-    // Bi-linear interpolation in the upper z plane (ind_z+1)
-    double lsxy1 = ls001 + x_red_local[1] * (ls011 - ls001) +
-                   x_red_local[0] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
-
-    // Affecting tri-linear interpolation by linear interpolation of the two bi-linear interpolations.
-    dist = x_red_local[2] * (lsxy1 - lsxy0) + lsxy0;
-    nvec[0] *= 1 - x_red_local[2];
-    nvec[0] += x_red_local[2] * (ls101 - ls001 + x_red_local[1] * (ls111 - ls101 - ls011 + ls001));
-    nvec[1] *= 1 - x_red_local[2];
-    nvec[1] += x_red_local[2] * (ls011 - ls001 + x_red_local[0] * (ls111 - ls101 - ls011 + ls001));
-    nvec[2] = lsxy1 - lsxy0;
-  }
-
-  // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
-  // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.
-
-  MathExtra::norm3(nvec);
-
-  return dist;
-}
 
 /* ----------------------------------------------------------------------
   Perform trilinear interpolation to get level-set value and normal

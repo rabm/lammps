@@ -16,13 +16,15 @@
 
 #include <unordered_map>
 
+// interpolate_LS_array is defined here (device-callable KOKKOS_INLINE_FUNCTION) for the GPU port
+#include "ls_dem_extra_device.h"
+
 namespace LSDEMExtra {
 
   double smeared_heaviside_step(double);
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);
   double compute_grid_properties(int *, double, double *, double *, double *, int);
-  double interpolate_LS_array(int, int, double *, int *, double *, int *, double[3], double);
   double interpolate_LS_watershed(int, int, std::unordered_map<int, double> *, std::unordered_map<int, double> *, int[3], double[3], int *, double[3], double);
   int store_distributed(int, int, int *, int *, double, double, double, double *, double *, double *, double *, double *, double *);
 }
