@@ -769,6 +769,8 @@ struct AtomVecKokkos_PackCommVel {
   typename AT::t_kkfloat_1d_4_randomread _mu;
   typename AT::t_kkfloat_1d_4_randomread _sp;
   typename AT::t_kkfloat_1d_3_randomread _omega;
+  typename AT::t_kkfloat_1d_3_randomread _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4_randomread _quat;   // LSDEM-KK
   typename AT::t_kkfloat_1d_randomread _dpdTheta,_uCond,_uMech,_uChem;
   typename AT::t_double_2d_lr_um _buf;
   typename AT::t_int_1d_const _list;
@@ -791,6 +793,8 @@ struct AtomVecKokkos_PackCommVel {
     _mask(atomKK->k_mask.view<DeviceType>()),
     _v(atomKK->k_v.view<DeviceType>()),
     _omega(atomKK->k_omega.view<DeviceType>()),
+    _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+    _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
     _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
     _uCond(atomKK->k_uCond.view<DeviceType>()),
     _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -872,6 +876,19 @@ struct AtomVecKokkos_PackCommVel {
       _buf(i,m++) = _omega(j,0);
       _buf(i,m++) = _omega(j,1);
       _buf(i,m++) = _omega(j,2);
+    }
+
+    // LS-DEM package (LSDEM-KK): xcom packed raw (no PBC shift; CPU pair uses minimum_image)
+    if (_datamask & XCOM_MASK) {
+      _buf(i,m++) = _xcom(j,0);
+      _buf(i,m++) = _xcom(j,1);
+      _buf(i,m++) = _xcom(j,2);
+    }
+    if (_datamask & QUAT_MASK) {
+      _buf(i,m++) = _quat(j,0);
+      _buf(i,m++) = _quat(j,1);
+      _buf(i,m++) = _quat(j,2);
+      _buf(i,m++) = _quat(j,3);
     }
 
       // DPD-REACT package
@@ -1029,6 +1046,8 @@ struct AtomVecKokkos_UnpackCommVel {
   typename AT::t_kkfloat_1d_4 _mu;
   typename AT::t_kkfloat_1d_4 _sp;
   typename AT::t_kkfloat_1d_3 _omega;
+  typename AT::t_kkfloat_1d_3 _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4 _quat;   // LSDEM-KK
   typename AT::t_kkfloat_1d _dpdTheta,_uCond,_uMech,_uChem;
   typename AT::t_double_2d_lr_const _buf;
   int _first;
@@ -1043,6 +1062,8 @@ struct AtomVecKokkos_UnpackCommVel {
     _mu(atomKK->k_mu.view<DeviceType>()),
     _sp(atomKK->k_sp.view<DeviceType>()),
     _omega(atomKK->k_omega.view<DeviceType>()),
+    _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+    _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
     _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
     _uCond(atomKK->k_uCond.view<DeviceType>()),
     _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -1089,6 +1110,19 @@ struct AtomVecKokkos_UnpackCommVel {
         _omega(i+_first,0) = _buf(i,m++);
         _omega(i+_first,1) = _buf(i,m++);
         _omega(i+_first,2) = _buf(i,m++);
+      }
+
+      // LSDEM-KK
+      if (_datamask & XCOM_MASK) {
+        _xcom(i+_first,0) = _buf(i,m++);
+        _xcom(i+_first,1) = _buf(i,m++);
+        _xcom(i+_first,2) = _buf(i,m++);
+      }
+      if (_datamask & QUAT_MASK) {
+        _quat(i+_first,0) = _buf(i,m++);
+        _quat(i+_first,1) = _buf(i,m++);
+        _quat(i+_first,2) = _buf(i,m++);
+        _quat(i+_first,3) = _buf(i,m++);
       }
 
       // DPD-REACT package
@@ -1731,6 +1765,8 @@ struct AtomVecKokkos_PackBorderVel {
   const typename AT::t_kkfloat_1d_4_randomread _sp;
   typename AT::t_kkfloat_1d_randomread _radius,_rmass;
   typename AT::t_kkfloat_1d_3_randomread _omega;
+  typename AT::t_kkfloat_1d_3_randomread _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4_randomread _quat;   // LSDEM-KK
   typename AT::t_kkfloat_1d_randomread _dpdTheta,_uCond,_uMech,_uChem,_uCG,_uCGnew;
   double _dx,_dy,_dz, _dvx, _dvy, _dvz;
   const int _deform_groupbit;
@@ -1757,6 +1793,8 @@ struct AtomVecKokkos_PackBorderVel {
       _radius(atomKK->k_radius.view<DeviceType>()),
       _rmass(atomKK->k_rmass.view<DeviceType>()),
       _omega(atomKK->k_omega.view<DeviceType>()),
+      _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+      _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
       _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
       _uCond(atomKK->k_uCond.view<DeviceType>()),
       _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -1830,6 +1868,19 @@ struct AtomVecKokkos_PackBorderVel {
       _buf(i,m++) = _omega(j,0);
       _buf(i,m++) = _omega(j,1);
       _buf(i,m++) = _omega(j,2);
+    }
+
+    // LS-DEM (LSDEM-KK): xcom packed raw (no PBC shift; CPU pair uses minimum_image)
+    if (_datamask & XCOM_MASK) {
+      _buf(i,m++) = _xcom(j,0);
+      _buf(i,m++) = _xcom(j,1);
+      _buf(i,m++) = _xcom(j,2);
+    }
+    if (_datamask & QUAT_MASK) {
+      _buf(i,m++) = _quat(j,0);
+      _buf(i,m++) = _quat(j,1);
+      _buf(i,m++) = _quat(j,2);
+      _buf(i,m++) = _quat(j,3);
     }
 
     // DPD-REACT package
@@ -1943,6 +1994,8 @@ struct AtomVecKokkos_UnpackBorderVel {
   typename AT::t_kkfloat_1d_4 _sp;
   typename AT::t_kkfloat_1d _radius,_rmass;
   typename AT::t_kkfloat_1d_3 _omega;
+  typename AT::t_kkfloat_1d_3 _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4 _quat;   // LSDEM-KK
   typename AT::t_kkfloat_1d _dpdTheta,_uCond,_uMech,_uChem,_uCG,_uCGnew;
   int _first;
   uint64_t _datamask;
@@ -1965,6 +2018,8 @@ struct AtomVecKokkos_UnpackBorderVel {
     _radius(atomKK->k_radius.view<DeviceType>()),
     _rmass(atomKK->k_rmass.view<DeviceType>()),
     _omega(atomKK->k_omega.view<DeviceType>()),
+    _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+    _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
     _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
     _uCond(atomKK->k_uCond.view<DeviceType>()),
     _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -2023,6 +2078,19 @@ struct AtomVecKokkos_UnpackBorderVel {
         _omega(i+_first,0) = _buf(i,m++);
         _omega(i+_first,1) = _buf(i,m++);
         _omega(i+_first,2) = _buf(i,m++);
+      }
+
+      // LSDEM-KK
+      if (_datamask & XCOM_MASK) {
+        _xcom(i+_first,0) = _buf(i,m++);
+        _xcom(i+_first,1) = _buf(i,m++);
+        _xcom(i+_first,2) = _buf(i,m++);
+      }
+      if (_datamask & QUAT_MASK) {
+        _quat(i+_first,0) = _buf(i,m++);
+        _quat(i+_first,1) = _buf(i,m++);
+        _quat(i+_first,2) = _buf(i,m++);
+        _quat(i+_first,3) = _buf(i,m++);
       }
 
       // DPD-REACT package
@@ -2117,6 +2185,9 @@ struct AtomVecKokkos_PackExchangeFunctor {
   typename AT::t_kkfloat_1d_4 _sp;
   typename AT::t_kkfloat_1d _radius,_rmass;
   typename AT::t_kkfloat_1d_3 _omega;
+  typename AT::t_kkfloat_1d_3 _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4 _quat;   // LSDEM-KK
+  typename AT::t_int_1d _grid_index;   // LSDEM-KK
   typename AT::t_kkfloat_1d _dpdTheta,_uCond,_uMech,_uChem,_uCG,_uCGnew;
 
   typename AT::t_double_2d_lr_um _buf;
@@ -2166,6 +2237,9 @@ struct AtomVecKokkos_PackExchangeFunctor {
       _radius(atomKK->k_radius.view<DeviceType>()),
       _rmass(atomKK->k_rmass.view<DeviceType>()),
       _omega(atomKK->k_omega.view<DeviceType>()),
+      _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+      _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
+      _grid_index(atomKK->k_grid_index.view<DeviceType>()),   // LSDEM-KK
       _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
       _uCond(atomKK->k_uCond.view<DeviceType>()),
       _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -2281,6 +2355,21 @@ struct AtomVecKokkos_PackExchangeFunctor {
         _buf(mysend,m++) = _omega(i,2);
       }
 
+      // LSDEM-KK
+      if (_datamask & XCOM_MASK) {
+        _buf(mysend,m++) = _xcom(i,0);
+        _buf(mysend,m++) = _xcom(i,1);
+        _buf(mysend,m++) = _xcom(i,2);
+      }
+      if (_datamask & QUAT_MASK) {
+        _buf(mysend,m++) = _quat(i,0);
+        _buf(mysend,m++) = _quat(i,1);
+        _buf(mysend,m++) = _quat(i,2);
+        _buf(mysend,m++) = _quat(i,3);
+      }
+      if (_datamask & GRID_INDEX_MASK)
+        _buf(mysend,m++) = d_ubuf(_grid_index(i)).d;
+
       // DPD-REACT package
 
       if (_datamask & DPDTHETA_MASK) {
@@ -2389,6 +2478,21 @@ struct AtomVecKokkos_PackExchangeFunctor {
           _omega(i,2) = _omega(j,2);
         }
 
+        // LSDEM-KK
+        if (_datamask & XCOM_MASK) {
+          _xcom(i,0) = _xcom(j,0);
+          _xcom(i,1) = _xcom(j,1);
+          _xcom(i,2) = _xcom(j,2);
+        }
+        if (_datamask & QUAT_MASK) {
+          _quat(i,0) = _quat(j,0);
+          _quat(i,1) = _quat(j,1);
+          _quat(i,2) = _quat(j,2);
+          _quat(i,3) = _quat(j,3);
+        }
+        if (_datamask & GRID_INDEX_MASK)
+          _grid_index(i) = _grid_index(j);
+
         // DPD-REACT package
 
         if (_datamask & DPDTHETA_MASK) {
@@ -2482,6 +2586,9 @@ struct AtomVecKokkos_UnpackExchangeFunctor {
   typename AT::t_kkfloat_1d_4 _sp;
   typename AT::t_kkfloat_1d _radius,_rmass;
   typename AT::t_kkfloat_1d_3 _omega;
+  typename AT::t_kkfloat_1d_3 _xcom;   // LSDEM-KK
+  typename AT::t_kkfloat_1d_4 _quat;   // LSDEM-KK
+  typename AT::t_int_1d _grid_index;   // LSDEM-KK
   typename AT::t_kkfloat_1d _dpdTheta,_uCond,_uMech,_uChem,_uCG,_uCGnew;
 
   typename AT::t_double_2d_lr_um _buf;
@@ -2534,6 +2641,9 @@ struct AtomVecKokkos_UnpackExchangeFunctor {
       _radius(atomKK->k_radius.view<DeviceType>()),
       _rmass(atomKK->k_rmass.view<DeviceType>()),
       _omega(atomKK->k_omega.view<DeviceType>()),
+      _xcom(atomKK->k_xcom.view<DeviceType>()),   // LSDEM-KK
+      _quat(atomKK->k_quat.view<DeviceType>()),   // LSDEM-KK
+      _grid_index(atomKK->k_grid_index.view<DeviceType>()),   // LSDEM-KK
       _dpdTheta(atomKK->k_dpdTheta.view<DeviceType>()),
       _uCond(atomKK->k_uCond.view<DeviceType>()),
       _uMech(atomKK->k_uMech.view<DeviceType>()),
@@ -2649,6 +2759,21 @@ struct AtomVecKokkos_UnpackExchangeFunctor {
           _omega(i,1) = _buf(myrecv,m++);
           _omega(i,2) = _buf(myrecv,m++);
         }
+
+        // LSDEM-KK
+        if (_datamask & XCOM_MASK) {
+          _xcom(i,0) = _buf(myrecv,m++);
+          _xcom(i,1) = _buf(myrecv,m++);
+          _xcom(i,2) = _buf(myrecv,m++);
+        }
+        if (_datamask & QUAT_MASK) {
+          _quat(i,0) = _buf(myrecv,m++);
+          _quat(i,1) = _buf(myrecv,m++);
+          _quat(i,2) = _buf(myrecv,m++);
+          _quat(i,3) = _buf(myrecv,m++);
+        }
+        if (_datamask & GRID_INDEX_MASK)
+          _grid_index(i) = (int) d_ubuf(_buf(myrecv,m++)).i;
 
         // DPD-REACT package
 
@@ -2803,6 +2928,14 @@ uint64_t AtomVecKokkos::field2mask(std::string field)
     return UCGNEW_MASK;
   else if (field == "duChem")
     return DUCHEM_MASK;
+  // >>> LSDEM-KK core edit (out-of-LSDEM; GPU port M1; see context/lsdem_gpu_kokkos_scaffold.md) >>>
+  else if (field == "xcom")
+    return XCOM_MASK;
+  else if (field == "quat")
+    return QUAT_MASK;
+  else if (field == "grid_index")
+    return GRID_INDEX_MASK;
+  // <<< LSDEM-KK core edit <<<
   else
     return EMPTY_MASK;
 }
@@ -2842,6 +2975,11 @@ int AtomVecKokkos::field2size(std::string field)
   else if (field == "uCG") return 1;
   else if (field == "uCGnew") return 1;
   else if (field == "duChem") return 1;
+  // >>> LSDEM-KK core edit (out-of-LSDEM; GPU port M1) >>>
+  else if (field == "xcom") return 3;
+  else if (field == "quat") return 4;
+  else if (field == "grid_index") return 1;
+  // <<< LSDEM-KK core edit <<<
   else return 0;
 }
 

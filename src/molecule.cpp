@@ -2481,7 +2481,10 @@ void Molecule::read(int flag)
         nwant = 3;
       } else if (values.matches("^\\s*\\S+\\s+\\d+\\s+\\f+\\s+lsdem\\s*$")) {
         lsdemflag = 1;
-        avec_lsdem = dynamic_cast<AtomVecLSDEM *>(atom->style_match("ls/dem"));
+        // LSDEM-KK core edit (out-of-LSDEM; GPU port M1): cast the current avec directly
+        // instead of matching the style by name, so the ls/dem/kk Kokkos variant (which
+        // derives from AtomVecLSDEM but is registered as "ls/dem/kk") is also accepted.
+        avec_lsdem = dynamic_cast<AtomVecLSDEM *>(atom->avec);
         if (!avec_lsdem) error->all(FLERR, fileiarg, "Molecule file requires atom style lsdem");
         grid_file = values.next_string();
         grid_style = values.next_int();
