@@ -44,6 +44,20 @@ class PairLSDEMKokkos : public PairLSDEM {
   PairLSDEMKokkos(class LAMMPS *);
   void compute(int, int) override;
   void init_style() override;
+
+ protected:
+  // M3 Kernel 1 (device winner-reduction). At neighbour rebuild the host rep_segs CSR is
+  // flattened + uploaded here; the per-step reduction runs on device and emits one contact
+  // per segment (seg-indexed, i==-1 = no contact), which the host collects in segment order
+  // (== the CPU emit order, so the result stays bitwise). The force pass stays on host (M4).
+  void upload_segments_to_device();
+
+  Kokkos::View<int*, DeviceType> d_seg_rep, d_cand_offset, d_cand;
+  typename Kokkos::View<int*, DeviceType>::HostMirror h_seg_rep, h_cand_offset, h_cand;
+  Kokkos::View<int*, DeviceType> d_contacts_i, d_contacts_j, d_contacts_calc;
+  typename Kokkos::View<int*, DeviceType>::HostMirror h_contacts_i, h_contacts_j, h_contacts_calc;
+
+  int nseg = 0, seg_cap = 0, cand_cap = 0;
 };
 
 }    // namespace LAMMPS_NS
