@@ -66,4 +66,13 @@
 #define TORQUE_MASK    0x0000000100000000
 #define ANGMOM_MASK    0x0000000200000000
 
+// >>> LSDEM-KK core edit (out-of-LSDEM; GPU port Milestone 0; see context/lsdem_gpu_kokkos_scaffold.md) >>>
+// Custom per-atom field masks for the LS-DEM Kokkos port (atom_style ls/dem/kk).
+// xcom/quat/grid_index have no built-in mask; molecule/omega/torque reuse the masks above.
+// Safe to remove together with the ls/dem/kk styles if the port is reverted.
+#define XCOM_MASK       0x0000000400000000
+#define QUAT_MASK       0x0000000800000000
+#define GRID_INDEX_MASK 0x0000001000000000
+// <<< LSDEM-KK core edit <<<
+
 #endif

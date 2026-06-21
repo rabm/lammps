@@ -45,6 +45,14 @@ class AtomKokkos : public Atom {
   DAT::ttransform_kkfloat_1d_3 k_angmom;
   DAT::ttransform_kkacc_1d_3 k_torque;
   DAT::tdual_tagint_1d k_molecule;
+  // >>> LSDEM-KK core edit (out-of-LSDEM; GPU port Milestone 0; see context/lsdem_gpu_kokkos_scaffold.md) >>>
+  // DualViews for the LS-DEM custom per-atom fields (atom_style ls/dem/kk).
+  // Allocated, grown, and synced by atom_vec_ls_dem_kokkos; default-constructed (inert) otherwise.
+  // (the LS-DEM omega/torque/molecule fields reuse k_omega/k_torque/k_molecule above.)
+  DAT::ttransform_kkfloat_1d_3 k_xcom;        // body centre of mass (n x 3; matches k_omega)
+  DAT::ttransform_kkfloat_1d_4 k_quat;        // grain->grid orientation quaternion (n x 4; matches k_mu)
+  DAT::tdual_int_1d k_grid_index;             // level-set grid/template index (n)
+  // <<< LSDEM-KK core edit <<<
   DAT::ttransform_int_2d k_nspecial;
   DAT::ttransform_tagint_2d k_special;
   DAT::tdual_int_1d k_num_bond;

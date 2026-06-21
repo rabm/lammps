@@ -73,6 +73,13 @@ AtomKokkos::~AtomKokkos()
   memoryKK->destroy_kokkos(k_angmom, angmom);
   memoryKK->destroy_kokkos(k_torque, torque);
 
+  // >>> LSDEM-KK core edit (out-of-LSDEM; GPU port Milestone 0; see context/lsdem_gpu_kokkos_scaffold.md) >>>
+  // Free the LS-DEM custom-field DualViews (atom_style ls/dem/kk). No-ops if never allocated.
+  memoryKK->destroy_kokkos(k_xcom, xcom);
+  memoryKK->destroy_kokkos(k_quat, quat);
+  memoryKK->destroy_kokkos(k_grid_index, grid_index);
+  // <<< LSDEM-KK core edit <<<
+
   memoryKK->destroy_kokkos(k_nspecial, nspecial);
   memoryKK->destroy_kokkos(k_special, special);
   memoryKK->destroy_kokkos(k_num_bond, num_bond);
