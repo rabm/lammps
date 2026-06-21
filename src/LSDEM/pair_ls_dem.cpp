@@ -492,25 +492,20 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
       if (jbody < 0)
         error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[j]);
 
-      // Evaluate the level set, and assign the interaction direction based on the
-      // node-grain combination. Force magnitude and direction go i -> j by definition.
-      if (calc_force_of_i_on_j) { // Use node of i.
-        // Level set is by definition negative inside the particle,
-        // so swap the sign to get the overlap distance.
-        if (fix_rigid && (mask[j] & groupbit_large))
-          u = - fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
-        else if (fix_rigid_small && (mask[j] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(i, j, normal);
-        else
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      } else { // Use node of j.
-        if (fix_rigid && (mask[i] & groupbit_large))
-          u = - fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
-        else if (fix_rigid_small && (mask[i] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(j, i, normal);
-        else
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      }
+      // Evaluate the level set. The representative node (rep, on the smaller grain) is
+      // tested against the partner grain's (par) level set. Resolving rep/par by a
+      // branchless select unifies the two calc_force_of_i_on_j call-sites into ONE call,
+      // so a future GPU contact kernel does not diverge here (bitwise on CPU: the same
+      // call with the same arguments). The level set is negative inside the particle, so
+      // the sign is swapped to get the overlap distance. Force/direction go i -> j.
+      const int rep = calc_force_of_i_on_j ? i : j; // node on the smaller grain
+      const int par = calc_force_of_i_on_j ? j : i; // partner grain providing the level set
+      if (fix_rigid && (mask[par] & groupbit_large))
+        u = - fix_rigid->get_ls_value(rep, par, tmp_bin, normal, x_local);
+      else if (fix_rigid_small && (mask[par] & groupbit_small))
+        u = - fix_rigid_small->get_ls_value(rep, par, normal);
+      else
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[rep]);
 
       // Resolve the direction-dependent quantities once, so the rest of the contact
       // path is free of calc_force_of_i_on_j branches. We always use the node on the
@@ -518,7 +513,7 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
       // area (narea), and the body it is touching (partner_body). The stored shear and
       // normal vectors are kept in the node's own i->j frame, so when we use node j we
       // flip their sign (hsign = -1) on both read and write.
-      const int ni = calc_force_of_i_on_j ? i : j;
+      const int ni = rep;   // representative node (== calc_force_of_i_on_j ? i : j)
       const double hsign = calc_force_of_i_on_j ? 1.0 : -1.0;
       const double narea = calc_force_of_i_on_j ? areai : areaj;
       const int partner_body = calc_force_of_i_on_j ? jbodyID : ibodyID;
@@ -560,8 +555,10 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j,
         // The normal returned for node i points away from j, so it is negated to point
         // i->j; for node j it already points i->j. After this, normal points i->j in
         // both cases, and the contact point uses the chosen node's position.
-        if (calc_force_of_i_on_j) // Use node of i.
-          MathExtra::negate3(normal);
+        // Branchless: negate for the i-branch (normal points away from j -> flip to i->j),
+        // leave for the j-branch (already i->j). Multiply by +-1.0 is exact (bitwise).
+        const double normsign = calc_force_of_i_on_j ? -1.0 : 1.0;
+        normal[0] *= normsign; normal[1] *= normsign; normal[2] *= normsign;
         const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
         const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
         const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
