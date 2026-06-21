@@ -84,8 +84,10 @@ class PairLSDEM : public Pair {
   // 64-bit key for every neighbour pair (the old map's build/find dominated the
   // contact pass at ~100 ns/pair). Same sweep order + update rule -> bitwise-identical
   // winner. Cleared (capacity kept) each step.
-  struct RepEntry { int pbody; char poff; int ctag; double rsq; };
+  struct RepEntry { int pbody; char poff; int ctag; double rsq; int cidx; };
   std::vector<std::vector<RepEntry>> rep_buckets;
+  struct Contact { int i; int j; int calc; };
+  std::vector<Contact> contacts;
   // Tag of the winning partner node for (body,offset), or a sentinel that no real tag matches.
   inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const {
     for (const auto &e : b) if (e.pbody == pbody && e.poff == poff) return e.ctag;

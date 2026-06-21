@@ -262,22 +262,26 @@ void PairLSDEM::compute(int eflag, int vflag)
     segs_lastbuild = neighbor->lastcall;
   }
 
-  // Reset the per-representative-node arbitration buckets (keep capacity).
+  // Per-step closest-node reduction over the precomputed candidate segments, FUSED with
+  // the flat-contact emit: for each representative node pick the min-rsq partner within the
+  // cutoff (first on ties, in stored neighbour-sweep order -> bitwise-identical to the old
+  // single sweep) and emit the contact directly. ONE pass over rep_segs -- no separate
+  // rep_buckets build + emit pass (that double O(ntotal) traversal regressed fcc2). The emit
+  // keeps the LOCAL node as i so process_contact's unconditional f[i]+= / conditional mirror
+  // reproduces the newton-off "force to local nodes only" rule: rep local -> {i=r,j=widx,
+  // calc=1}; rep ghost + partner local -> {i=widx,j=r,calc=0}; both ghost -> skip.
+  // (rep_buckets is now vestigial: only the unreachable non-watershed branch of the
+  // watershed-gated loop 2 still references it via rep_winner(); kept sized for safety.)
   if ((int) rep_buckets.size() < ntotal) rep_buckets.resize(ntotal);
-  for (int a = 0; a < ntotal; a++) rep_buckets[a].clear();
-
-  // Per-step closest-node reduction over the precomputed candidate segments: for each
-  // representative node, pick the min-rsq partner within the cutoff (first on ties, in
-  // the stored neighbour-sweep order -> bitwise-identical to the old single sweep) and
-  // write it into rep_buckets for the force loop to query. The group test / rep choice /
-  // bucket find are no longer redone per pair (they live in build_rep_segments).
   if (watershed_flag == 0) {
+    contacts.clear();
     for (int r = 0; r < ntotal; r++) {
       std::vector<Seg> &segs = rep_segs[r];
       if (segs.empty()) continue;
       double xr0 = x[r][0], xr1 = x[r][1], xr2 = x[r][2];
+      const bool r_local = (r < nlocal);
       for (Seg &s : segs) {
-        int wtag = -1;
+        int widx = -1;
         double minrsq = 0.0;
         for (int jc : s.cand) {
           delx = xr0 - x[jc][0];
@@ -285,9 +289,11 @@ void PairLSDEM::compute(int eflag, int vflag)
           delz = xr2 - x[jc][2];
           rsq = delx * delx + dely * dely + delz * delz;
           if (rsq > maxcutsq) continue;
-          if (wtag < 0 || rsq < minrsq) { minrsq = rsq; wtag = (int) tag[jc]; }
+          if (widx < 0 || rsq < minrsq) { minrsq = rsq; widx = jc; }
         }
-        if (wtag >= 0) rep_buckets[r].push_back(RepEntry{s.pbody, s.poff, wtag, minrsq});
+        if (widx < 0) continue;
+        if (r_local)            contacts.push_back({r, widx, 1});
+        else if (widx < nlocal) contacts.push_back({widx, r, 0});
       }
     }
   }
@@ -304,6 +310,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   for (auto& my_map : saved_bins)
     my_map.clear();
 
+  if (watershed_flag) {
   // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
@@ -418,6 +425,12 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       process_contact(i, j, calc_force_of_i_on_j, tmp_bin, x_local);
     }
+  }
+  } else {
+    // Non-watershed: drive contact pass from pre-built flat contact list.
+    // No second firstneigh re-walk; emit loop above built (i,j,calc) keyed to local nodes.
+    double xl0[3] = {0.0, 0.0, 0.0};
+    for (Contact &ct : contacts) process_contact(ct.i, ct.j, ct.calc, -1, xl0);
   }
 
   if (vflag_fdotr) virial_fdotr_compute();
