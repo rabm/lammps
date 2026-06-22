@@ -49,6 +49,90 @@ void ls_dem_norm3(double *v)
   v[2] *= scale;
 }
 
+// ---- device-callable replicas of the remaining MathExtra contact-path ops ----
+// Used by the K2 force kernel (M4b). MathExtra is host-only, so these mirror its
+// formulas verbatim. They are device-only (the /kk gate is within-tol, not bitwise),
+// but matching the arithmetic exactly keeps /kk as close to the CPU path as possible.
+
+KOKKOS_INLINE_FUNCTION
+double ls_dem_dot3(const double *v1, const double *v2)
+{
+  return v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+}
+
+KOKKOS_INLINE_FUNCTION
+double ls_dem_len3(const double *v)
+{
+  return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+KOKKOS_INLINE_FUNCTION
+double ls_dem_lensq3(const double *v)
+{
+  return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+}
+
+KOKKOS_INLINE_FUNCTION
+void ls_dem_cross3(const double *v1, const double *v2, double *ans)
+{
+  ans[0] = v1[1] * v2[2] - v1[2] * v2[1];
+  ans[1] = v1[2] * v2[0] - v1[0] * v2[2];
+  ans[2] = v1[0] * v2[1] - v1[1] * v2[0];
+}
+
+KOKKOS_INLINE_FUNCTION
+void ls_dem_sub3(const double *v1, const double *v2, double *ans)
+{
+  ans[0] = v1[0] - v2[0];
+  ans[1] = v1[1] - v2[1];
+  ans[2] = v1[2] - v2[2];
+}
+
+KOKKOS_INLINE_FUNCTION
+void ls_dem_add3(const double *v1, const double *v2, double *ans)
+{
+  ans[0] = v1[0] + v2[0];
+  ans[1] = v1[1] + v2[1];
+  ans[2] = v1[2] + v2[2];
+}
+
+KOKKOS_INLINE_FUNCTION
+void ls_dem_negate3(double *v)
+{
+  v[0] = -v[0];
+  v[1] = -v[1];
+  v[2] = -v[2];
+}
+
+// conjugate of a quaternion (assumes unit length): qc = conj(q)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_qconjugate(const double *q, double *qc)
+{
+  qc[0] = q[0];
+  qc[1] = -q[1];
+  qc[2] = -q[2];
+  qc[3] = -q[3];
+}
+
+// quaternion rotation of a vector: c = a * b * conj(a). b is read fully into temp
+// before c is written, so in-place use (b == c, as in get_ls_value) is safe.
+KOKKOS_INLINE_FUNCTION
+void ls_dem_quatrotvec(const double *a, const double *b, double *c)
+{
+  double temp[4];
+
+  // temp = a*b
+  temp[0] = -a[1] * b[0] - a[2] * b[1] - a[3] * b[2];
+  temp[1] = a[0] * b[0] + a[2] * b[2] - a[3] * b[1];
+  temp[2] = a[0] * b[1] + a[3] * b[0] - a[1] * b[2];
+  temp[3] = a[0] * b[2] + a[1] * b[1] - a[2] * b[0];
+
+  // c = temp*conj(a)
+  c[0] = -a[1] * temp[0] + a[0] * temp[1] - a[3] * temp[2] + a[2] * temp[3];
+  c[1] = -a[2] * temp[0] + a[3] * temp[1] + a[0] * temp[2] - a[1] * temp[3];
+  c[2] = -a[3] * temp[0] - a[2] * temp[1] + a[1] * temp[2] + a[0] * temp[3];
+}
+
 // ---- device-callable minimum image (orthogonal box) ----
 // Replaces domain->minimum_image on the contact path. All LS-DEM cases are orthogonal;
 // triclinic is not yet supported on device (a future item; no triclinic LS-DEM test exists).

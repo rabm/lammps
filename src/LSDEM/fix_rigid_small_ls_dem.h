@@ -80,6 +80,14 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   inline BodyLS* get_bodyLS_array() { return bodyLS; };
   inline int* get_atom2body_array() { return atom2body; };
 
+  // read-only accessors used by the Kokkos pair (pair_ls_dem_kokkos) for the
+  // device uploads of the level-set grid + body data (GPU port, Milestone 4a).
+  inline int get_nbodyLS() { return nlocal_bodyLS + nghost_bodyLS; };
+  inline int get_num_global_grids() { return num_global_grids; };
+  inline double** get_global_grids_array() { return global_grids; };
+  inline int** get_global_grids_size_array() { return global_grids_size; };
+  inline double** get_global_grids_min_array() { return global_grids_min; };
+
   double get_ls_value(int, int, double*);
 
  protected:
@@ -116,6 +124,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double **global_grids;
   int **global_grids_size;
   double **global_grids_min;
+  int num_global_grids = 0;   // # of GLOBAL grids (= index_global_grid from process_levelsets)
 
   // LS grid file data
 

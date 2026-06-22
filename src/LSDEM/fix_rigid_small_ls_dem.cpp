@@ -532,6 +532,7 @@ void FixRigidSmallLSDEM::process_levelsets()
     memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
     memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
     memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
+    num_global_grids = index_global_grid;   // grid count for the Kokkos pair device upload (M4a)
   }
 
   double dx[3], gmin[3];
