@@ -38,6 +38,22 @@ namespace LSDEMExtra {
 
 using LAMMPS_NS::RigidLSDEMConst::BIG;
 
+/* ----------------------------------------------------------------------
+   PRECISION / MERGE-CONFLICT NOTE (do not remove).
+   The ls_dem_* vector/quaternion ops below intentionally DUPLICATE
+   MathExtraKokkos::{add3,sub3,len3,lensq3,dot3,cross3,negate3,norm3,qconjugate}
+   (upstream src/KOKKOS/math_extra_kokkos.h, branch kokkos-rigid-small) but are
+   hardcoded `double`. That is deliberate: KK_FLOAT is `float` in single- and
+   mixed-precision Kokkos builds (double only under LMP_KOKKOS_DOUBLE_DOUBLE),
+   and the float contamination reaches INSIDE the upstream integration helpers'
+   temporaries (richardson / quat_to_mat / mq_to_omega), not just the generic-op
+   signatures. The LS-DEM /kk correctness gate is within-tol DOUBLE, so do NOT
+   replace these with MathExtraKokkos, and do NOT #include math_extra_kokkos.h on
+   the contact / integration path, without re-validating precision. Keeping a
+   separate header + namespace (LSDEMExtra) also avoids a file/namespace collision
+   when upstream's rigid/small/kk port merges into develop.
+------------------------------------------------------------------------- */
+
 // ---- device-callable replica of MathExtra::norm3 (MathExtra is host-only) ----
 // Matches MathExtra::norm3 arithmetic exactly so the CPU interpolate path stays bitwise.
 KOKKOS_INLINE_FUNCTION
