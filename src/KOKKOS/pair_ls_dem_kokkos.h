@@ -103,7 +103,24 @@ class PairLSDEMKokkos : public PairLSDEM {
                                     h_etan1, h_decayn1, h_etat1, h_decayt1;
   int coeff_stride = 0;
 
-  bool uploads_done = false;        // M4a: upload + self-check once (K2 not wired yet)
+  bool constants_uploaded = false;  // grids + coeffs uploaded once (constant for the run)
+  bool selfcheck_done = false;      // upload deep-copy-back self-check run once (step 0)
+
+  // M4b history host-sync BRIDGE (full device residency of the 5 shear-history arrays is M5/M6).
+  // Before K2 the host history arrays are read into device buffers; after K2 they are written
+  // back. n/fs/touch_id are host-only (no DualView); fn1/fs1 are k_dvector DualViews but reading
+  // the host pointer here is correct (the M3/M4a bitwise gate read them the same way). No
+  // reverse_comm: a node's history is authoritative on its owner rank (calc==1); ghost writes
+  // (calc==0) are discarded and overwritten by the fix's `ghost yes` forward-comm next step.
+  void sync_history_to_device();
+  void sync_history_from_device();
+
+  Kokkos::View<double*, DeviceType> d_hist_n, d_hist_fs;     // flat ntotal*3
+  Kokkos::View<int*, DeviceType>    d_hist_touch;            // ntotal
+  Kokkos::View<double*, DeviceType> d_hist_fn1, d_hist_fs1;  // ntotal
+  typename Kokkos::View<double*, DeviceType>::HostMirror h_hist_n, h_hist_fs, h_hist_fn1, h_hist_fs1;
+  typename Kokkos::View<int*, DeviceType>::HostMirror    h_hist_touch;
+  int hist_cap = 0;
 };
 
 }    // namespace LAMMPS_NS

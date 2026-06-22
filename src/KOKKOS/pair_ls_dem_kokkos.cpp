@@ -14,13 +14,17 @@
 
 #include "pair_ls_dem_kokkos.h"
 
+#include "ls_dem_extra_device.h"   // LSDEMExtra:: device math + get_ls_value helpers + interpolate_LS_array (K2)
+
 #include "atom.h"
 #include "atom_kokkos.h"
 #include "atom_masks.h"
 #include "comm.h"
+#include "domain.h"
 #include "error.h"
 #include "kokkos.h"
 #include "neighbor.h"
+#include "update.h"
 
 using namespace LAMMPS_NS;
 
@@ -88,6 +92,270 @@ struct PairLSDEMK1 {
     d_ci(r) = ei;
     d_cj(r) = ej;
     d_ccalc(r) = ecalc;
+  }
+};
+
+/* ----------------------------------------------------------------------
+   K2 device force functor: one thread per rep-indexed contact slot. Replicates
+   PairLSDEM::process_contact (pair_ls_dem.cpp:448-890) + the GLOBAL branch of
+   FixRigidSmallLSDEM::get_ls_value (fix_rigid_small_ls_dem.cpp:1602-1674) on the
+   device, reading the M4a uploads (grids/bodies/coeffs/binfo) + the bridged history
+   buffers. f/torque are written via Kokkos::atomic_add (a local node can be the
+   force target of multiple contacts). History is per-rep and exclusive (one contact
+   per rep), so its RMW needs no atomics. Virial is DEFERRED on device (M4b v1): the
+   compute() driver runs the exact CPU path on virial/energy steps (evflag != 0).
+   Within-tol vs CPU (atomic_add reorders the per-body force sum); NOT bitwise.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+struct PairLSDEMK2 {
+  typedef DeviceType device_type;
+  typedef ArrayTypes<DeviceType> AT;
+
+  typename AT::t_kkfloat_1d_3_randomread x, v, xcom, omega;
+  typename AT::t_kkfloat_1d_4 quat;
+  typename AT::t_kkacc_1d_3 f, torque;                 // atomic_add targets
+  typename AT::t_int_1d_randomread type;
+
+  Kokkos::View<int*, DeviceType> d_ci, d_cj, d_ccalc;  // rep-indexed contact slots (K1)
+
+  // M4a uploads (read-only)
+  Kokkos::View<double*, DeviceType> d_grid_values, d_grid_min;
+  Kokkos::View<int*, DeviceType>    d_grid_offset, d_grid_size;
+  Kokkos::View<int*, DeviceType>    d_body_grid_index;
+  Kokkos::View<double*, DeviceType> d_body_grid_scale, d_body_grid_stride;
+  Kokkos::View<int*, DeviceType>    d_atom2body, d_binfo_bID, d_binfo_bidx;
+  Kokkos::View<double*, DeviceType> d_binfo_area;
+  Kokkos::View<double*, DeviceType> d_kn,d_kt,d_mu,d_knp,d_etan,d_etat,d_etan1,d_decayn1,d_etat1,d_decayt1;
+  int coeff_stride;
+
+  // history bridge buffers (per-atom, host-synced around K2)
+  Kokkos::View<double*, DeviceType> d_hist_n, d_hist_fs;    // flat ntotal*3
+  Kokkos::View<int*, DeviceType>    d_hist_touch;           // ntotal
+  Kokkos::View<double*, DeviceType> d_hist_fn1, d_hist_fs1; // ntotal
+
+  int nlocal, dim;
+  double dt, xprd, yprd, zprd;
+  int px, py, pz;
+
+  // device replica of FixRigidSmallLSDEM::get_ls_value, GLOBAL branch (fix:1602-1674)
+  KOKKOS_INLINE_FUNCTION
+  double get_ls_value(const int i, const int j, double *normal) const
+  {
+    const int jbody = d_atom2body(j);
+    const double jstride = d_body_grid_stride(jbody);
+    const double strideinv = 1.0 / jstride;
+
+    double delx = x(i,0) - xcom(j,0);
+    double dely = x(i,1) - xcom(j,1);
+    double delz = x(i,2) - xcom(j,2);
+    LSDEMExtra::ls_dem_minimum_image_ortho(delx, dely, delz, xprd, yprd, zprd, px, py, pz);
+
+    double dxv[3] = {delx, dely, delz};
+    double qj[4]  = {quat(j,0), quat(j,1), quat(j,2), quat(j,3)};
+    double qconj[4]; LSDEMExtra::ls_dem_qconjugate(qj, qconj);
+    double x_local[3]; LSDEMExtra::ls_dem_quatrotvec(qconj, dxv, x_local);
+
+    const int gi = d_body_grid_index(jbody);            // GLOBAL storage only
+    const double gscale = d_body_grid_scale(jbody);
+    const int base = d_grid_offset(gi);
+    int ngrid[3] = { d_grid_size(gi*3+0), d_grid_size(gi*3+1), d_grid_size(gi*3+2) };
+    x_local[0] -= d_grid_min(gi*3+0) * gscale;
+    x_local[1] -= d_grid_min(gi*3+1) * gscale;
+    x_local[2] -= d_grid_min(gi*3+2) * gscale;
+
+    double x_red[3] = { x_local[0]*strideinv, x_local[1]*strideinv, x_local[2]*strideinv };
+    int ix[3] = { (int) x_red[0], (int) x_red[1], (int) x_red[2] };
+    int mybin = ix[0] + ix[1]*ngrid[0] + ix[2]*ngrid[0]*ngrid[1];
+
+    double dist = LSDEMExtra::interpolate_LS_array(dim, mybin, &d_grid_values(base),
+                                                   ngrid, x_red, ix, normal, jstride);
+    dist *= gscale;                                     // GLOBAL post-multiply (fix:1667)
+    if (dist < 0.0) LSDEMExtra::ls_dem_quatrotvec(qj, normal, normal);   // back-rotate (fix:1671)
+    return dist;
+  }
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const int r) const
+  {
+    const int i = d_ci(r);
+    if (i < 0) return;                                  // no contact for this rep
+    const int j = d_cj(r);
+    const int calc = d_ccalc(r);
+    const double EPS = 1e-12;                            // PairLSDEM::EPSILON
+
+    const int itype = type(i), jtype = type(j);
+    const int ibody = d_binfo_bidx(i), jbody = d_binfo_bidx(j);
+    if (ibody < 0 || jbody < 0) return;                 // CPU errors; device skips (shouldn't happen)
+    const int ibodyID = d_binfo_bID(i), jbodyID = d_binfo_bID(j);
+    const double areai = d_binfo_area(i), areaj = d_binfo_area(j);
+
+    const int rep = calc ? i : j;
+    const int par = calc ? j : i;
+
+    double normal[3];
+    double u = - get_ls_value(rep, par, normal);
+
+    const int ni = rep;
+    const double hsign = calc ? 1.0 : -1.0;
+    const double narea = calc ? areai : areaj;
+    const int partner_body = calc ? jbodyID : ibodyID;
+
+    // history (per-rep, exclusive under the one-contact-per-rep guard)
+    double fs_ni[3] = { d_hist_fs(ni*3+0), d_hist_fs(ni*3+1), d_hist_fs(ni*3+2) };
+    double n_ni[3]  = { d_hist_n(ni*3+0),  d_hist_n(ni*3+1),  d_hist_n(ni*3+2) };
+    int touch       = d_hist_touch(ni);
+
+    if (u <= 0.0) {                                     // no contact (:524-537)
+      if (touch == partner_body) {
+        d_hist_touch(ni) = -1;
+        d_hist_fs(ni*3+0)=0.0; d_hist_fs(ni*3+1)=0.0; d_hist_fs(ni*3+2)=0.0;
+        d_hist_n(ni*3+0)=0.0;  d_hist_n(ni*3+1)=0.0;  d_hist_n(ni*3+2)=0.0;
+      }
+      return;
+    }
+
+    const double xitmp=x(i,0), yitmp=x(i,1), zitmp=x(i,2);
+    const double xjtmp=x(j,0), yjtmp=x(j,1), zjtmp=x(j,2);
+    const double vxi=v(i,0), vyi=v(i,1), vzi=v(i,2);
+    const double vxj=v(j,0), vyj=v(j,1), vzj=v(j,2);
+    const double icomx=xcom(i,0), icomy=xcom(i,1), icomz=xcom(i,2);
+    const double jcomx=xcom(j,0), jcomy=xcom(j,1), jcomz=xcom(j,2);
+    const double iomx=omega(i,0), iomy=omega(i,1), iomz=omega(i,2);
+    const double jomx=omega(j,0), jomy=omega(j,1), jomz=omega(j,2);
+
+    const double normsign = calc ? -1.0 : 1.0;          // (:560)
+    normal[0]*=normsign; normal[1]*=normsign; normal[2]*=normsign;
+    const double npos0 = calc ? xitmp : xjtmp;
+    const double npos1 = calc ? yitmp : yjtmp;
+    const double npos2 = calc ? zitmp : zjtmp;
+    double contact_point[3];
+    contact_point[0]=npos0 - 0.5*u*hsign*normal[0];
+    contact_point[1]=npos1 - 0.5*u*hsign*normal[1];
+    contact_point[2]=npos2 - 0.5*u*hsign*normal[2];
+
+    const int cidx = itype*coeff_stride + jtype;        // coeff flatten i*np1+j
+    const double knij=d_kn(cidx), ktij=d_kt(cidx), muij=d_mu(cidx), knpij=d_knp(cidx);
+    const double etanij=d_etan(cidx), etatij=d_etat(cidx);
+    const double etan1ij=d_etan1(cidx), decayn1ij=d_decayn1(cidx);
+    const double etat1ij=d_etat1(cidx), decayt1ij=d_decayt1(cidx);
+
+    // ---- normal stress ----
+    double fn_mag = (fabs(knpij) < EPS) ? (knij*u) : (knij*pow(u, knpij));
+    double v_rel[3] = { vxi-vxj, vyi-vyj, vzi-vzj };
+    double v_rel_n_mag = LSDEMExtra::ls_dem_dot3(v_rel, normal);
+    if (etanij > 0.0) fn_mag += etanij*v_rel_n_mag;
+    if (etan1ij > 0.0) {                                // Maxwell arm 1 (fn1 RMW :623)
+      double fn1v = decayn1ij*d_hist_fn1(ni) + etan1ij*(1.0-decayn1ij)*v_rel_n_mag;
+      d_hist_fn1(ni) = fn1v;
+      fn_mag += fn1v;
+    }
+    fn_mag = (fn_mag > 0.0) ? fn_mag : 0.0;
+    double fpair[3] = { -fn_mag*normal[0], -fn_mag*normal[1], -fn_mag*normal[2] };
+
+    // ---- tangent stress ----
+    if (touch == -1) touch = partner_body;              // (:649-651; mismatch-warn skipped on device)
+
+    double fs_tmp[3] = { hsign*fs_ni[0], hsign*fs_ni[1], hsign*fs_ni[2] };
+    double normal_old[3] = { hsign*n_ni[0], hsign*n_ni[1], hsign*n_ni[2] };
+
+    if (LSDEMExtra::ls_dem_lensq3(normal_old) > 0.0) {  // unnormalised Rodrigues (:672-710)
+      double k[3]; LSDEMExtra::ls_dem_cross3(normal_old, normal, k);
+      double spin_norm = 0.5*dt*((iomx+jomx)*normal_old[0] + (iomy+jomy)*normal_old[1]
+                                 + (iomz+jomz)*normal_old[2]);
+      double t1[3]; LSDEMExtra::ls_dem_cross3(normal_old, k, t1);
+      double bch_coef = -0.5*fabs(spin_norm);
+      k[0]+=spin_norm*normal_old[0]+bch_coef*t1[0];
+      k[1]+=spin_norm*normal_old[1]+bch_coef*t1[1];
+      k[2]+=spin_norm*normal_old[2]+bch_coef*t1[2];
+      double sinsq = LSDEMExtra::ls_dem_lensq3(k);
+      if (sinsq > EPS*EPS) {
+        double costheta = sqrt(((1.0-sinsq)>0.0)?(1.0-sinsq):0.0);
+        double kxfs[3]; LSDEMExtra::ls_dem_cross3(k, fs_tmp, kxfs);
+        double term2 = LSDEMExtra::ls_dem_dot3(k, fs_tmp)/(1.0+costheta);
+        fs_tmp[0]=fs_tmp[0]*costheta+kxfs[0]+k[0]*term2;
+        fs_tmp[1]=fs_tmp[1]*costheta+kxfs[1]+k[1]*term2;
+        fs_tmp[2]=fs_tmp[2]*costheta+kxfs[2]+k[2]*term2;
+      }
+    }
+
+    double v_rel_t[3] = { v_rel[0]-v_rel_n_mag*normal[0], v_rel[1]-v_rel_n_mag*normal[1],
+                          v_rel[2]-v_rel_n_mag*normal[2] };
+    double v_rel_t_mag = LSDEMExtra::ls_dem_len3(v_rel_t);
+    double tangent[3], inv;
+    if (v_rel_t_mag > EPS) {
+      inv = 1.0/v_rel_t_mag;
+      tangent[0]=v_rel_t[0]*inv; tangent[1]=v_rel_t[1]*inv; tangent[2]=v_rel_t[2]*inv;
+    } else {
+      double nrm = LSDEMExtra::ls_dem_len3(fs_tmp);
+      inv = (nrm != 0.0) ? 1.0/nrm : 0.0;
+      tangent[0]=fs_tmp[0]*inv; tangent[1]=fs_tmp[1]*inv; tangent[2]=fs_tmp[2]*inv;
+    }
+
+    double shear_incr = ktij*v_rel_t_mag*dt;
+    fs_tmp[0]-=shear_incr*tangent[0]; fs_tmp[1]-=shear_incr*tangent[1]; fs_tmp[2]-=shear_incr*tangent[2];
+    double fs_mag_trial = LSDEMExtra::ls_dem_len3(fs_tmp);
+    double fs_max = muij*fn_mag;
+    double fs_mag = (fs_max < fs_mag_trial) ? fs_max : fs_mag_trial;
+    if (fs_mag_trial > EPS) {
+      fs_tmp[0]=fs_mag*(fs_tmp[0]/fs_mag_trial);
+      fs_tmp[1]=fs_mag*(fs_tmp[1]/fs_mag_trial);
+      fs_tmp[2]=fs_mag*(fs_tmp[2]/fs_mag_trial);
+    }
+
+    // store history (elastic shear after first clamp + current normal; :768-773)
+    d_hist_fs(ni*3+0)=hsign*fs_tmp[0]; d_hist_fs(ni*3+1)=hsign*fs_tmp[1]; d_hist_fs(ni*3+2)=hsign*fs_tmp[2];
+    d_hist_n(ni*3+0)=hsign*normal[0];  d_hist_n(ni*3+1)=hsign*normal[1];  d_hist_n(ni*3+2)=hsign*normal[2];
+    d_hist_touch(ni)=touch;
+
+    double fs_mag_add = 0.0;
+    if (etatij > 0.0) fs_mag_add += etatij*v_rel_t_mag;
+    if (etan1ij > 0.0) {                                // Maxwell arm 1 tangential (fs1 RMW :799)
+      double nrm = LSDEMExtra::ls_dem_len3(fs_tmp);
+      double tinv = (nrm != 0.0) ? 1.0/nrm : 0.0;
+      double tangent_old[3] = { fs_tmp[0]*tinv, fs_tmp[1]*tinv, fs_tmp[2]*tinv };
+      double fs1v = d_hist_fs1(ni)
+                    + decayt1ij*d_hist_fs1(ni)*LSDEMExtra::ls_dem_dot3(tangent_old, tangent)
+                    + etat1ij*(1.0-decayt1ij)*v_rel_t_mag;
+      d_hist_fs1(ni) = fs1v;
+      fs_mag_add += fs1v;
+    }
+    fs_tmp[0]-=fs_mag_add*tangent[0]; fs_tmp[1]-=fs_mag_add*tangent[1]; fs_tmp[2]-=fs_mag_add*tangent[2];
+    fs_mag_trial = LSDEMExtra::ls_dem_len3(fs_tmp);
+    fs_mag = (fs_max < fs_mag_trial) ? fs_max : fs_mag_trial;
+    if (fs_mag > 0.0 && fs_mag_trial != 0.0) {
+      fs_tmp[0]=fs_mag*(fs_tmp[0]/fs_mag_trial);
+      fs_tmp[1]=fs_mag*(fs_tmp[1]/fs_mag_trial);
+      fs_tmp[2]=fs_mag*(fs_tmp[2]/fs_mag_trial);
+      fpair[0]+=fs_tmp[0]; fpair[1]+=fs_tmp[1]; fpair[2]+=fs_tmp[2];
+    }
+
+    // ---- total force/torque ----
+    fpair[0]*=narea; fpair[1]*=narea; fpair[2]*=narea;  // stress -> force (:835-837)
+
+    Kokkos::atomic_add(&f(i,0), fpair[0]);
+    Kokkos::atomic_add(&f(i,1), fpair[1]);
+    Kokkos::atomic_add(&f(i,2), fpair[2]);
+    double lever[3] = { contact_point[0]-icomx, contact_point[1]-icomy, contact_point[2]-icomz };
+    LSDEMExtra::ls_dem_minimum_image_ortho(lever[0],lever[1],lever[2], xprd,yprd,zprd, px,py,pz);
+    double tq[3]; LSDEMExtra::ls_dem_cross3(lever, fpair, tq);
+    Kokkos::atomic_add(&torque(i,0), tq[0]);
+    Kokkos::atomic_add(&torque(i,1), tq[1]);
+    Kokkos::atomic_add(&torque(i,2), tq[2]);
+
+    if (j < nlocal) {                                   // Newton-OFF mirror (:871-887)
+      LSDEMExtra::ls_dem_negate3(fpair);
+      Kokkos::atomic_add(&f(j,0), fpair[0]);
+      Kokkos::atomic_add(&f(j,1), fpair[1]);
+      Kokkos::atomic_add(&f(j,2), fpair[2]);
+      double leverj[3] = { contact_point[0]-jcomx, contact_point[1]-jcomy, contact_point[2]-jcomz };
+      LSDEMExtra::ls_dem_minimum_image_ortho(leverj[0],leverj[1],leverj[2], xprd,yprd,zprd, px,py,pz);
+      double tqj[3]; LSDEMExtra::ls_dem_cross3(leverj, fpair, tqj);
+      Kokkos::atomic_add(&torque(j,0), tqj[0]);
+      Kokkos::atomic_add(&torque(j,1), tqj[1]);
+      Kokkos::atomic_add(&torque(j,2), tqj[2]);
+    }
+    // virial (:889): DEFERRED on device — handled by the host fallback on evflag steps.
   }
 };
 
@@ -426,14 +694,76 @@ void PairLSDEMKokkos<DeviceType>::selfcheck_uploads()
                         num_grids, num_bodies, num_atoms_uploaded, atom->ntypes);
 }
 
+/* ----------------------------------------------------------------------
+   M4b history bridge: copy the 5 host shear-history arrays into device buffers
+   before K2 (and back after). n/fs (darray) + touch_id (ivector) are host-only;
+   fn1/fs1 (dvector) are read via the host pointer (the M3/M4a bitwise gate did the
+   same). Buffers are sized to ntotal (local+ghost) and grown with margin.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::sync_history_to_device()
+{
+  const int ntotal = atom->nlocal + atom->nghost;
+  if (ntotal > hist_cap) {
+    hist_cap = ntotal + ntotal / 4 + 16;
+    Kokkos::realloc(d_hist_n, hist_cap * 3);   Kokkos::realloc(d_hist_fs, hist_cap * 3);
+    Kokkos::realloc(d_hist_touch, hist_cap);
+    Kokkos::realloc(d_hist_fn1, hist_cap);     Kokkos::realloc(d_hist_fs1, hist_cap);
+    h_hist_n     = Kokkos::create_mirror_view(d_hist_n);
+    h_hist_fs    = Kokkos::create_mirror_view(d_hist_fs);
+    h_hist_touch = Kokkos::create_mirror_view(d_hist_touch);
+    h_hist_fn1   = Kokkos::create_mirror_view(d_hist_fn1);
+    h_hist_fs1   = Kokkos::create_mirror_view(d_hist_fs1);
+  }
+  double **n  = atom->darray[index_ls_dem_n];
+  double **fs = atom->darray[index_ls_dem_fs];
+  int *touch  = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1];
+  double *fs1 = atom->dvector[index_ls_dem_fs1];
+  for (int a = 0; a < ntotal; a++) {
+    h_hist_n(a*3+0)=n[a][0]; h_hist_n(a*3+1)=n[a][1]; h_hist_n(a*3+2)=n[a][2];
+    h_hist_fs(a*3+0)=fs[a][0]; h_hist_fs(a*3+1)=fs[a][1]; h_hist_fs(a*3+2)=fs[a][2];
+    h_hist_touch(a)=touch[a]; h_hist_fn1(a)=fn1[a]; h_hist_fs1(a)=fs1[a];
+  }
+  Kokkos::deep_copy(d_hist_n, h_hist_n);     Kokkos::deep_copy(d_hist_fs, h_hist_fs);
+  Kokkos::deep_copy(d_hist_touch, h_hist_touch);
+  Kokkos::deep_copy(d_hist_fn1, h_hist_fn1); Kokkos::deep_copy(d_hist_fs1, h_hist_fs1);
+}
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::sync_history_from_device()
+{
+  const int ntotal = atom->nlocal + atom->nghost;
+  Kokkos::deep_copy(h_hist_n, d_hist_n);     Kokkos::deep_copy(h_hist_fs, d_hist_fs);
+  Kokkos::deep_copy(h_hist_touch, d_hist_touch);
+  Kokkos::deep_copy(h_hist_fn1, d_hist_fn1); Kokkos::deep_copy(h_hist_fs1, d_hist_fs1);
+  double **n  = atom->darray[index_ls_dem_n];
+  double **fs = atom->darray[index_ls_dem_fs];
+  int *touch  = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1];
+  double *fs1 = atom->dvector[index_ls_dem_fs1];
+  for (int a = 0; a < ntotal; a++) {
+    n[a][0]=h_hist_n(a*3+0); n[a][1]=h_hist_n(a*3+1); n[a][2]=h_hist_n(a*3+2);
+    fs[a][0]=h_hist_fs(a*3+0); fs[a][1]=h_hist_fs(a*3+1); fs[a][2]=h_hist_fs(a*3+2);
+    touch[a]=h_hist_touch(a); fn1[a]=h_hist_fn1(a); fs1[a]=h_hist_fs1(a);
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
 {
-  // Watershed path (not functional / never hit by the GLOBAL test cases): defer to the exact CPU
-  // compute, which has the watershed force loop. watershed_flag is set in PairLSDEM::setup().
-  if (watershed_flag != 0) {
+  // K2 v1 handles the SMALL fix (fix rigid/small/ls/dem) + GLOBAL storage only, no watershed.
+  // Defer to the exact CPU compute (host) in every other case: watershed, a LARGE fix
+  // (fix rigid/ls/dem) present, the small fix absent, or DISTRIBUTED storage (num_global_grids==0).
+  // The large-body get_ls_value + DISTRIBUTED + watershed paths are future milestones; without
+  // this guard K2 would read unallocated upload Views (e.g. the sphere-plate cases use the large
+  // fix) and segfault. watershed_flag is set in PairLSDEM::setup().
+  const bool device_ok = (watershed_flag == 0) && fix_rigid_small && !fix_rigid &&
+                         (fix_rigid_small->get_num_global_grids() > 0);
+  if (!device_ok) {
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
@@ -443,70 +773,87 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   if (eflag || vflag) ev_setup(eflag, vflag);
   else evflag = vflag_fdotr = 0;
 
+  // M4b v1: device VIRIAL is not yet ported. K2 computes forces/torques on device; the
+  // per-contact virial (ev_tally_xyz, pair_ls_dem.cpp:889) is deferred, so pressure/stress
+  // under /kk is not valid this milestone (the force/trajectory gate is unaffected). TODO M5+.
+
   const int ntotal = atom->nlocal + atom->nghost;
   const int nlocal = atom->nlocal;
   const double maxcutsq = maxcut * maxcut;            // cf. pair_ls_dem.cpp:231
 
-  // K1 reads x on device; the host process_contact force pass reads everything on host.
-  atomKK->sync(execution_space, X_MASK);
-  atomKK->sync(Host, datamask_read);
+  // K1 + K2 read these atom fields on device; K2 atomic-adds f/torque on device.
+  atomKK->sync(execution_space, datamask_read);
 
-  // rebuild branch (host), gated exactly like pair_ls_dem.cpp:253-263
+  // rebuild branch (host): cache binfo + rep-segment CSR, gated on neighbour rebuild
+  // (pair_ls_dem.cpp:253-263). build_rep_segments is position-independent; cache_body_info
+  // reads host mask/molecule -- both valid after the device sync (DualView keeps host live).
   if (neighbor->lastcall != binfo_lastbuild || (int) binfo.size() < ntotal) {
     cache_body_info(ntotal);                          // pair_ls_dem.cpp:96
     binfo_lastbuild = neighbor->lastcall;
   }
   if (neighbor->lastcall != segs_lastbuild || (int) rep_segs.size() < ntotal) {
     build_rep_segments();                             // pair_ls_dem.cpp:141 (host neigh-list walk)
-    upload_segments_to_device();                      // flatten + deep_copy
+    upload_segments_to_device();                      // flatten the rep CSR + deep_copy
     segs_lastbuild = neighbor->lastcall;
   }
 
-  // K1: device rep-indexed winner reduction (one contact per rep node, replaces
-  // pair_ls_dem.cpp:278-298). One thread per atom; non-reps emit i==-1.
-  contacts.clear();
-  if (nseg > 0) {
-    PairLSDEMK1<DeviceType> f;
-    f.x = atomKK->k_x.view<DeviceType>();
-    f.d_atom_seg_offset = d_atom_seg_offset;  f.d_cand_offset = d_cand_offset;  f.d_cand = d_cand;
-    f.d_ci = d_contacts_i;    f.d_cj = d_contacts_j;            f.d_ccalc = d_contacts_calc;
-    f.nlocal = nlocal;        f.maxcutsq = maxcutsq;
-
-    Kokkos::parallel_for("PairLSDEM::K1",
-        Kokkos::RangePolicy<DeviceType>(0, ntotal), f);
-    Kokkos::fence();
-
-    Kokkos::deep_copy(h_contacts_i, d_contacts_i);
-    Kokkos::deep_copy(h_contacts_j, d_contacts_j);
-    Kokkos::deep_copy(h_contacts_calc, d_contacts_calc);
-
-    // collect one contact per rep, in rep-atom order (deterministic; == CPU rep order)
-    contacts.reserve(nseg);
-    for (int r = 0; r < ntotal; r++)
-      if (h_contacts_i(r) >= 0)
-        contacts.push_back({h_contacts_i(r), h_contacts_j(r), h_contacts_calc(r)});
-  }
-
-  // M4a(2): one-shot device upload of the read-only LS data (grids/bodies/coeffs)
-  // + a deep-copy-back self-check. K2 (M4b) consumes these on device; for now the
-  // force pass still runs on host, so this block is behaviour-neutral (verify.sh
-  // stays bitwise). binfo was filled by cache_body_info in the rebuild branch above.
-  if (!uploads_done && fix_rigid_small) {
+  // device uploads: grids+coeffs ONCE (constant for the run); bodyLS/atom2body/binfo EVERY
+  // step -- bodyLS is forward-comm'd each step and atom2body/binfo change on exchange, so the
+  // per-step re-upload fixes the M4a stale-after-exchange gap now that K2 reads them on device.
+  if (!constants_uploaded && fix_rigid_small) {
     upload_coeffs_to_device();
     upload_grids_to_device();
-    upload_bodies_to_device();
-    selfcheck_uploads();
-    uploads_done = true;
+    constants_uploaded = true;
+  }
+  if (fix_rigid_small) upload_bodies_to_device();
+  if (!selfcheck_done && fix_rigid_small) { selfcheck_uploads(); selfcheck_done = true; }
+
+  if (nseg > 0) {
+    // K1: device rep-indexed winner reduction (one contact per rep; replaces :278-298)
+    PairLSDEMK1<DeviceType> f1;
+    f1.x = atomKK->k_x.view<DeviceType>();
+    f1.d_atom_seg_offset = d_atom_seg_offset; f1.d_cand_offset = d_cand_offset; f1.d_cand = d_cand;
+    f1.d_ci = d_contacts_i; f1.d_cj = d_contacts_j; f1.d_ccalc = d_contacts_calc;
+    f1.nlocal = nlocal; f1.maxcutsq = maxcutsq;
+    Kokkos::parallel_for("PairLSDEM::K1", Kokkos::RangePolicy<DeviceType>(0, ntotal), f1);
+    Kokkos::fence();
+
+    // shear-history host -> device (bridge)
+    sync_history_to_device();
+
+    // K2: device contact-force kernel (replaces the M3 device->host copy + host force pass)
+    PairLSDEMK2<DeviceType> f2;
+    f2.x = atomKK->k_x.view<DeviceType>();
+    f2.v = atomKK->k_v.view<DeviceType>();
+    f2.xcom = atomKK->k_xcom.view<DeviceType>();
+    f2.omega = atomKK->k_omega.view<DeviceType>();
+    f2.quat = atomKK->k_quat.view<DeviceType>();
+    f2.f = atomKK->k_f.view<DeviceType>();
+    f2.torque = atomKK->k_torque.view<DeviceType>();
+    f2.type = atomKK->k_type.view<DeviceType>();
+    f2.d_ci = d_contacts_i; f2.d_cj = d_contacts_j; f2.d_ccalc = d_contacts_calc;
+    f2.d_grid_values = d_grid_values; f2.d_grid_min = d_grid_min;
+    f2.d_grid_offset = d_grid_offset; f2.d_grid_size = d_grid_size;
+    f2.d_body_grid_index = d_body_grid_index;
+    f2.d_body_grid_scale = d_body_grid_scale; f2.d_body_grid_stride = d_body_grid_stride;
+    f2.d_atom2body = d_atom2body; f2.d_binfo_bID = d_binfo_bID;
+    f2.d_binfo_bidx = d_binfo_bidx; f2.d_binfo_area = d_binfo_area;
+    f2.d_kn=d_kn; f2.d_kt=d_kt; f2.d_mu=d_mu; f2.d_knp=d_knp;
+    f2.d_etan=d_etan; f2.d_etat=d_etat; f2.d_etan1=d_etan1; f2.d_decayn1=d_decayn1;
+    f2.d_etat1=d_etat1; f2.d_decayt1=d_decayt1; f2.coeff_stride=coeff_stride;
+    f2.d_hist_n=d_hist_n; f2.d_hist_fs=d_hist_fs; f2.d_hist_touch=d_hist_touch;
+    f2.d_hist_fn1=d_hist_fn1; f2.d_hist_fs1=d_hist_fs1;
+    f2.nlocal=nlocal; f2.dim=domain->dimension; f2.dt=update->dt;
+    f2.xprd=domain->xprd; f2.yprd=domain->yprd; f2.zprd=domain->zprd;
+    f2.px=domain->xperiodic; f2.py=domain->yperiodic; f2.pz=domain->zperiodic;
+    Kokkos::parallel_for("PairLSDEM::K2", Kokkos::RangePolicy<DeviceType>(0, ntotal), f2);
+    Kokkos::fence();
+
+    // shear-history device -> host (bridge); no reverse_comm (owner-authoritative writes)
+    sync_history_from_device();
   }
 
-  // force pass (host, unchanged from pair_ls_dem.cpp:432-433)
-  double xl0[3] = {0.0, 0.0, 0.0};
-  for (Contact &ct : contacts)
-    process_contact(ct.i, ct.j, ct.calc, -1, xl0);
-
-  if (vflag_fdotr) virial_fdotr_compute();            // pair_ls_dem.cpp:436
-
-  atomKK->modified(Host, datamask_modify);            // force/torque written on host
+  atomKK->modified(execution_space, F_MASK | TORQUE_MASK);   // K2 wrote f/torque on device
 }
 
 /* ---------------------------------------------------------------------- */
