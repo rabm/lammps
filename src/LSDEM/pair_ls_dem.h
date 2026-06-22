@@ -49,6 +49,7 @@ class PairLSDEM : public Pair {
 
   double maxcut;
   int cutoff_auto;   // 1 if "pair_style ls/dem auto": cutoff estimated from node spacing
+  double auto_cut_factor;   // "auto" node-spacing multiplier (optional 2nd arg; default LS_DEM_AUTO_CUT_FACTOR)
 
  protected:
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;

@@ -182,6 +182,56 @@ void FixRigidSmallLSDEM::init()
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
+  // --- auto-size the communication (ghost) cutoff for body-owner lookups ---
+  // A grain's surface nodes find the atom that OWNS their body through the ghost
+  // map (reset_atom2body_ghost -> atom->map(bodytag)). A contact-partner ghost
+  // node can sit up to the pair (search) cutoff outside a subdomain boundary, and
+  // that body's owning atom up to the grain extent further out -- BOTH must lie
+  // inside the ghost (communication) shell or the pair aborts with "cannot find
+  // atom that owns body". This reach is governed by the COMM cutoff, NOT the pair
+  // cutoff, so reducing the pair cutoff for performance must not shrink it. Size
+  // it here from the grain geometry (mirroring pair's "auto" node-spacing cutoff)
+  // so the two are decoupled; the user may still override via comm_modify cutoff.
+  // Needs the molecule templates (create_atoms ... mol); skipped otherwise.
+  {
+    double grain_extent = 0.0;
+    for (int im = 0; im < atom->nmolecule; im++) {
+      Molecule *onemol = atom->molecules[im];
+      if (!onemol->lsdemflag) continue;
+      int nn = onemol->natoms;
+      if (nn <= 1) continue;
+      double **mx = onemol->x;
+      // centroid, then 2 x max(node-centroid): an O(n) upper bound on the
+      // node-to-owner reach (the owner is one of the body's own surface nodes).
+      double cx = 0.0, cy = 0.0, cz = 0.0;
+      for (int a = 0; a < nn; a++) { cx += mx[a][0]; cy += mx[a][1]; cz += mx[a][2]; }
+      cx /= nn; cy /= nn; cz /= nn;
+      double rmax2 = 0.0;
+      for (int a = 0; a < nn; a++) {
+        double dx = mx[a][0] - cx, dy = mx[a][1] - cy, dz = mx[a][2] - cz;
+        double r2 = dx*dx + dy*dy + dz*dz;
+        if (r2 > rmax2) rmax2 = r2;
+      }
+      grain_extent = MAX(grain_extent, 2.0 * sqrt(rmax2));
+    }
+    if (grain_extent > 0.0) {
+      double need = maxcut + grain_extent;
+      if (comm->cutghostuser == 0.0) {
+        comm->cutghostuser = need;
+        if (comm->me == 0)
+          utils::logmesg(lmp, "fix {}: auto communication cutoff = {:.4g} "
+                         "(grain extent {:.4g} + pair cutoff {:.4g}); "
+                         "override with comm_modify cutoff\n",
+                         style, need, grain_extent, maxcut);
+      } else if (comm->cutghostuser < need && comm->me == 0) {
+        error->warning(FLERR, "fix {}: comm_modify cutoff {:.4g} is below the LS-DEM "
+                       "body-owner reach {:.4g} (grain extent {:.4g} + pair cutoff {:.4g}); "
+                       "a 'cannot find atom that owns body' error means it must be raised",
+                       style, comm->cutghostuser, need, grain_extent, maxcut);
+      }
+    }
+  }
+
   if (ls_read_flag) return;
   // set in setup_pre_neighbor()
 
