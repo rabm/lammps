@@ -261,12 +261,7 @@ void FixRigidLSDEM::init()
   grow_arrays(atom->nmax);
 
   int nlocal = atom->nlocal;
-  std::vector <std::set <int>> node_bins;
-  std::vector <std::set <int>> node_buffer_bins;
   if (storage_flag == WATERSHED) {
-    // calculate size
-    node_bins.resize(nlocal);
-    node_buffer_bins.resize(nlocal);
     comm_border = 1;
   } else {
     comm_border = 0;
@@ -302,36 +297,34 @@ void FixRigidLSDEM::init()
   // Calculate node type            //
   // ------------------------------ //
 
+
+  std::vector <std::set <int>> node_bins;
+  std::vector <std::set <int>> node_buffer_bins;
   int *global_node_bins = nullptr;
   if (storage_flag == WATERSHED) {
-    nmax_node_type = 0;
 
+    int max_node_type = -1;
     for (ibody = 0; ibody < nbody; ibody++) {
       tagint min_id = -1;
-      tagint max_id = -1;
       tagint *tag = atom->tag;
       for (i = 0; i < nlocal; i++) {
         if (body[i] != ibody) continue;
 
         if (min_id == -1 || tag[i] < min_id)
           min_id = tag[i];
-
-        if (max_id == -1 || tag[i] > max_id)
-          max_id = tag[i];
       }
-
-      MPI_Allreduce(MPI_IN_PLACE, &min_id, 1, MPI_INT, MPI_MIN, world);
-      MPI_Allreduce(MPI_IN_PLACE, &max_id, 1, MPI_INT, MPI_MAX, world);
-
-      nmax_node_type = MAX(nmax_node_type, max_id - min_id + 1);
 
       for (i = 0; i < nlocal; i++) {
         if (body[i] != ibody) continue;
         node_type[i] = tag[i] - min_id;
+        max_node_type = MAX(max_node_type, node_type[i]);
       }
     }
 
-    memory->create(global_node_bins, nmax_node_type, "rigid/ls/dem:global_node_bins");
+    MPI_Allreduce(&max_node_type, &max_node_type, 1, MPI_INT, MPI_MAX, world);
+
+    node_bins.resize(max_node_type + 1);
+    node_buffer_bins.resize(max_node_type + 1);
   }
 
   // ------------------------------ //
@@ -346,6 +339,7 @@ void FixRigidLSDEM::init()
 
   double dx[3];
   int error_code, error_code_global, index_global;
+  int nmax_bins_all = -1;
   for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
@@ -359,17 +353,19 @@ void FixRigidLSDEM::init()
 
     // Start handling memory of LS grid
 
+    if (global_flag) {
+      // Check if this file used by a body with global memory
+      index_global = -1;
+      for (const auto& jbody : pair.second) {
+        if (grid_style[jbody] == GLOBAL) {
+          index_global = grid_index[jbody];
+          break;
+        }
+      }
+    }
+
     if (storage_flag == ARRAY) {
       if (global_flag) {
-        // Check if this file used by a body with global memory
-        index_global = -1;
-        for (const auto& jbody : pair.second) {
-          if (grid_style[jbody] == GLOBAL) {
-            index_global = grid_index[jbody];
-            break;
-          }
-        }
-
         if (index_global != -1)
           for (int n = 0; n < ntotal_global[index_global]; n++)
             // Unscaled values stored globally to avoid duplicating memory
@@ -407,12 +403,31 @@ void FixRigidLSDEM::init()
 
       // First, accumulate list of all bins in the grain
 
-      for (i = 0; i < nmax_node_type; i++) global_node_bins[i] = -1;
+      // calculate the # bins & nodes in this gridfile
+      int nbin, nx, ny, nz;
+      int nnt = -1;
+      for (i = 0; i < nlocal; i++) {
+        ibody = body[i];
+        if (pair.second.find(ibody) == pair.second.end())
+          continue;
 
-      int mybin, nx, ny, nz, ix[3];
-      int nmax_node_current = -1;
+        nx = grid_size[ibody][0];
+        ny = grid_size[ibody][1];
+        nz = grid_size[ibody][2];
+        nbin = nx * ny * nz;
+
+        nnt = MAX(nnt, node_type[i]);
+      }
+      nnt += 1; // zero indexed
+
+      if (nbin > nmax_bins_all) {
+        nmax_bins_all = nbin;
+        memory->grow(global_node_bins, nmax_bins_all, "rigid/ls/dem:global_node_bins");
+      }
+
+      // Next find the bins which contain nodes
+      int mybin, ix[3];
       double x_local[3], quat_conj[4];
-
       for (i = 0; i < nlocal; i++) {
         ibody = body[i];
         if (pair.second.find(ibody) == pair.second.end())
@@ -435,36 +450,32 @@ void FixRigidLSDEM::init()
         mybin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
 
         global_node_bins[node_type[i]] = mybin;
-        nmax_node_current = MAX(nmax_node_current, node_type[i]);
       }
-      nmax_node_current += 1;
-      MPI_Allreduce(global_node_bins, global_node_bins, nmax_node_type, MPI_INT, MPI_MAX, world);
-      MPI_Allreduce(&nmax_node_current, &nmax_node_current, 1, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(global_node_bins, global_node_bins, nbin, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation
-
-      int j, ns, nbin, newbin, current_walker;
+      int j, ns, newbin, current_walker;
       int ntotal = nlocal + atom->nghost;
-      tagint *tag = atom->tag;
-      std::vector <tagint> bin_owners(nmax_node_current);
+      std::vector <int> bin_owners(nbin);
       std::vector <std::pair <int, int>> walkers;
       std::vector <std::pair <int, int>> next_walkers;
 
-      nbin = nx * ny * nz;
+      for (auto& s : node_bins) s.clear();
+      for (auto& s : node_buffer_bins) s.clear();
 
       walkers.clear();
       next_walkers.clear();
-      for (i = 0; i < nmax_node_current; i++)
+      for (i = 0; i < nbin; i++)
         bin_owners[i] = -1;
 
-      for (i = 0; i < nmax_node_current; i++) {
+      for (i = 0; i < nnt; i++) {
         mybin = global_node_bins[i];
 
-        printf("i = %d mybin = %d / %d\n", i, mybin, nmax_node_current);
+        // Skip if not a bin which contains a node
+        if (mybin < 0) continue;
 
         bin_owners[mybin] = i;
-        if (i < nlocal)
-          node_bins[i].insert(mybin);
+        node_bins[i].insert(mybin);
         walkers.emplace_back(std::make_pair(i, mybin));
       }
 
@@ -497,7 +508,6 @@ void FixRigidLSDEM::init()
           }
         }
 
-
         // add ownership from all of these walkers
         //   break ties depending on which atom owns fewer bins
         for (auto walker : walkers) {
@@ -507,14 +517,14 @@ void FixRigidLSDEM::init()
           if (bin_owners[mybin] == -1) {
             bin_owners[mybin] = i;
              if (i < nlocal)
-              node_bins[i].insert(mybin);
+              node_bins[node_type[i]].insert(mybin);
           } else {
             j = bin_owners[mybin];
-            if (node_bins[i].size() < node_bins[j].size()) {
+            if (node_bins[node_type[i]].size() < node_bins[node_type[j]].size()) {
               bin_owners[mybin] = i;
               if (i < nlocal)
-                node_bins[i].insert(mybin);
-              node_bins[j].erase(mybin);
+                node_bins[node_type[i]].insert(mybin);
+              node_bins[node_type[j]].erase(mybin);
             }
           }
         }
@@ -525,7 +535,7 @@ void FixRigidLSDEM::init()
       }
 
       // Create buffer
-      for (i = 0; i < nmax_node_current; i++) {
+      for (i = 0; i < nnt; i++) {
         for (const auto& mybin : node_bins[i]) {
           for (int a = 0; a < dimension; a++) {
             if (a == 0) ns = 1;
@@ -533,15 +543,19 @@ void FixRigidLSDEM::init()
             else ns = nx * ny;
             for (int sign = -1; sign <= 1; sign += 2) {
               newbin = mybin + sign * ns;
-              if (bin_owners[newbin] == -1 || tag[bin_owners[newbin]] != tag[i])
+              if (bin_owners[newbin] == -1 || bin_owners[newbin] != i)
                 node_buffer_bins[i].insert(newbin);
             }
           }
         }
       }
 
+      // Size storage for the # of node types in this type of grain
+      global_ws_tables[index_global].resize(nnt);
+      global_ws_buffers[index_global].resize(nnt);
+
       if (global_flag) {
-        for (i = 0; i < nmax_node_current; i++) {
+        for (i = 0; i < nnt; i++) {
           for (auto bin : node_bins[i])
             global_ws_tables[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
           for (auto bin : node_buffer_bins[i])
@@ -562,19 +576,17 @@ void FixRigidLSDEM::init()
     }
   }
 
-  if (storage_flag == WATERSHED) {
+  if (storage_flag == WATERSHED && distributed_flag) {
     memory->destroy(global_node_bins);
 
-    // todo: size everything
     int max_nbins = -1;
-    for (i = 0; i < atom->nlocal; i++)
+    for (i = 0; i < nlocal; i++)
       max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
 
     int max_nbins_global;
     MPI_Allreduce(&max_nbins, &max_nbins_global, 1, MPI_INT, MPI_MAX, world);
 
-    if (distributed_flag)
-      comm_forward += 2 + 2 * max_nbins_global; // +2 for # of owned/buffer bins
+    comm_forward += 2 + 2 * max_nbins_global; // +2 for # of owned/buffer bins
   }
 
   memory->destroy(temp_grid_values);
@@ -1381,10 +1393,18 @@ int FixRigidLSDEM::get_bin(int i, int j, double *x_local)
 
 int FixRigidLSDEM::check_watershed_bin(int mybin, int j)
 {
-  if (dist_ws_tables[j].find(mybin) != dist_ws_tables[j].end())
-    return 1;
-  else
-    return 0;
+
+  int jbody = body[j];
+  if (grid_style[jbody] == DISTRIBUTED ) {
+    if (dist_ws_tables[j].find(mybin) != dist_ws_tables[j].end())
+      return 1;
+  } else {
+    int gj = grid_index[jbody];
+    int ntj = node_type[j];
+    if (global_ws_tables[gj][ntj].find(mybin) != global_ws_tables[gj][ntj].end())
+      return 1;
+  }
+  return 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1402,8 +1422,18 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int mybin, double *no
   ix[2] = int(x_local[2]);
 
   int dim = domain->dimension;
-  std::unordered_map<int, double> *mytable = &dist_ws_tables[j];
-  std::unordered_map<int, double> *mybuffer = &dist_ws_buffers[j];
+  std::unordered_map<int, double> *mytable;
+  std::unordered_map<int, double> *mybuffer;
+
+  if (grid_style[jbody] == DISTRIBUTED) {
+    mytable = &dist_ws_tables[j];
+    mybuffer = &dist_ws_buffers[j];
+  } else {
+    int gj = grid_index[jbody];
+    int ntj = node_type[j];
+    mytable = &global_ws_tables[gj][ntj];
+    mybuffer = &global_ws_buffers[gj][ntj];
+  }
 
   double dist = interpolate_LS_watershed(dim, mybin, mytable, mybuffer, ngrid, x_local, ix, normal, grid_stride[jbody]);
 

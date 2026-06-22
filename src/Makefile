@@ -275,28 +275,28 @@ lmpinstalledpkgs.h: $(SRC) $(INC)
 
 gitversion:
 	@echo 'Gathering git version information'
-	@echo '#ifndef LMP_GIT_VERSION_H' >  ${TMPNAME}.lmpgitversion
-	@echo '#define LMP_GIT_VERSION_H' >> ${TMPNAME}.lmpgitversion
-	@if (type git && test -e ../.git ) >> /dev/null 2>> /dev/null ; then \
-	  git='true';					\
-	  commit=$$(git rev-parse HEAD);		\
-	  branch=$$(git rev-parse --abbrev-ref HEAD);	\
-	  describe=$$(git describe --dirty=-modified);	\
-	else \
-	  git='false' ;					\
-	  commit='(unknown)' ;				\
-	  branch='(unknown)' ;				\
-	  describe='(unknown)' ;			\
-	fi ; \
-	echo "bool LAMMPS_NS::LAMMPS::has_git_info() { return $${git}; }"        >> ${TMPNAME}.lmpgitversion ; \
-	echo "const char *LAMMPS_NS::LAMMPS::git_commit() { return \"$${commit}\"; }" >> ${TMPNAME}.lmpgitversion ; \
-	echo "const char *LAMMPS_NS::LAMMPS::git_branch() { return \"$${branch}\"; }" >> ${TMPNAME}.lmpgitversion ; \
-	echo "const char *LAMMPS_NS::LAMMPS::git_descriptor() { return \"$${describe}\"; }" >> ${TMPNAME}.lmpgitversion
-	@echo '#endif' >> ${TMPNAME}.lmpgitversion
-	@if [ -f lmpgitversion.h ]; \
-          then test "`diff --brief ${TMPNAME}.lmpgitversion lmpgitversion.h`" != "" && \
-	        mv ${TMPNAME}.lmpgitversion lmpgitversion.h || rm ${TMPNAME}.lmpgitversion ; \
-        else mv ${TMPNAME}.lmpgitversion lmpgitversion.h ; fi
+	#@echo '#ifndef LMP_GIT_VERSION_H' >  ${TMPNAME}.lmpgitversion
+	#@echo '#define LMP_GIT_VERSION_H' >> ${TMPNAME}.lmpgitversion
+	#@if (type git && test -e ../.git ) >> /dev/null 2>> /dev/null ; then \
+	#  git='true';					\
+	#  commit=$$(git rev-parse HEAD);		\
+	#  branch=$$(git rev-parse --abbrev-ref HEAD);	\
+	#  describe=$$(git describe --dirty=-modified);	\
+	#else \
+	#  git='false' ;					\
+	#  commit='(unknown)' ;				\
+	#  branch='(unknown)' ;				\
+	#  describe='(unknown)' ;			\
+	#fi ; \
+	#echo "bool LAMMPS_NS::LAMMPS::has_git_info() { return $${git}; }"        >> ${TMPNAME}.lmpgitversion ; \
+	#echo "const char *LAMMPS_NS::LAMMPS::git_commit() { return \"$${commit}\"; }" >> ${TMPNAME}.lmpgitversion ; \
+	#echo "const char *LAMMPS_NS::LAMMPS::git_branch() { return \"$${branch}\"; }" >> ${TMPNAME}.lmpgitversion ; \
+	#echo "const char *LAMMPS_NS::LAMMPS::git_descriptor() { return \"$${describe}\"; }" >> ${TMPNAME}.lmpgitversion
+	#@echo '#endif' >> ${TMPNAME}.lmpgitversion
+	#@if [ -f lmpgitversion.h ]; \
+    #      then test "`diff --brief ${TMPNAME}.lmpgitversion lmpgitversion.h`" != "" && \
+	#        mv ${TMPNAME}.lmpgitversion lmpgitversion.h || rm ${TMPNAME}.lmpgitversion ; \
+    #    else mv ${TMPNAME}.lmpgitversion lmpgitversion.h ; fi
 
 # Build LAMMPS in one of 2 modes
 # static = static compile in Obj_machine (default)
@@ -310,8 +310,8 @@ gitversion:
 	@if [ ! -d $(objdir) ]; then mkdir $(objdir); fi
 	@echo 'Gathering installed package information (may take a little while)'
 	@$(SHELL) Make.sh style
-	@$(SHELL) Make.sh packages
-	@$(MAKE) $(MFLAGS) lmpinstalledpkgs.h gitversion
+	# @$(SHELL) Make.sh packages
+	# @$(MAKE) $(MFLAGS) lmpinstalledpkgs.h gitversion
 	@echo 'Compiling LAMMPS for machine $@'
 	@if [ -f MAKE/MACHINES/Makefile.$@ ]; \
 	  then cp MAKE/MACHINES/Makefile.$@ $(objdir)/Makefile; fi

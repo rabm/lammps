@@ -89,7 +89,6 @@ class FixRigidLSDEM : public FixRigid {
   std::vector<std::unordered_map<int, double>> dist_ws_tables;
   std::vector<std::unordered_map<int, double>> dist_ws_buffers;
   int *node_type;
-  int nmax_node_type;
 
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, double*, std::string);
