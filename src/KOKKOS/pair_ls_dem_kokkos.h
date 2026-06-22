@@ -46,18 +46,23 @@ class PairLSDEMKokkos : public PairLSDEM {
   void init_style() override;
 
  protected:
-  // M3 Kernel 1 (device winner-reduction). At neighbour rebuild the host rep_segs CSR is
-  // flattened + uploaded here; the per-step reduction runs on device and emits one contact
-  // per segment (seg-indexed, i==-1 = no contact), which the host collects in segment order
-  // (== the CPU emit order, so the result stays bitwise). The force pass stays on host (M4).
+  // Kernel 1 (device winner-reduction). At neighbour rebuild the host rep_segs CSR is
+  // flattened + uploaded here as a 3-level CSR: per-rep segment ranges
+  // (d_atom_seg_offset[ntotal+1]) -> per-segment candidate ranges (d_cand_offset) ->
+  // candidate atom indices (d_cand). K1 runs ONE THREAD PER REP NODE and emits at most
+  // ONE contact per rep (d_contacts_* indexed by rep atom, i==-1 = none) = the closest
+  // candidate across ALL of that rep's segments. This is the one-contact-per-rep guard
+  // (decision 2026-06-22): a rep touching >1 body keeps only its closest contact, so K2's
+  // per-rep history RMW hits distinct slots and needs no atomics. Identical to the old
+  // per-segment winner for single-segment reps; differs only for (rare) multi-body reps.
   void upload_segments_to_device();
 
-  Kokkos::View<int*, DeviceType> d_seg_rep, d_cand_offset, d_cand;
-  typename Kokkos::View<int*, DeviceType>::HostMirror h_seg_rep, h_cand_offset, h_cand;
-  Kokkos::View<int*, DeviceType> d_contacts_i, d_contacts_j, d_contacts_calc;
+  Kokkos::View<int*, DeviceType> d_atom_seg_offset, d_cand_offset, d_cand;
+  typename Kokkos::View<int*, DeviceType>::HostMirror h_atom_seg_offset, h_cand_offset, h_cand;
+  Kokkos::View<int*, DeviceType> d_contacts_i, d_contacts_j, d_contacts_calc;   // indexed by rep atom
   typename Kokkos::View<int*, DeviceType>::HostMirror h_contacts_i, h_contacts_j, h_contacts_calc;
 
-  int nseg = 0, seg_cap = 0, cand_cap = 0;
+  int nseg = 0, seg_cap = 0, cand_cap = 0, slot_cap = 0;
 
   // ---- M4a(2): device uploads of the read-only LS data the K2 force kernel (M4b)
   //      will consume. In M4a these are uploaded ONCE and round-trip self-checked;

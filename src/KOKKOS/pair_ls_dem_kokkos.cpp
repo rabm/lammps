@@ -41,30 +41,41 @@ struct PairLSDEMK1 {
   typedef ArrayTypes<DeviceType> AT;
 
   typename AT::t_kkfloat_1d_3_lr_randomread x;
-  Kokkos::View<int*, DeviceType> d_seg_rep, d_cand_offset, d_cand;
+  Kokkos::View<int*, DeviceType> d_atom_seg_offset, d_cand_offset, d_cand;
   Kokkos::View<int*, DeviceType> d_ci, d_cj, d_ccalc;
   int nlocal;
   double maxcutsq;
 
+  // One thread per REP NODE r (RangePolicy over all local+ghost atoms). Reduces the
+  // single closest candidate across ALL of r's segments (one segment == one partner body),
+  // i.e. the one-contact-per-rep guard: a rep node straddling >1 body keeps only its closest
+  // (~most-penetrating) contact. For a single-segment rep this is identical to the old
+  // per-segment winner; it differs only for (rare) multi-body reps. Emits seg/sweep-order
+  // first-min so the host collects contacts in rep-atom order (deterministic).
   KOKKOS_INLINE_FUNCTION
-  void operator()(const int seg) const
+  void operator()(const int r) const
   {
-    const int r = d_seg_rep(seg);
+    const int s0 = d_atom_seg_offset(r);
+    const int s1 = d_atom_seg_offset(r + 1);
+    if (s0 == s1) { d_ci(r) = -1; d_cj(r) = -1; d_ccalc(r) = 0; return; }   // r is not a rep
+
     const bool r_local = (r < nlocal);
     const double xr0 = x(r,0), xr1 = x(r,1), xr2 = x(r,2);
 
     int widx = -1;
     double minrsq = 0.0;
-    const int cs = d_cand_offset(seg);
-    const int ce = d_cand_offset(seg + 1);
-    for (int cc = cs; cc < ce; cc++) {
-      const int jc = d_cand(cc);
-      const double dx = xr0 - x(jc,0);
-      const double dy = xr1 - x(jc,1);
-      const double dz = xr2 - x(jc,2);
-      const double rsq = dx*dx + dy*dy + dz*dz;
-      if (rsq > maxcutsq) continue;
-      if (widx < 0 || rsq < minrsq) { minrsq = rsq; widx = jc; }   // first-min, sweep order
+    for (int seg = s0; seg < s1; seg++) {           // over this rep's segments (partner bodies)
+      const int cs = d_cand_offset(seg);
+      const int ce = d_cand_offset(seg + 1);
+      for (int cc = cs; cc < ce; cc++) {
+        const int jc = d_cand(cc);
+        const double dx = xr0 - x(jc,0);
+        const double dy = xr1 - x(jc,1);
+        const double dz = xr2 - x(jc,2);
+        const double rsq = dx*dx + dy*dy + dz*dz;
+        if (rsq > maxcutsq) continue;
+        if (widx < 0 || rsq < minrsq) { minrsq = rsq; widx = jc; }   // first-min, segment-then-sweep
+      }
     }
 
     // Newton-OFF emit rule, verbatim from pair_ls_dem.cpp:294-296:
@@ -74,9 +85,9 @@ struct PairLSDEMK1 {
       if (r_local)            { ei = r;    ej = widx; ecalc = 1; }
       else if (widx < nlocal) { ei = widx; ej = r;    ecalc = 0; }
     }
-    d_ci(seg) = ei;
-    d_cj(seg) = ej;
-    d_ccalc(seg) = ecalc;
+    d_ci(r) = ei;
+    d_cj(r) = ej;
+    d_ccalc(r) = ecalc;
   }
 };
 
@@ -131,38 +142,46 @@ void PairLSDEMKokkos<DeviceType>::upload_segments_to_device()
   nseg = ns;
 
   // (re)allocate device views + host mirrors when grown (margin avoids per-rebuild realloc churn).
-  // d_cand_offset needs nseg+1 entries; size the seg-length arrays to seg_cap >= nseg+1.
+  // per-segment candidate-offset CSR: needs nseg+1 entries.
   if (ns + 1 > seg_cap) {
     seg_cap = (ns + 1) + (ns + 1) / 4 + 16;
-    Kokkos::realloc(d_seg_rep, seg_cap);
     Kokkos::realloc(d_cand_offset, seg_cap);
-    Kokkos::realloc(d_contacts_i, seg_cap);
-    Kokkos::realloc(d_contacts_j, seg_cap);
-    Kokkos::realloc(d_contacts_calc, seg_cap);
-    h_seg_rep       = Kokkos::create_mirror_view(d_seg_rep);
-    h_cand_offset   = Kokkos::create_mirror_view(d_cand_offset);
-    h_contacts_i    = Kokkos::create_mirror_view(d_contacts_i);
-    h_contacts_j    = Kokkos::create_mirror_view(d_contacts_j);
-    h_contacts_calc = Kokkos::create_mirror_view(d_contacts_calc);
+    h_cand_offset = Kokkos::create_mirror_view(d_cand_offset);
   }
   if (nc > cand_cap) {
     cand_cap = nc + nc / 4 + 16;
     Kokkos::realloc(d_cand, cand_cap);
     h_cand = Kokkos::create_mirror_view(d_cand);
   }
+  // per-rep (atom-indexed) arrays: d_atom_seg_offset[ntotal+1] + one contact slot per rep atom.
+  if (ntotal + 1 > slot_cap) {
+    slot_cap = (ntotal + 1) + (ntotal + 1) / 4 + 16;
+    Kokkos::realloc(d_atom_seg_offset, slot_cap);
+    Kokkos::realloc(d_contacts_i, slot_cap);
+    Kokkos::realloc(d_contacts_j, slot_cap);
+    Kokkos::realloc(d_contacts_calc, slot_cap);
+    h_atom_seg_offset = Kokkos::create_mirror_view(d_atom_seg_offset);
+    h_contacts_i      = Kokkos::create_mirror_view(d_contacts_i);
+    h_contacts_j      = Kokkos::create_mirror_view(d_contacts_j);
+    h_contacts_calc   = Kokkos::create_mirror_view(d_contacts_calc);
+  }
 
-  // fill host mirrors in (rep, then segment) order == the CPU emit order (pair_ls_dem.cpp:278)
+  // Fill in (rep, then segment, then candidate) order == the CPU emit order
+  // (pair_ls_dem.cpp:278). Segments for rep r are contiguous, so d_atom_seg_offset is a
+  // simple prefix over reps: rep r owns segments [h_atom_seg_offset(r), h_atom_seg_offset(r+1)).
   int seg = 0, c = 0;
   h_cand_offset(0) = 0;
-  for (int r = 0; r < ntotal; r++)
+  for (int r = 0; r < ntotal; r++) {
+    h_atom_seg_offset(r) = seg;
     for (const auto &s : rep_segs[r]) {
-      h_seg_rep(seg) = r;
       for (int jc : s.cand) h_cand(c++) = jc;        // sweep order preserved (pair_ls_dem.cpp:177)
       h_cand_offset(seg + 1) = c;
       seg++;
     }
+  }
+  h_atom_seg_offset(ntotal) = seg;                   // == nseg
 
-  Kokkos::deep_copy(d_seg_rep, h_seg_rep);
+  Kokkos::deep_copy(d_atom_seg_offset, h_atom_seg_offset);
   Kokkos::deep_copy(d_cand_offset, h_cand_offset);
   Kokkos::deep_copy(d_cand, h_cand);
 }
@@ -443,28 +462,29 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     segs_lastbuild = neighbor->lastcall;
   }
 
-  // K1: device winner reduction + per-segment emit (replaces pair_ls_dem.cpp:278-298)
+  // K1: device rep-indexed winner reduction (one contact per rep node, replaces
+  // pair_ls_dem.cpp:278-298). One thread per atom; non-reps emit i==-1.
   contacts.clear();
   if (nseg > 0) {
     PairLSDEMK1<DeviceType> f;
     f.x = atomKK->k_x.view<DeviceType>();
-    f.d_seg_rep = d_seg_rep;  f.d_cand_offset = d_cand_offset;  f.d_cand = d_cand;
+    f.d_atom_seg_offset = d_atom_seg_offset;  f.d_cand_offset = d_cand_offset;  f.d_cand = d_cand;
     f.d_ci = d_contacts_i;    f.d_cj = d_contacts_j;            f.d_ccalc = d_contacts_calc;
     f.nlocal = nlocal;        f.maxcutsq = maxcutsq;
 
     Kokkos::parallel_for("PairLSDEM::K1",
-        Kokkos::RangePolicy<DeviceType>(0, nseg), f);
+        Kokkos::RangePolicy<DeviceType>(0, ntotal), f);
     Kokkos::fence();
 
     Kokkos::deep_copy(h_contacts_i, d_contacts_i);
     Kokkos::deep_copy(h_contacts_j, d_contacts_j);
     Kokkos::deep_copy(h_contacts_calc, d_contacts_calc);
 
-    // collect in segment order (== CPU emit order, pair_ls_dem.cpp:278-298) -> bitwise
+    // collect one contact per rep, in rep-atom order (deterministic; == CPU rep order)
     contacts.reserve(nseg);
-    for (int seg = 0; seg < nseg; seg++)
-      if (h_contacts_i(seg) >= 0)
-        contacts.push_back({h_contacts_i(seg), h_contacts_j(seg), h_contacts_calc(seg)});
+    for (int r = 0; r < ntotal; r++)
+      if (h_contacts_i(r) >= 0)
+        contacts.push_back({h_contacts_i(r), h_contacts_j(r), h_contacts_calc(r)});
   }
 
   // M4a(2): one-shot device upload of the read-only LS data (grids/bodies/coeffs)
