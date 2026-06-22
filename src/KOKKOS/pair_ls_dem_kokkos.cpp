@@ -382,17 +382,19 @@ PairLSDEMKokkos<DeviceType>::PairLSDEMKokkos(LAMMPS *lmp) : PairLSDEM(lmp)
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::init_style()
 {
-  PairLSDEM::init_style();
+  PairLSDEM::init_style();   // adds the REQ_GHOST (half + ghost) request; finds the rigid fixes
 
-  // M3: the per-step winner reduction runs on device (Kernel 1); the contact force pass
-  // (process_contact) still runs on host, consuming the device-built contact list. So we keep the
-  // legacy half + REQ_GHOST neighbor list PairLSDEM::init_style requested (build_rep_segments walks
-  // it on host). A device neighbor list arrives with the force kernel (M4).
-  if (lmp->kokkos->neighflag == FULL)
-    error->all(FLERR, "Cannot use a full neighbor list with pair style ls/dem/kk");
+  // No FULL-list rejection needed: our request is REQ_GHOST (half) and we never call
+  // enable_full(), so the list stays a HALF list with ghosts even when the GPU default
+  // neighflag is FULL (the global kokkos neighflag is only a per-pair hint that the neighbor
+  // system does NOT auto-apply to our request). build_rep_segments walks it on the host (the
+  // legacy firstneigh stays populated as in the M3/M4 path); the atom data goes to the device
+  // for K1/K2. => the user does NOT need `-pk kokkos neigh half` on GPU. (Do NOT force
+  // kokkos_host/device on the request -- that changes the list layout and segfaults
+  // build_rep_segments by leaving firstneigh unpopulated.)
 
   if (comm->me == 0)
-    utils::logmesg(lmp, "PairLSDEMKokkos (M3): device winner-reduction kernel + host force pass\n");
+    utils::logmesg(lmp, "PairLSDEMKokkos: device K1+K2 kernels over a host-walked half neighbour list\n");
 }
 
 /* ----------------------------------------------------------------------

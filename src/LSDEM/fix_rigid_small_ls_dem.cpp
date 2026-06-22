@@ -153,9 +153,16 @@ void FixRigidSmallLSDEM::post_constructor()
   if (index_ls_dem_touch_id == -1) {
     // Store positional information of grain on all atoms
     id_fix = utils::strdup(id + std::string("_FIX_PROP_ATOM"));
+    // When the atom style is the Kokkos variant (ls/dem/kk), the per-atom history arrays are
+    // AtomKokkos DualViews, so this internal fix MUST be property/atom/kk to stay DualView-
+    // consistent (a plain property/atom reallocs that memory -> "realloc(): invalid pointer"
+    // abort). Pick the right variant from the atom style itself, so the user does NOT need
+    // `-sf kk` for it and `-k on` with an explicit `atom_style ls/dem/kk` never crashes.
+    const std::string as = atom->atom_style ? atom->atom_style : "";
+    const bool kk = as.size() >= 3 && as.compare(as.size() - 3, 3, "/kk") == 0;
     modify->add_fix(fmt::format(
-      "{} all property/atom d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
-       id_fix));
+      "{} all {} d2_ls_dem_n 3 d2_ls_dem_fs 3 i_ls_dem_touch_id d_ls_dem_fn1 d_ls_dem_fs1 ghost yes writedata no",
+       id_fix, kk ? "property/atom/kk" : "property/atom"));
     index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   }
 }
@@ -265,7 +272,9 @@ void FixRigidSmallLSDEM::init()
       int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
       if (ntotal > RECOMMENDED_MAX_NGRID)
         error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-      modify->add_fix(fmt::format("{} all property/atom d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, ntotal, 3));
+      const std::string as2 = atom->atom_style ? atom->atom_style : "";
+      const bool kk2 = as2.size() >= 3 && as2.compare(as2.size() - 3, 3, "/kk") == 0;   // ls/dem/kk -> /kk fix
+      modify->add_fix(fmt::format("{} all {} d2_grid_values {} d2_grid_min {} writedata no ghost yes", id_fix2, kk2 ? "property/atom/kk" : "property/atom", ntotal, 3));
 
       index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
       index_grid_min = atom->find_custom("grid_min", tmp1, tmp2);
