@@ -87,14 +87,14 @@ class PairLSDEMKokkos : public PairLSDEM {
   Kokkos::View<double*, DeviceType> d_body_grid_scale, d_body_grid_stride, d_body_quatd2g;
   typename Kokkos::View<int*, DeviceType>::HostMirror    h_body_style, h_body_grid_index;
   typename Kokkos::View<double*, DeviceType>::HostMirror h_body_grid_scale, h_body_grid_stride, h_body_quatd2g;
-  int num_bodies = 0;
+  int num_bodies = 0, body_cap = 0;
 
   // per-atom (local+ghost): atom2body + cached body info (binfo)
   Kokkos::View<int*, DeviceType>    d_atom2body, d_binfo_bID, d_binfo_bidx, d_binfo_grp, d_binfo_off;
   Kokkos::View<double*, DeviceType> d_binfo_vol, d_binfo_area;
   typename Kokkos::View<int*, DeviceType>::HostMirror    h_atom2body, h_binfo_bID, h_binfo_bidx, h_binfo_grp, h_binfo_off;
   typename Kokkos::View<double*, DeviceType>::HostMirror h_binfo_vol, h_binfo_area;
-  int num_atoms_uploaded = 0;
+  int num_atoms_uploaded = 0, peratom_cap = 0;
 
   // per-type coeff tables, flattened row-major over [itype][jtype], stride (ntypes+1)
   Kokkos::View<double*, DeviceType> d_kn, d_kt, d_mu, d_knp, d_etan, d_etat,

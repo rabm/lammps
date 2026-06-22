@@ -552,15 +552,19 @@ void PairLSDEMKokkos<DeviceType>::upload_bodies_to_device()
   FixRigidSmallLSDEM::BodyLS *body = fix_rigid_small->get_bodyLS_array();
   int *a2b = fix_rigid_small->get_atom2body_array();
 
-  if (num_bodies > 0) {
-    Kokkos::realloc(d_body_style, num_bodies);       Kokkos::realloc(d_body_grid_index, num_bodies);
-    Kokkos::realloc(d_body_grid_scale, num_bodies);  Kokkos::realloc(d_body_grid_stride, num_bodies);
-    Kokkos::realloc(d_body_quatd2g, num_bodies * 4);
+  // bodyLS SoA (grid metadata: constant per body). Cap-guarded: realloc only on growth.
+  if (num_bodies > body_cap) {
+    body_cap = num_bodies + num_bodies / 4 + 16;
+    Kokkos::realloc(d_body_style, body_cap);       Kokkos::realloc(d_body_grid_index, body_cap);
+    Kokkos::realloc(d_body_grid_scale, body_cap);  Kokkos::realloc(d_body_grid_stride, body_cap);
+    Kokkos::realloc(d_body_quatd2g, body_cap * 4);
     h_body_style       = Kokkos::create_mirror_view(d_body_style);
     h_body_grid_index  = Kokkos::create_mirror_view(d_body_grid_index);
     h_body_grid_scale  = Kokkos::create_mirror_view(d_body_grid_scale);
     h_body_grid_stride = Kokkos::create_mirror_view(d_body_grid_stride);
     h_body_quatd2g     = Kokkos::create_mirror_view(d_body_quatd2g);
+  }
+  if (num_bodies > 0) {
     for (int b = 0; b < num_bodies; b++) {
       h_body_style(b)       = body[b].style;
       h_body_grid_index(b)  = body[b].grid_index;
@@ -575,16 +579,19 @@ void PairLSDEMKokkos<DeviceType>::upload_bodies_to_device()
     Kokkos::deep_copy(d_body_quatd2g, h_body_quatd2g);
   }
 
-  // per-atom atom2body + cached binfo (filled by cache_body_info earlier this compute)
+  // per-atom atom2body + cached binfo (filled by cache_body_info). Cap-guarded.
   const int na = num_atoms_uploaded;
-  Kokkos::realloc(d_atom2body, na);
-  Kokkos::realloc(d_binfo_vol, na);  Kokkos::realloc(d_binfo_area, na);
-  Kokkos::realloc(d_binfo_bID, na);  Kokkos::realloc(d_binfo_bidx, na);
-  Kokkos::realloc(d_binfo_grp, na);  Kokkos::realloc(d_binfo_off, na);
-  h_atom2body = Kokkos::create_mirror_view(d_atom2body);
-  h_binfo_vol = Kokkos::create_mirror_view(d_binfo_vol);   h_binfo_area = Kokkos::create_mirror_view(d_binfo_area);
-  h_binfo_bID = Kokkos::create_mirror_view(d_binfo_bID);   h_binfo_bidx = Kokkos::create_mirror_view(d_binfo_bidx);
-  h_binfo_grp = Kokkos::create_mirror_view(d_binfo_grp);   h_binfo_off  = Kokkos::create_mirror_view(d_binfo_off);
+  if (na > peratom_cap) {
+    peratom_cap = na + na / 4 + 16;
+    Kokkos::realloc(d_atom2body, peratom_cap);
+    Kokkos::realloc(d_binfo_vol, peratom_cap);  Kokkos::realloc(d_binfo_area, peratom_cap);
+    Kokkos::realloc(d_binfo_bID, peratom_cap);  Kokkos::realloc(d_binfo_bidx, peratom_cap);
+    Kokkos::realloc(d_binfo_grp, peratom_cap);  Kokkos::realloc(d_binfo_off, peratom_cap);
+    h_atom2body = Kokkos::create_mirror_view(d_atom2body);
+    h_binfo_vol = Kokkos::create_mirror_view(d_binfo_vol);   h_binfo_area = Kokkos::create_mirror_view(d_binfo_area);
+    h_binfo_bID = Kokkos::create_mirror_view(d_binfo_bID);   h_binfo_bidx = Kokkos::create_mirror_view(d_binfo_bidx);
+    h_binfo_grp = Kokkos::create_mirror_view(d_binfo_grp);   h_binfo_off  = Kokkos::create_mirror_view(d_binfo_off);
+  }
   for (int a = 0; a < na; a++) {
     h_atom2body(a) = a2b[a];
     const BodyInfo &bi = binfo[a];
@@ -791,6 +798,11 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   // reads host mask/molecule -- both valid after the device sync (DualView keeps host live).
   if (neighbor->lastcall != binfo_lastbuild || (int) binfo.size() < ntotal) {
     cache_body_info(ntotal);                          // pair_ls_dem.cpp:96
+    // body grid metadata (constant per body) + atom2body + binfo are RENEIGHBOR-CADENCE: the
+    // grid fields never change, and atom2body/binfo only change on exchange (= neighbour
+    // rebuild). Uploading them here (not every step) removes a per-step cudaMalloc/cudaFree +
+    // host->device copy storm. (M5a)
+    if (fix_rigid_small) upload_bodies_to_device();
     binfo_lastbuild = neighbor->lastcall;
   }
   if (neighbor->lastcall != segs_lastbuild || (int) rep_segs.size() < ntotal) {
@@ -799,15 +811,12 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     segs_lastbuild = neighbor->lastcall;
   }
 
-  // device uploads: grids+coeffs ONCE (constant for the run); bodyLS/atom2body/binfo EVERY
-  // step -- bodyLS is forward-comm'd each step and atom2body/binfo change on exchange, so the
-  // per-step re-upload fixes the M4a stale-after-exchange gap now that K2 reads them on device.
+  // constants: grids + coeffs uploaded ONCE for the run.
   if (!constants_uploaded && fix_rigid_small) {
     upload_coeffs_to_device();
     upload_grids_to_device();
     constants_uploaded = true;
   }
-  if (fix_rigid_small) upload_bodies_to_device();
   if (!selfcheck_done && fix_rigid_small) { selfcheck_uploads(); selfcheck_done = true; }
 
   if (nseg > 0) {
