@@ -67,12 +67,14 @@ class FixRigidSmallLSDEMKokkos : public FixRigidSmallLSDEM, public KokkosBase {
   // public alias does not help) -- so the device kernels capture View<DBody*>
   // instead. Holds only the fields the kernels read/write; copy_body_to_{device,
   // host} translate field-by-field to/from the host body[] (which keeps the rest
-  // -- natoms/ilocal/conjqm/image -- the kernels never touch). No core edit to
+  // -- natoms/conjqm/image -- the kernels never touch). No core edit to
   // FixRigidSmall.
   struct DBody {
     double mass;
     double xcm[3], xgc[3], vcm[3], fcm[3], torque[3], quat[4], inertia[3];
     double ex_space[3], ey_space[3], ez_space[3], xgc_body[3], angmom[3], omega[3];
+    int ilocal;   // owner-atom local index (for the single-rank device ft scatter;
+                  // host->device only, refreshed on the reneighbor cadence)
   };
 
   FixRigidSmallLSDEMKokkos(class LAMMPS *, int, char **);

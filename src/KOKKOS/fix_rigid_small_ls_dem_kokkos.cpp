@@ -147,6 +147,7 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::copy_body_to_device()
     const Body &s = body[i];
     DBody &d = h_body(i);
     d.mass = s.mass;
+    d.ilocal = s.ilocal;   // owner-atom local index (single-rank ft scatter)
     for (int k = 0; k < 3; k++) {
       d.xcm[k]=s.xcm[k]; d.xgc[k]=s.xgc[k]; d.vcm[k]=s.vcm[k]; d.fcm[k]=s.fcm[k];
       d.torque[k]=s.torque[k]; d.inertia[k]=s.inertia[k];
@@ -800,10 +801,34 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::compute_forces_and_torques()
       Kokkos::atomic_add(&l_ft(m + 5), l_torque(i, 2));
     });
 
-  Kokkos::deep_copy(h_ft, d_ft);
+  if (comm->nprocs == 1) {
+    // SINGLE rank (single GPU): the molecule-id MPI_Allreduce is the identity, so
+    // skip the device->host deep_copy + Allreduce + host write-back + push and
+    // scatter d_ft -> d_body ENTIRELY ON THE DEVICE. d_ft is the same
+    // molecule-indexed buffer the multi-rank path consumes, so this is BITWISE
+    // identical to that path at np=1 -- it just stays on the device, removing the
+    // per-step host round-trips that were the main remaining "Other"/Modify cost.
+    // Reads the owner-atom molecule via DBody::ilocal (refreshed at the reneighbor
+    // cadence) + the device molecule field; writes ONLY fcm/torque (leaving the
+    // device-integrated xcm/vcm/quat intact, like push_body_forces_to_device).
+    auto l_body = d_body;
+    const int nlb = nlocal_bodyLS;
+    Kokkos::parallel_for("lsdem/kk scatter ft->body (single rank)",
+      Kokkos::RangePolicy<DeviceType>(0, nlb),
+      KOKKOS_LAMBDA(const int ibody) {
+        DBody &b = l_body(ibody);
+        const int m = 6 * (int) l_molecule(b.ilocal);
+        b.fcm[0] = l_ft(m + 0); b.fcm[1] = l_ft(m + 1); b.fcm[2] = l_ft(m + 2);
+        b.torque[0] = l_ft(m + 3); b.torque[1] = l_ft(m + 4); b.torque[2] = l_ft(m + 5);
+      });
+    return;
+  }
 
-  // host-staged molecule-id Allreduce: a body's total reaches its owner even
-  // when its contact nodes are on a different rank than the owner.
+  // MULTI rank (multi-GPU / MPI): a body's contact nodes can live on a DIFFERENT
+  // rank than its owner, so the per-molecule totals MUST be summed across ranks.
+  // Keep the host-staged molecule-id Allreduce path UNCHANGED so multi-GPU stays
+  // correct (this is the only branch that pays the per-step host round-trip).
+  Kokkos::deep_copy(h_ft, d_ft);
   std::vector<double> ftall(6 * nm, 0.0);
   MPI_Allreduce(h_ft.data(), ftall.data(), 6 * nm, MPI_DOUBLE, MPI_SUM, world);
 
