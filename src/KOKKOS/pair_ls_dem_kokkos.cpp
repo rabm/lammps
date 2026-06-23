@@ -355,7 +355,7 @@ struct PairLSDEMK2 {
       Kokkos::atomic_add(&torque(j,1), tqj[1]);
       Kokkos::atomic_add(&torque(j,2), tqj[2]);
     }
-    // virial (:889): DEFERRED on device — handled by the host fallback on evflag steps.
+    // virial (pair_ls_dem.cpp:919): not tallied on device — virial steps host-fall-back in compute().
   }
 };
 
@@ -766,12 +766,16 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
 {
   // K2 v1 handles the SMALL fix (fix rigid/small/ls/dem) + GLOBAL storage only, no watershed.
   // Defer to the exact CPU compute (host) in every other case: watershed, a LARGE fix
-  // (fix rigid/ls/dem) present, the small fix absent, or DISTRIBUTED storage (num_global_grids==0).
+  // (fix rigid/ls/dem) present, the small fix absent, DISTRIBUTED storage, OR a MIXED
+  // global+distributed run (num_global_grids>0 AND distributed_flag==1): K2's get_ls_value is
+  // GLOBAL-only, so a distributed body in a mixed run would be mis-read through the GLOBAL grid
+  // branch -- require distributed_flag==0 (pure GLOBAL) as well.
   // The large-body get_ls_value + DISTRIBUTED + watershed paths are future milestones; without
   // this guard K2 would read unallocated upload Views (e.g. the sphere-plate cases use the large
   // fix) and segfault. watershed_flag is set in PairLSDEM::setup().
   const bool device_ok = (watershed_flag == 0) && fix_rigid_small && !fix_rigid &&
-                         (fix_rigid_small->get_num_global_grids() > 0);
+                         (fix_rigid_small->get_num_global_grids() > 0) &&
+                         (fix_rigid_small->get_distributed_flag() == 0);   // mixed-run guard: pure GLOBAL only
   if (!device_ok) {
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
@@ -782,9 +786,18 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   if (eflag || vflag) ev_setup(eflag, vflag);
   else evflag = vflag_fdotr = 0;
 
-  // M4b v1: device VIRIAL is not yet ported. K2 computes forces/torques on device; the
-  // per-contact virial (ev_tally_xyz, pair_ls_dem.cpp:889) is deferred, so pressure/stress
-  // under /kk is not valid this milestone (the force/trajectory gate is unaffected). TODO M5+.
+  // Virial/stress is NOT computed in the device K2 kernel. On a virial step, run the exact CPU
+  // PairLSDEM::compute on host-synced data so pressure/stress is CORRECT (bitwise vs CPU) instead
+  // of silently wrong. (Energy alone needs no fallback: LS-DEM has no pair PE, evdwl==0.) Virial
+  // steps are infrequent (thermo cadence) so the host hop is negligible; a full device virial
+  // (ev_tally_xyz replica, pair_ls_dem.cpp:919) is a later increment. Completes the design noted
+  // at the K2 "virial DEFERRED" comment, which was never actually wired here.
+  if (vflag) {
+    atomKK->sync(Host, datamask_read);
+    PairLSDEM::compute(eflag, vflag);
+    atomKK->modified(Host, datamask_modify);
+    return;
+  }
 
   const int ntotal = atom->nlocal + atom->nghost;
   const int nlocal = atom->nlocal;

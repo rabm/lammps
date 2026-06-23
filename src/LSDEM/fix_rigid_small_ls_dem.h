@@ -84,6 +84,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // device uploads of the level-set grid + body data (GPU port, Milestone 4a).
   inline int get_nbodyLS() { return nlocal_bodyLS + nghost_bodyLS; };
   inline int get_num_global_grids() { return num_global_grids; };
+  inline int get_distributed_flag() { return distributed_flag; };   // 1 if any body uses DISTRIBUTED storage
   inline double** get_global_grids_array() { return global_grids; };
   inline int** get_global_grids_size_array() { return global_grids_size; };
   inline double** get_global_grids_min_array() { return global_grids_min; };
