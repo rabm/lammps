@@ -374,16 +374,32 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::initial_integrate(int vflag)
 
   v_init(vflag);   // host virial setup (no atom DualView)
 
-  // host-staged body forward-comm: base INITIAL (29 doubles) THEN LSDEM
-  // INITIAL_LS quatd2g (4), exactly as FixRigidSmall + FixRigidSmallLSDEM do on
-  // the host. comm->forward_comm(Fix*) routes to the host pack (forward_comm_device
-  // unset). Then upload body[] + bodyLS.quatd2g back to the device.
-  copy_body_to_host();
-  commflag = INITIAL;       comm->forward_comm(this, 29);
-  commflag_ls = INITIAL_LS; comm->forward_comm(this, 4);
-  commflag_ls = PARENT;
-  copy_body_to_device();
-  copy_bodyLS_to_device();
+  // body forward-comm (M7.5). DEVICE instantiation: push the owned-body INITIAL
+  // fields (xcm/xgc/vcm/quat/omega/ex,ey,ez_space -- 25 doubles) to ghost bodies
+  // on the device via our pack_forward_comm_kokkos reading the resident d_body,
+  // replacing the 2b host round-trip (copy_body_to_host -> comm->forward_comm ->
+  // copy_body_to_device) that cost the "Other +5.3s".
+  //
+  // conjqm is NOT communicated (LSDEM integrates with ls_dem_richardson, never
+  // reads conjqm). quatd2g is NOT re-communicated: it is constant between
+  // reneighbors (set once in compute_grain_properties) and d_quatd2g is
+  // refreshed on the reneighbor cadence (copy_bodyLS_to_device in
+  // setup/pre_neighbor), so the host fix's per-step INITIAL_LS comm is redundant
+  // here. xgc is sent but immaterial -- set_xv_kokkos's xgc kernel recomputes it
+  // for owned+ghost from the resident xgc_body.
+  commflag = INITIAL;
+  if (execution_space == Device) {
+    forward_comm_body_device(25);
+  } else {
+    // HostKK instantiation (host-only Kokkos build / kk/host): stage d_body via
+    // the host base pack exactly as increment 2b (base INITIAL 29 + LSDEM
+    // INITIAL_LS quatd2g 4). The dispatcher routes this to the host pack anyway.
+    copy_body_to_host();
+    comm->forward_comm(this, 29);
+    commflag_ls = INITIAL_LS; comm->forward_comm(this, 4); commflag_ls = PARENT;
+    copy_body_to_device();
+    copy_bodyLS_to_device();
+  }
 
   set_xv_kokkos(1);                // positions + velocities on device
   scatter_grain_fields_kokkos();   // grain xcom/quat/omega for the pair K2
@@ -420,10 +436,18 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::final_integrate()
       LSDEMExtra::ls_dem_angmom_to_omega(b.angmom, b.ex_space, b.ey_space, b.ez_space, b.inertia, b.omega);
     });
 
-  // host-staged FINAL body forward-comm (vcm/omega/conjqm to ghosts).
-  copy_body_to_host();
-  commflag = FINAL; comm->forward_comm(this, 10);
-  copy_body_to_device();
+  // FINAL body forward-comm (M7.5): push owned-body vcm/omega to ghost bodies.
+  // DEVICE: 6 doubles via our pack_forward_comm_kokkos on d_body (no host trip;
+  // conjqm omitted -- unused by LSDEM). HostKK: host-staging as in 2b (base FINAL
+  // 10). set_xv_kokkos(0) below reads ghost vcm/omega.
+  commflag = FINAL;
+  if (execution_space == Device) {
+    forward_comm_body_device(6);
+  } else {
+    copy_body_to_host();
+    comm->forward_comm(this, 10);
+    copy_body_to_device();
+  }
 
   set_xv_kokkos(0);                // velocities only
 }
@@ -596,6 +620,130 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::scatter_grain_fields_kokkos()
 }
 
 /* ----------------------------------------------------------------------
+   force a device fix forward-comm through CommKokkos's NON-template dispatcher
+   comm->forward_comm(Fix*) (so the <LMPHostType> instantiation still links --
+   core only instantiates CommKokkos::forward_comm_device<LMPDeviceType>(Fix*)).
+   The dispatcher takes its device branch only when execution_space != Host/HostKK
+   AND the Fix forward_comm_device flag is set AND forward_fix_comm_legacy == 0;
+   that branch is the one that syncs k_sendlist to the device (k_sendlist is
+   protected, so the fix cannot sync it itself) -- without that sync the device
+   pack reads a STALE sendlist (the per-atom rigid arrays don't support device
+   exchange, so borders runs legacy/host and leaves the device sendlist behind),
+   corrupting ghost bodies. The default comm config leaves forward_fix_comm_legacy
+   = 1 (no GPU-aware MPI), so flip it (and the Fix flag) transiently; restore both
+   after so the base FULL_BODY/PREFORCE_LS host comms stay on the host. Only
+   called on the Device instantiation.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+void FixRigidSmallLSDEMKokkos<DeviceType>::forward_comm_body_device(int size)
+{
+  const bool save_legacy = commKK->forward_fix_comm_legacy;
+  forward_comm_device = 1;
+  commKK->forward_fix_comm_legacy = 0;
+  comm->forward_comm(this, size);
+  commKK->forward_fix_comm_legacy = save_legacy;
+  forward_comm_device = 0;
+}
+
+/* ----------------------------------------------------------------------
+   device forward-comm of body data (M7.5; mirrors upstream
+   FixRigidSmallKokkos). Fixed stride per atom: owner-atom slots whose body is
+   not owned here are skipped (their buffer contents are never read). Indexes
+   d_body through d_bodyown -- both device-resident, refreshed on the reneighbor
+   cadence by sync_peratom_to_device / copy_body_to_device. INITIAL packs the 25
+   DBody fields the ghost set_xv / grain scatter read (xcm/xgc/vcm/quat/omega/
+   ex,ey,ez_space; NO conjqm); FINAL packs vcm/omega (6). Reached via the
+   forward_comm_body_device dispatcher route above.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+int FixRigidSmallLSDEMKokkos<DeviceType>::pack_forward_comm_kokkos(
+    int n, DAT::tdual_int_1d k_sendlist, DAT::tdual_double_1d &k_buf,
+    int /*pbc_flag*/, int * /*pbc*/)
+{
+  auto d_sendlist = k_sendlist.view<DeviceType>();
+  auto d_buf = k_buf.view<DeviceType>();
+  auto l_body = d_body;
+  auto l_bodyown = d_bodyown;
+
+  if (commflag == INITIAL) {
+    Kokkos::parallel_for("lsdem/kk pack_forward INITIAL",
+      Kokkos::RangePolicy<DeviceType>(0, n),
+      KOKKOS_LAMBDA(const int i) {
+        const int j = d_sendlist(i);
+        if (l_bodyown(j) < 0) return;
+        const DBody &b = l_body(l_bodyown(j));
+        int m = 25*i;
+        d_buf(m++) = b.xcm[0]; d_buf(m++) = b.xcm[1]; d_buf(m++) = b.xcm[2];
+        d_buf(m++) = b.xgc[0]; d_buf(m++) = b.xgc[1]; d_buf(m++) = b.xgc[2];
+        d_buf(m++) = b.vcm[0]; d_buf(m++) = b.vcm[1]; d_buf(m++) = b.vcm[2];
+        d_buf(m++) = b.quat[0]; d_buf(m++) = b.quat[1]; d_buf(m++) = b.quat[2]; d_buf(m++) = b.quat[3];
+        d_buf(m++) = b.omega[0]; d_buf(m++) = b.omega[1]; d_buf(m++) = b.omega[2];
+        d_buf(m++) = b.ex_space[0]; d_buf(m++) = b.ex_space[1]; d_buf(m++) = b.ex_space[2];
+        d_buf(m++) = b.ey_space[0]; d_buf(m++) = b.ey_space[1]; d_buf(m++) = b.ey_space[2];
+        d_buf(m++) = b.ez_space[0]; d_buf(m++) = b.ez_space[1]; d_buf(m++) = b.ez_space[2];
+      });
+    return 25*n;
+
+  } else if (commflag == FINAL) {
+    Kokkos::parallel_for("lsdem/kk pack_forward FINAL",
+      Kokkos::RangePolicy<DeviceType>(0, n),
+      KOKKOS_LAMBDA(const int i) {
+        const int j = d_sendlist(i);
+        if (l_bodyown(j) < 0) return;
+        const DBody &b = l_body(l_bodyown(j));
+        int m = 6*i;
+        d_buf(m++) = b.vcm[0]; d_buf(m++) = b.vcm[1]; d_buf(m++) = b.vcm[2];
+        d_buf(m++) = b.omega[0]; d_buf(m++) = b.omega[1]; d_buf(m++) = b.omega[2];
+      });
+    return 6*n;
+  }
+  return 0;
+}
+
+template<class DeviceType>
+void FixRigidSmallLSDEMKokkos<DeviceType>::unpack_forward_comm_kokkos(
+    int n, int first, DAT::tdual_double_1d &k_buf)
+{
+  auto d_buf = k_buf.view<DeviceType>();
+  auto l_body = d_body;
+  auto l_bodyown = d_bodyown;
+  const int l_first = first;
+
+  if (commflag == INITIAL) {
+    Kokkos::parallel_for("lsdem/kk unpack_forward INITIAL",
+      Kokkos::RangePolicy<DeviceType>(0, n),
+      KOKKOS_LAMBDA(const int i) {
+        const int ii = l_first + i;
+        if (l_bodyown(ii) < 0) return;
+        DBody &b = l_body(l_bodyown(ii));
+        int m = 25*i;
+        b.xcm[0] = d_buf(m++); b.xcm[1] = d_buf(m++); b.xcm[2] = d_buf(m++);
+        b.xgc[0] = d_buf(m++); b.xgc[1] = d_buf(m++); b.xgc[2] = d_buf(m++);
+        b.vcm[0] = d_buf(m++); b.vcm[1] = d_buf(m++); b.vcm[2] = d_buf(m++);
+        b.quat[0] = d_buf(m++); b.quat[1] = d_buf(m++); b.quat[2] = d_buf(m++); b.quat[3] = d_buf(m++);
+        b.omega[0] = d_buf(m++); b.omega[1] = d_buf(m++); b.omega[2] = d_buf(m++);
+        b.ex_space[0] = d_buf(m++); b.ex_space[1] = d_buf(m++); b.ex_space[2] = d_buf(m++);
+        b.ey_space[0] = d_buf(m++); b.ey_space[1] = d_buf(m++); b.ey_space[2] = d_buf(m++);
+        b.ez_space[0] = d_buf(m++); b.ez_space[1] = d_buf(m++); b.ez_space[2] = d_buf(m++);
+      });
+
+  } else if (commflag == FINAL) {
+    Kokkos::parallel_for("lsdem/kk unpack_forward FINAL",
+      Kokkos::RangePolicy<DeviceType>(0, n),
+      KOKKOS_LAMBDA(const int i) {
+        const int ii = l_first + i;
+        if (l_bodyown(ii) < 0) return;
+        DBody &b = l_body(l_bodyown(ii));
+        int m = 6*i;
+        b.vcm[0] = d_buf(m++); b.vcm[1] = d_buf(m++); b.vcm[2] = d_buf(m++);
+        b.omega[0] = d_buf(m++); b.omega[1] = d_buf(m++); b.omega[2] = d_buf(m++);
+      });
+  }
+}
+
+/* ----------------------------------------------------------------------
    Per-body force/torque reduction on the device (increment 1, unchanged except
    that it now reads the DualView-backed d_atom2body refreshed by
    sync_peratom_to_device -- no standalone upload). Sums each node's f AND
@@ -610,11 +758,12 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::compute_forces_and_torques()
 {
   if (id_gravity) {
     // gravity host-fallback: the host reduction reads f/torque + type/rmass on
-    // the host, so sync them down; then push the updated body[] back to d_body
-    // (else the device integration kernel reads stale body f/torque).
+    // the host, so sync them down; it writes only body[].fcm/torque, so push just
+    // those to d_body (a full copy_body_to_device would clobber the device-
+    // integrated xcm/vcm/quat with the stale host body[] -- see the device path).
     atomKK->sync(Host, F_MASK | TORQUE_MASK | MASK_MASK | MOLECULE_MASK | TYPE_MASK | RMASS_MASK);
     FixRigidSmallLSDEM::compute_forces_and_torques();
-    copy_body_to_device();
+    push_body_forces_to_device(nlocal_body);
     return;
   }
 
@@ -665,10 +814,30 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::compute_forces_and_torques()
     double *tcm = body[ibody].torque;  tcm[0] = g[3];  tcm[1] = g[4];  tcm[2] = g[5];
   }
 
-  // push the freshly-reduced owned-body f/torque to the device for the final
-  // integration kernel. (Only owned slots are written above; ghost f/torque are
-  // never read by a device kernel -- set_xv reads ghost xcm/vcm/omega, not f.)
-  copy_body_to_device();
+  // push ONLY the freshly-reduced owned-body fcm/torque to the device for the
+  // final integration kernel. NOT copy_body_to_device(): that copies the whole
+  // (now-stale, M7.5-no-per-step-copy_body_to_host) host body[] and would clobber
+  // the device-integrated xcm/vcm/quat -> a constant spurious body velocity.
+  push_body_forces_to_device(nlocal_bodyLS);
+}
+
+/* ----------------------------------------------------------------------
+   overwrite only fcm/torque in d_body from host body[] (owned bodies), leaving
+   its device-integrated xcm/vcm/quat/omega intact. Pulls d_body into h_body
+   first so the untouched fields round-trip unchanged. Body array is tiny so the
+   two small deep_copies are negligible vs the avoided host body round-trip.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+void FixRigidSmallLSDEMKokkos<DeviceType>::push_body_forces_to_device(int nbody)
+{
+  Kokkos::deep_copy(h_body, d_body);
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    DBody &hb = h_body(ibody);
+    hb.fcm[0] = body[ibody].fcm[0];     hb.fcm[1] = body[ibody].fcm[1];     hb.fcm[2] = body[ibody].fcm[2];
+    hb.torque[0] = body[ibody].torque[0]; hb.torque[1] = body[ibody].torque[1]; hb.torque[2] = body[ibody].torque[2];
+  }
+  Kokkos::deep_copy(d_body, h_body);
 }
 
 /* ---------------------------------------------------------------------- */

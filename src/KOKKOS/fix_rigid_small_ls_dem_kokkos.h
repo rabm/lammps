@@ -94,6 +94,16 @@ class FixRigidSmallLSDEMKokkos : public FixRigidSmallLSDEM, public KokkosBase {
   void set_xv_kokkos(int);              // device set_xv / set_v (port of upstream)
   void scatter_grain_fields_kokkos();   // device grain-field scatter (LSDEM)
 
+  // device body forward-comm (M7.5): replaces the 2b host-staged
+  // copy_body_to_host -> comm->forward_comm -> copy_body_to_device round-trip
+  // with an on-device pack/unpack of the resident d_body (mirrors upstream
+  // FixRigidSmallKokkos). INITIAL packs 25 doubles (the DBody fields minus the
+  // LSDEM-unused conjqm); FINAL packs 6 (vcm/omega). Driven by the base commflag
+  // (INITIAL/FINAL). Public: each launches an extended __host__ __device__ lambda.
+  int pack_forward_comm_kokkos(int, DAT::tdual_int_1d, DAT::tdual_double_1d &,
+                               int, int *) override;
+  void unpack_forward_comm_kokkos(int, int, DAT::tdual_double_1d &) override;
+
  protected:
   class CommKokkos *commKK;
 
@@ -111,6 +121,19 @@ class FixRigidSmallLSDEMKokkos : public FixRigidSmallLSDEM, public KokkosBase {
   void copy_body_to_device();
   void copy_body_to_host();
   void copy_bodyLS_to_device();
+
+  // push ONLY fcm/torque (owned bodies, from host body[]) into the device-
+  // resident d_body, preserving its device-integrated xcm/vcm/quat. Used by
+  // compute_forces_and_torques: a full copy_body_to_device() would clobber the
+  // device state with the now-stale host body[] (M7.5 drops the per-step
+  // copy_body_to_host that 2b relied on).
+  void push_body_forces_to_device(int nbody);
+
+  // route an INITIAL/FINAL body forward-comm through the device pack
+  // (pack_forward_comm_kokkos on d_body), via CommKokkos's non-template
+  // forward_comm dispatcher so the host-type instantiation still links. Only
+  // valid on the Device instantiation (execution_space==Device).
+  void forward_comm_body_device(int size);
 
   // The five FixRigidSmall per-atom arrays, aliased as DualViews so the host
   // base writes the host side while the device reduction reads the device side.
