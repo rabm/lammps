@@ -806,6 +806,12 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     binfo_lastbuild = neighbor->lastcall;
   }
   if (neighbor->lastcall != segs_lastbuild || (int) rep_segs.size() < ntotal) {
+    // item-2c normal filter reads host x + grain COM (atom->xcom) in
+    // build_rep_segments; the DEVICE is authoritative for both (device set_xv /
+    // grain scatter), so pull them to the host first. Rebuild cadence only ->
+    // negligible. (Without the filter, build_rep_segments is position-independent
+    // and needs neither -- so the sync stays gated on normal_filter.)
+    if (normal_filter) atomKK->sync(Host, X_MASK | XCOM_MASK);
     build_rep_segments();                             // pair_ls_dem.cpp:141 (host neigh-list walk)
     upload_segments_to_device();                      // flatten the rep CSR + deep_copy
     segs_lastbuild = neighbor->lastcall;

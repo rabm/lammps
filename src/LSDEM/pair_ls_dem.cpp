@@ -62,6 +62,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   auto_cut_factor = LS_DEM_AUTO_CUT_FACTOR;
+  normal_filter = 0;
   binfo_lastbuild = -1;
   segs_lastbuild = -1;
 }
@@ -146,6 +147,12 @@ void PairLSDEM::build_rep_segments()
   const int ntotal = atom->nlocal + atom->nghost;
   double *special_lj = force->special_lj;
   tagint *tag = atom->tag;
+  // item-2c normal-aware filter inputs (only read when normal_filter is on).
+  // x and the per-node grain COM xcom are valid for own+ghost here: build runs
+  // in compute() (and the /kk rebuild branch) after the fix's pre_force has
+  // forward-communicated/synced the grain fields to the host.
+  double **x = atom->x;
+  double **xcom = atom->xcom;
 
   if ((int) rep_segs.size() < ntotal) rep_segs.resize(ntotal);
   for (int a = 0; a < ntotal; a++) rep_segs[a].clear();
@@ -171,6 +178,28 @@ void PairLSDEM::build_rep_segments()
         rep = i; pbody = bj.bID; poff = bj.off; cand = j;
       } else {
         rep = j; pbody = bi.bID; poff = bi.off; cand = i;
+      }
+      // item-2c: drop the pair if the rep node faces away from the partner grain,
+      // or the partner node faces away from the rep grain. Hemisphere test against
+      // the grain COMs (a cheap surface-normal proxy). For CONVEX grains the
+      // closest-node winner is always front-facing, so this only ever removes
+      // non-winners -> bitwise; for non-convex grains it is approximate (the
+      // chosen contact node may shift). Opt-in (default off), so all existing
+      // benchmarks are unchanged.
+      if (normal_filter) {
+        const double tx = xcom[cand][0] - xcom[rep][0];   // rep grain -> cand grain
+        const double ty = xcom[cand][1] - xcom[rep][1];
+        const double tz = xcom[cand][2] - xcom[rep][2];
+        const double rox = x[rep][0] - xcom[rep][0];      // rep node outward
+        const double roy = x[rep][1] - xcom[rep][1];
+        const double roz = x[rep][2] - xcom[rep][2];
+        if (rox*tx + roy*ty + roz*tz <= 0.0) continue;    // rep node back-facing
+        // NOTE: only the REP node is filtered. Filtering the partner (cand) node
+        // by the same hemisphere test is NOT safe -- cand is the partner node used
+        // to LOCATE the LS-lookup region (closest partner node to rep), and for a
+        // penetrating/edge contact that closest node is not guaranteed to be on
+        // the partner's COM-facing hemisphere; filtering it shifts the chosen
+        // region and changes the force even for convex grains.
       }
       std::vector<Seg> &segs = rep_segs[rep];
       bool found = false;
@@ -925,28 +954,48 @@ void PairLSDEM::allocate()
 
 void PairLSDEM::settings(int narg, char ** arg)
 {
-  if (narg < 1 || narg > 2)
+  if (narg < 1)
     error->all(FLERR, "Illegal pair_style command");
+
+  normal_filter = 0;
+  int iarg;
 
   // "auto" estimates the node-node cutoff from the grain node spacing in
   // init_style(); otherwise the cutoff is the given number.
   if (strcmp(arg[0], "auto") == 0) {
     cutoff_auto = 1;
     maxcut = -1.0;    // sentinel, resolved in init_style()
-    // optional 2nd arg = node-spacing multiplier (default LS_DEM_AUTO_CUT_FACTOR).
-    // A smaller factor tightens the auto cutoff (fewer neighbours, faster) but
-    // leaves less margin for staggered surfaces + penetration; it must stay above
-    // 1 (i.e. above the worst-case node spacing) or contacts will be missed.
-    if (narg == 2) {
-      auto_cut_factor = utils::numeric(FLERR, arg[1], false, lmp);
+    iarg = 1;
+    // optional node-spacing multiplier directly after "auto" (default
+    // LS_DEM_AUTO_CUT_FACTOR). A smaller factor tightens the auto cutoff (fewer
+    // neighbours, faster) but leaves less margin for staggered surfaces +
+    // penetration; it must stay above 1 (the worst-case node spacing) or
+    // contacts will be missed. A trailing keyword (e.g. nfilter) is NOT a factor.
+    if (iarg < narg && strcmp(arg[iarg], "nfilter") != 0) {
+      auto_cut_factor = utils::numeric(FLERR, arg[iarg], false, lmp);
       if (auto_cut_factor <= 0.0)
         error->all(FLERR, "pair ls/dem auto factor {} must be positive", auto_cut_factor);
+      iarg++;
     }
   } else {
-    if (narg != 1)
-      error->all(FLERR, "Illegal pair_style command (a numeric cutoff takes no 2nd arg)");
     cutoff_auto = 0;
     maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+    iarg = 1;
+  }
+
+  // optional trailing keywords
+  while (iarg < narg) {
+    if (strcmp(arg[iarg], "nfilter") == 0) {
+      // item-2c: enable the normal-aware candidate filter in build_rep_segments.
+      // Opt-in + shape-gated: it drops node pairs whose rep/partner node faces
+      // away from the other grain's COM. EXACT (bitwise) for convex grains -- the
+      // closest-node winner is always front-facing -- and approximate (may shift
+      // the chosen contact node) for non-convex grains. Default OFF.
+      normal_filter = 1;
+      iarg++;
+    } else {
+      error->all(FLERR, "Illegal pair_style ls/dem keyword: {}", arg[iarg]);
+    }
   }
 
   if (force->newton_pair)
