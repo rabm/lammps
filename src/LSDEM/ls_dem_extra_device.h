@@ -232,6 +232,156 @@ double interpolate_LS_array(int dimension, int mybin, double *mygrid, int *ngrid
   return dist;
 }
 
+/* ----------------------------------------------------------------------
+   Rigid-body integration math for the M7 (increment 2b) device kernels.
+   DOUBLE-precision replicas transcribed VERBATIM from math_extra.{h,cpp}
+   (NOT MathExtraKokkos, which is KK_FLOAT in single/mixed builds and would
+   both break the correctness gate and collide with the upstream file/namespace).
+   Operation order is preserved exactly (matters for the within-tol gate).
+------------------------------------------------------------------------- */
+
+// quaternion normalize (math_extra.h qnormalize)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_qnormalize(double *q)
+{
+  double norm = 1.0 / sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+  q[0] *= norm; q[1] *= norm; q[2] *= norm; q[3] *= norm;
+}
+
+// vector-quaternion multiply c = a*b, a = (0,a) (math_extra.h vecquat)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_vecquat(const double *a, const double *b, double *c)
+{
+  c[0] = -a[0]*b[1] - a[1]*b[2] - a[2]*b[3];
+  c[1] =  b[0]*a[0] + a[1]*b[3] - a[2]*b[2];
+  c[2] =  b[0]*a[1] + a[2]*b[1] - a[0]*b[3];
+  c[3] =  b[0]*a[2] + a[0]*b[2] - a[1]*b[1];
+}
+
+// quaternion-quaternion multiply c = a*b (math_extra.h quatquat)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_quatquat(const double *a, const double *b, double *c)
+{
+  c[0] = a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3];
+  c[1] = a[0]*b[1] + b[0]*a[1] + a[2]*b[3] - a[3]*b[2];
+  c[2] = a[0]*b[2] + b[0]*a[2] + a[3]*b[1] - a[1]*b[3];
+  c[3] = a[0]*b[3] + b[0]*a[3] + a[1]*b[2] - a[2]*b[1];
+}
+
+// matrix times vector (math_extra.h matvec)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_matvec(const double m[3][3], const double *v, double *ans)
+{
+  ans[0] = m[0][0]*v[0] + m[0][1]*v[1] + m[0][2]*v[2];
+  ans[1] = m[1][0]*v[0] + m[1][1]*v[1] + m[1][2]*v[2];
+  ans[2] = m[2][0]*v[0] + m[2][1]*v[1] + m[2][2]*v[2];
+}
+
+// transposed matrix times vector (math_extra.h transpose_matvec)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_transpose_matvec(const double m[3][3], const double *v, double *ans)
+{
+  ans[0] = m[0][0]*v[0] + m[1][0]*v[1] + m[2][0]*v[2];
+  ans[1] = m[0][1]*v[0] + m[1][1]*v[1] + m[2][1]*v[2];
+  ans[2] = m[0][2]*v[0] + m[1][2]*v[1] + m[2][2]*v[2];
+}
+
+// rotation matrix from quaternion (math_extra.cpp quat_to_mat)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_quat_to_mat(const double *quat, double mat[3][3])
+{
+  double w2 = quat[0]*quat[0];
+  double i2 = quat[1]*quat[1];
+  double j2 = quat[2]*quat[2];
+  double k2 = quat[3]*quat[3];
+  double twoij = 2.0*quat[1]*quat[2];
+  double twoik = 2.0*quat[1]*quat[3];
+  double twojk = 2.0*quat[2]*quat[3];
+  double twoiw = 2.0*quat[1]*quat[0];
+  double twojw = 2.0*quat[2]*quat[0];
+  double twokw = 2.0*quat[3]*quat[0];
+  mat[0][0] = w2+i2-j2-k2; mat[0][1] = twoij-twokw; mat[0][2] = twojw+twoik;
+  mat[1][0] = twoij+twokw; mat[1][1] = w2-i2+j2-k2; mat[1][2] = twojk-twoiw;
+  mat[2][0] = twoik-twojw; mat[2][1] = twojk+twoiw; mat[2][2] = w2-i2-j2+k2;
+}
+
+// omega from angular momentum, space frame, via principal axes (math_extra.cpp angmom_to_omega)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_angmom_to_omega(const double *m, const double *ex, const double *ey,
+                            const double *ez, const double *idiag, double *w)
+{
+  double wbody[3];
+  if (idiag[0] == 0.0) wbody[0] = 0.0;
+  else wbody[0] = (m[0]*ex[0] + m[1]*ex[1] + m[2]*ex[2]) / idiag[0];
+  if (idiag[1] == 0.0) wbody[1] = 0.0;
+  else wbody[1] = (m[0]*ey[0] + m[1]*ey[1] + m[2]*ey[2]) / idiag[1];
+  if (idiag[2] == 0.0) wbody[2] = 0.0;
+  else wbody[2] = (m[0]*ez[0] + m[1]*ez[1] + m[2]*ez[2]) / idiag[2];
+  w[0] = wbody[0]*ex[0] + wbody[1]*ey[0] + wbody[2]*ez[0];
+  w[1] = wbody[0]*ex[1] + wbody[1]*ey[1] + wbody[2]*ez[1];
+  w[2] = wbody[0]*ex[2] + wbody[1]*ey[2] + wbody[2]*ez[2];
+}
+
+// omega from angular momentum, via the quaternion (math_extra.cpp mq_to_omega)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_mq_to_omega(const double *m, const double *q, const double *moments, double *w)
+{
+  double wbody[3];
+  double rot[3][3];
+  ls_dem_quat_to_mat(q, rot);
+  ls_dem_transpose_matvec(rot, m, wbody);
+  if (moments[0] == 0.0) wbody[0] = 0.0; else wbody[0] /= moments[0];
+  if (moments[1] == 0.0) wbody[1] = 0.0; else wbody[1] /= moments[1];
+  if (moments[2] == 0.0) wbody[2] = 0.0; else wbody[2] /= moments[2];
+  ls_dem_matvec(rot, wbody, w);
+}
+
+// space-frame ex,ey,ez from quaternion (math_extra.cpp q_to_exyz)
+KOKKOS_INLINE_FUNCTION
+void ls_dem_q_to_exyz(const double *q, double *ex, double *ey, double *ez)
+{
+  ex[0] = q[0]*q[0] + q[1]*q[1] - q[2]*q[2] - q[3]*q[3];
+  ex[1] = 2.0 * (q[1]*q[2] + q[0]*q[3]);
+  ex[2] = 2.0 * (q[1]*q[3] - q[0]*q[2]);
+  ey[0] = 2.0 * (q[1]*q[2] - q[0]*q[3]);
+  ey[1] = q[0]*q[0] - q[1]*q[1] + q[2]*q[2] - q[3]*q[3];
+  ey[2] = 2.0 * (q[2]*q[3] + q[0]*q[1]);
+  ez[0] = 2.0 * (q[1]*q[3] + q[0]*q[2]);
+  ez[1] = 2.0 * (q[2]*q[3] - q[0]*q[1]);
+  ez[2] = q[0]*q[0] - q[1]*q[1] - q[2]*q[2] + q[3]*q[3];
+}
+
+// Richardson iteration: update quaternion q from angular velocity w + angular
+// momentum m, return omega at the 1/2 step (math_extra.cpp richardson).
+// Operation order MUST match the host for the within-tol gate.
+KOKKOS_INLINE_FUNCTION
+void ls_dem_richardson(double *q, double *m, double *w, const double *moments, double dtq)
+{
+  double wq[4];
+  ls_dem_vecquat(w, q, wq);
+
+  double qfull[4];
+  qfull[0] = q[0] + dtq*wq[0]; qfull[1] = q[1] + dtq*wq[1];
+  qfull[2] = q[2] + dtq*wq[2]; qfull[3] = q[3] + dtq*wq[3];
+  ls_dem_qnormalize(qfull);
+
+  double qhalf[4];
+  qhalf[0] = q[0] + 0.5*dtq*wq[0]; qhalf[1] = q[1] + 0.5*dtq*wq[1];
+  qhalf[2] = q[2] + 0.5*dtq*wq[2]; qhalf[3] = q[3] + 0.5*dtq*wq[3];
+  ls_dem_qnormalize(qhalf);
+
+  ls_dem_mq_to_omega(m, qhalf, moments, w);
+  ls_dem_vecquat(w, qhalf, wq);
+
+  qhalf[0] += 0.5*dtq*wq[0]; qhalf[1] += 0.5*dtq*wq[1];
+  qhalf[2] += 0.5*dtq*wq[2]; qhalf[3] += 0.5*dtq*wq[3];
+  ls_dem_qnormalize(qhalf);
+
+  q[0] = 2.0*qhalf[0] - qfull[0]; q[1] = 2.0*qhalf[1] - qfull[1];
+  q[2] = 2.0*qhalf[2] - qfull[2]; q[3] = 2.0*qhalf[3] - qfull[3];
+  ls_dem_qnormalize(q);
+}
+
 }    // namespace LSDEMExtra
 
 #ifdef LSDEM_KK_DEVICE_FALLBACK

@@ -51,7 +51,7 @@ using namespace RigidConst;
 using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
-enum {PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS};
+// commflag_ls enum {PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS} now in the header
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration

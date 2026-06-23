@@ -91,6 +91,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double get_ls_value(int, int, double*);
 
  protected:
+  // commflag_ls values for the LS-DEM body forward-comm (also used by the
+  // rigid/small/ls/dem/kk device fix, so it lives here not in the .cpp).
+  enum { PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS };
+
   int ls_read_flag, global_flag, distributed_flag;
   int read_quat;
   int commflag_ls;

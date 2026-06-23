@@ -61,24 +61,56 @@ class FixRigidSmallLSDEMKokkos : public FixRigidSmallLSDEM, public KokkosBase {
   typedef DeviceType device_type;
   typedef ArrayTypes<DeviceType> AT;
 
+  // PUBLIC device per-body POD. nvcc forbids the (protected, inherited)
+  // FixRigidSmall::Body type in a variable captured by an extended
+  // __host__ __device__ lambda (it checks the type's DEFINITION access, so a
+  // public alias does not help) -- so the device kernels capture View<DBody*>
+  // instead. Holds only the fields the kernels read/write; copy_body_to_{device,
+  // host} translate field-by-field to/from the host body[] (which keeps the rest
+  // -- natoms/ilocal/conjqm/image -- the kernels never touch). No core edit to
+  // FixRigidSmall.
+  struct DBody {
+    double mass;
+    double xcm[3], xgc[3], vcm[3], fcm[3], torque[3], quat[4], inertia[3];
+    double ex_space[3], ey_space[3], ez_space[3], xgc_body[3], angmom[3], omega[3];
+  };
+
   FixRigidSmallLSDEMKokkos(class LAMMPS *, int, char **);
   ~FixRigidSmallLSDEMKokkos() override;
 
+  int setmask() override;
   void setup(int) override;
   void setup_pre_neighbor() override;
+  void pre_exchange() override;
   void pre_neighbor() override;
   void pre_force(int) override;
   void initial_integrate(int) override;
   void final_integrate() override;
   void grow_arrays(int) override;
 
-  // public because it launches an extended __host__ __device__ lambda: nvcc
-  // forbids the enclosing function of such a lambda from being protected/private
-  // (it overrides the protected base method, which C++ permits widening).
+  // public because each launches an extended __host__ __device__ lambda: nvcc
+  // forbids the enclosing function of such a lambda from being protected/private.
   void compute_forces_and_torques() override;
+  void set_xv_kokkos(int);              // device set_xv / set_v (port of upstream)
+  void scatter_grain_fields_kokkos();   // device grain-field scatter (LSDEM)
 
  protected:
   class CommKokkos *commKK;
+
+  // Per-body device residency (2b): a PLAIN Kokkos::View<Body*> (NOT a DualView)
+  // hand-mirrored via copy_body_to_{device,host}; h_body cached to avoid a
+  // per-step create_mirror_view alloc. quatd2g lives in BodyLS (not Body) so it
+  // rides a separate device View, sized over the FULL body index range
+  // (nlocal_body+nghost_body, what atom2body indexes), refreshed each step.
+  Kokkos::View<DBody *, DeviceType> d_body;
+  typename Kokkos::View<DBody *, DeviceType>::HostMirror h_body;
+  Kokkos::View<double *[4], DeviceType> d_quatd2g;
+  typename Kokkos::View<double *[4], DeviceType>::HostMirror h_quatd2g;
+  bool body_resident_device;
+
+  void copy_body_to_device();
+  void copy_body_to_host();
+  void copy_bodyLS_to_device();
 
   // The five FixRigidSmall per-atom arrays, aliased as DualViews so the host
   // base writes the host side while the device reduction reads the device side.
