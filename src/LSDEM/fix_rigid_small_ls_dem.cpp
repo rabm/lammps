@@ -634,8 +634,13 @@ void FixRigidSmallLSDEM::process_levelsets()
 
         MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
 
-        // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
-        MathExtra::sub3(x[i], xcm_custom[ibody], dx);
+        // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically.
+        // Use the per-atom grain COM (atom->xcom), which is valid for every LOCAL atom including those
+        // whose body is owned by another rank (a boundary-straddling body -> atom2body[i] is a GHOST
+        // body index >= nlocal_body). xcm_custom is sized nlocal_body only, so indexing it by a ghost
+        // ibody read out of bounds and corrupted the heap under MPI (serial never hits it). xcom[i]
+        // equals xcm_custom[atom2body[i]] for owned bodies, so serial stays bitwise-identical.
+        MathExtra::sub3(x[i], xcom[i], dx);
         domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
         // Calculate local grid values and minima
