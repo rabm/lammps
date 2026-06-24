@@ -955,6 +955,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
     atomKK->sync(execution_space, datamask_modify);   // clear host-dirty f/torque so the framework's
+    hist_lastbuild = -1;   // (M5) the CPU fallback just updated the HOST shear history; force the next
+                           // /kk step to re-sync host->device so the device d_hist_* aren't stale
     return;                                            // modified(Device) (VerletKokkos::setup) doesn't collide (BUG-2)
   }
 
