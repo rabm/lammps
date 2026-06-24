@@ -114,6 +114,7 @@ class PairLSDEMKokkos : public PairLSDEM {
   // (calc==0) are discarded and overwritten by the fix's `ghost yes` forward-comm next step.
   void sync_history_to_device();
   void sync_history_from_device();
+  void ensure_host_history();   // (M5b) lazy device->host flush: runs sync_history_from_device only if dirty
 
   // K2 launcher templated on EVFLAG: EVFLAG==1 -> parallel_reduce accumulating the global virial
   // into `ev` (device virial); EVFLAG==0 -> parallel_for (no energy/virial). Defined in the .cpp.
@@ -126,6 +127,7 @@ class PairLSDEMKokkos : public PairLSDEM {
   typename Kokkos::View<int*, DeviceType>::HostMirror    h_hist_touch;
   int hist_cap = 0;
   int hist_lastbuild = -1;   // reneighbor stamp: host->device history sync is reneighbor-cadence (M5)
+  bool hist_host_dirty = false;  // (M5b) device d_hist_* are newer than the host arrays (K2 wrote them)
 
   // DISTRIBUTED per-atom subgrid: uploaded per reneighbor from the host property/atom darray
   // (its ghost rows are kept current by the CPU border comm -> single-rank correct). A fully

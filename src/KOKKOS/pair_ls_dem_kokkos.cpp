@@ -22,8 +22,11 @@
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
+#include "fix.h"
 #include "kokkos.h"
+#include "modify.h"
 #include "neighbor.h"
+#include "output.h"
 #include "update.h"
 
 using namespace LAMMPS_NS;
@@ -940,6 +943,21 @@ void PairLSDEMKokkos<DeviceType>::sync_history_from_device()
 }
 
 /* ----------------------------------------------------------------------
+   (M5b) Flush the device shear-history back to the host ONLY when the device copy is
+   newer (dirty) than the host. The per-step device->host bridge is otherwise skipped:
+   K2's writes live on the device between rebuilds. The host copy is needed only before
+   two reads -- the eflag_atom/vflag_atom host fallback, and the next reneighbor's
+   FixPropertyAtom BORDER comm (which packs HOST owner rows and runs BEFORE compute) --
+   so compute() flushes ahead of both (see the predictive flush at the end of compute).
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::ensure_host_history()
+{
+  if (hist_host_dirty) { sync_history_from_device(); hist_host_dirty = false; }
+}
+
+/* ----------------------------------------------------------------------
    Construct + launch the K2 contact-force functor. EVFLAG==1 runs a parallel_reduce
    that accumulates the global virial into `ev`; EVFLAG==0 runs a plain parallel_for.
    Field-fill is identical for both, so it lives here once (templated on EVFLAG).
@@ -1017,11 +1035,13 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   // host-fall-back to the exact CPU path: K2 does not fill the per-atom eatom/vatom arrays. These
   // steps are rare. (Global energy needs no work: LS-DEM has no pair PE, evdwl==0.)
   if (eflag_atom || vflag_atom) {
+    ensure_host_history();   // (M5b) flush any device-newer history so the CPU recompute seeds from it
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
     atomKK->sync(execution_space, datamask_modify);   // clear host-dirty f/torque so the framework's
     hist_lastbuild = -1;   // (M5) the CPU fallback just updated the HOST shear history; force the next
+    hist_host_dirty = false;  // host is authoritative now (CPU recompute); device re-synced next /kk step
                            // /kk step to re-sync host->device so the device d_hist_* aren't stale
     return;                                            // modified(Device) (VerletKokkos::setup) doesn't collide (BUG-2)
   }
@@ -1099,9 +1119,32 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
       virial[3]+=ev.v[3]; virial[4]+=ev.v[4]; virial[5]+=ev.v[5];
     }
 
-    // shear-history device -> host (bridge); no reverse_comm (owner-authoritative writes)
-    sync_history_from_device();
+    // (M5b) K2 wrote the device history; mark it dirty instead of an unconditional per-step
+    // device->host copy. The predictive flush below makes the host current only when it will
+    // actually be read (the next reneighbor's border, or a host fallback).
+    hist_host_dirty = true;
   }
+
+  // (M5b) predictive device->host history flush. The host shear-history must be current BEFORE
+  // (a) the next reneighbor's FixPropertyAtom BORDER comm (it packs HOST owner rows and runs
+  // before pair->compute) and (b) the host->device re-sync at that rebuild. Both happen on the
+  // NEXT step if it rebuilds, so we flush at the END of the step preceding a rebuild. Predicting
+  // the rebuild conservatively (over-flushing is always safe -- it just restores the old per-step
+  // behavior on those steps): under 'check no' the cadence is deterministic; otherwise flush every
+  // step. We also flush ahead of any fix-forced reneighbor (next_reneighbor) and restart writes,
+  // matching Neighbor::decide()'s build triggers. Net win: 'check no' runs skip the bridge between
+  // rebuilds; 'check yes' runs are unchanged (no regression). M6 removes the bridge entirely.
+  bool flush_now = true;
+  if (neighbor->dist_check == 0) {                 // 'check no' -> rebuilds are predictable
+    flush_now = (neighbor->every > 0 && ((neighbor->ago + 1) % neighbor->every == 0));
+    if (!flush_now) {
+      const bigint nt1 = update->ntimestep + 1;
+      for (int i = 0; i < modify->nfix; i++)       // any fix-forced reneighbor next step (safe superset)
+        if (modify->fix[i]->next_reneighbor == nt1) { flush_now = true; break; }
+      if (!flush_now && output->next_restart == nt1) flush_now = true;
+    }
+  }
+  if (flush_now) ensure_host_history();
 
   atomKK->modified(execution_space, F_MASK | TORQUE_MASK);   // K2 wrote f/torque on device
 }
