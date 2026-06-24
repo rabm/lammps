@@ -522,6 +522,43 @@ void PairLSDEMKokkos<DeviceType>::upload_coeffs_to_device()
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::upload_grids_to_device()
 {
+  if (fix_rigid && !fix_rigid_small) {                 // LARGE fix (rigid/ls/dem): per-body grid meta
+    num_grids = fix_rigid->get_num_global_grids();
+    if (num_grids <= 0) return;
+    double **gg     = fix_rigid->get_global_grids_array();
+    int    **gsz_b  = fix_rigid->get_grid_size_array();    // per BODY (size is shape-shared/unscaled)
+    double **gmin_b = fix_rigid->get_grid_min_array();     // per BODY (SCALED min)
+    double  *gsc_b  = fix_rigid->get_grid_scale_array();
+    int     *gidx_b = fix_rigid->get_grid_index_array();
+    const int nb    = fix_rigid->get_nbody();
+    std::vector<int> rep(num_grids, -1);                   // first body using each grid
+    for (int b = 0; b < nb; b++) { int gi = gidx_b[b]; if (gi >= 0 && gi < num_grids && rep[gi] < 0) rep[gi] = b; }
+    Kokkos::realloc(d_grid_offset, num_grids + 1);
+    Kokkos::realloc(d_grid_size, num_grids * 3);
+    Kokkos::realloc(d_grid_min, num_grids * 3);
+    h_grid_offset = Kokkos::create_mirror_view(d_grid_offset);
+    h_grid_size   = Kokkos::create_mirror_view(d_grid_size);
+    h_grid_min    = Kokkos::create_mirror_view(d_grid_min);
+    int total = 0; h_grid_offset(0) = 0;
+    for (int gi = 0; gi < num_grids; gi++) {
+      const int b = rep[gi];
+      const int ncount = gsz_b[b][0] * gsz_b[b][1] * gsz_b[b][2];
+      total += ncount; h_grid_offset(gi + 1) = total;
+      for (int a = 0; a < 3; a++) {
+        h_grid_size(gi * 3 + a) = gsz_b[b][a];
+        h_grid_min(gi * 3 + a)  = gmin_b[b][a] / gsc_b[b];   // unscaled min; K2's GLOBAL branch re-applies *gscale
+      }
+    }
+    Kokkos::realloc(d_grid_values, total);
+    h_grid_values = Kokkos::create_mirror_view(d_grid_values);
+    for (int gi = 0; gi < num_grids; gi++) {
+      const int base = h_grid_offset(gi); const int ncount = h_grid_offset(gi + 1) - base;
+      for (int k = 0; k < ncount; k++) h_grid_values(base + k) = gg[gi][k];
+    }
+    Kokkos::deep_copy(d_grid_offset, h_grid_offset);  Kokkos::deep_copy(d_grid_size, h_grid_size);
+    Kokkos::deep_copy(d_grid_min, h_grid_min);         Kokkos::deep_copy(d_grid_values, h_grid_values);
+    return;
+  }
   num_grids = fix_rigid_small ? fix_rigid_small->get_num_global_grids() : 0;
   if (num_grids <= 0) return;    // DISTRIBUTED storage path is deferred (K2 v1 = GLOBAL)
 
@@ -565,6 +602,54 @@ void PairLSDEMKokkos<DeviceType>::upload_grids_to_device()
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::upload_bodies_to_device()
 {
+  if (fix_rigid && !fix_rigid_small) {                 // LARGE fix: body meta indexed by body id
+    const int nb = fix_rigid->get_nbody();
+    num_bodies = nb;
+    num_atoms_uploaded = atom->nlocal + atom->nghost;
+    int    *gidx_b = fix_rigid->get_grid_index_array();
+    double *gsc_b  = fix_rigid->get_grid_scale_array();
+    double *gst_b  = fix_rigid->get_grid_stride_array();
+    int    *gsty_b = fix_rigid->get_grid_style_array();
+    int    *fbody  = fix_rigid->get_body_array();
+    if (nb > body_cap) {
+      body_cap = nb + nb / 4 + 16;
+      Kokkos::realloc(d_body_style, body_cap);       Kokkos::realloc(d_body_grid_index, body_cap);
+      Kokkos::realloc(d_body_grid_scale, body_cap);  Kokkos::realloc(d_body_grid_stride, body_cap);
+      h_body_style       = Kokkos::create_mirror_view(d_body_style);
+      h_body_grid_index  = Kokkos::create_mirror_view(d_body_grid_index);
+      h_body_grid_scale  = Kokkos::create_mirror_view(d_body_grid_scale);
+      h_body_grid_stride = Kokkos::create_mirror_view(d_body_grid_stride);
+    }
+    for (int b = 0; b < nb; b++) {
+      h_body_style(b)=gsty_b[b]; h_body_grid_index(b)=gidx_b[b];
+      h_body_grid_scale(b)=gsc_b[b]; h_body_grid_stride(b)=gst_b[b];
+    }
+    Kokkos::deep_copy(d_body_style, h_body_style);           Kokkos::deep_copy(d_body_grid_index, h_body_grid_index);
+    Kokkos::deep_copy(d_body_grid_scale, h_body_grid_scale); Kokkos::deep_copy(d_body_grid_stride, h_body_grid_stride);
+    const int na = num_atoms_uploaded;
+    if (na > peratom_cap) {
+      peratom_cap = na + na / 4 + 16;
+      Kokkos::realloc(d_atom2body, peratom_cap);
+      Kokkos::realloc(d_binfo_vol, peratom_cap);  Kokkos::realloc(d_binfo_area, peratom_cap);
+      Kokkos::realloc(d_binfo_bID, peratom_cap);  Kokkos::realloc(d_binfo_bidx, peratom_cap);
+      Kokkos::realloc(d_binfo_grp, peratom_cap);  Kokkos::realloc(d_binfo_off, peratom_cap);
+      h_atom2body = Kokkos::create_mirror_view(d_atom2body);
+      h_binfo_vol = Kokkos::create_mirror_view(d_binfo_vol);   h_binfo_area = Kokkos::create_mirror_view(d_binfo_area);
+      h_binfo_bID = Kokkos::create_mirror_view(d_binfo_bID);   h_binfo_bidx = Kokkos::create_mirror_view(d_binfo_bidx);
+      h_binfo_grp = Kokkos::create_mirror_view(d_binfo_grp);   h_binfo_off  = Kokkos::create_mirror_view(d_binfo_off);
+    }
+    for (int a = 0; a < na; a++) {
+      h_atom2body(a) = fbody[a];
+      const BodyInfo &bi = binfo[a];
+      h_binfo_vol(a)=bi.vol; h_binfo_area(a)=bi.area; h_binfo_bID(a)=bi.bID;
+      h_binfo_bidx(a)=bi.bidx; h_binfo_grp(a)=(int)bi.grp; h_binfo_off(a)=(int)bi.off;
+    }
+    Kokkos::deep_copy(d_atom2body, h_atom2body);
+    Kokkos::deep_copy(d_binfo_vol, h_binfo_vol);   Kokkos::deep_copy(d_binfo_area, h_binfo_area);
+    Kokkos::deep_copy(d_binfo_bID, h_binfo_bID);   Kokkos::deep_copy(d_binfo_bidx, h_binfo_bidx);
+    Kokkos::deep_copy(d_binfo_grp, h_binfo_grp);   Kokkos::deep_copy(d_binfo_off, h_binfo_off);
+    return;
+  }
   if (!fix_rigid_small) return;
   num_bodies = fix_rigid_small->get_nbodyLS();
   num_atoms_uploaded = atom->nlocal + atom->nghost;
@@ -832,9 +917,11 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   // this guard K2 would read unallocated upload Views (large-fix cases) and segfault.
   // NOTE: multi-rank DISTRIBUTED is a known CPU bug (context/lsdem_known_bugs.md BUG-1) -> the
   // device DISTRIBUTED path is single-GPU/single-rank for now.
-  const bool device_ok = (watershed_flag == 0) && fix_rigid_small && !fix_rigid &&
-                         (fix_rigid_small->get_num_global_grids() > 0 ||
-                          fix_rigid_small->get_distributed_flag());   // GLOBAL and/or DISTRIBUTED
+  const bool small_ok = fix_rigid_small && !fix_rigid &&
+                        (fix_rigid_small->get_num_global_grids() > 0 || fix_rigid_small->get_distributed_flag());
+  const bool large_ok = fix_rigid && !fix_rigid_small &&            // LARGE fix: GLOBAL + ARRAY only
+                        (fix_rigid->get_num_global_grids() > 0) && (fix_rigid->get_distributed_flag() == 0);
+  const bool device_ok = (watershed_flag == 0) && (small_ok || large_ok);
   if (!device_ok) {
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
@@ -876,7 +963,7 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     // grid fields never change, and atom2body/binfo only change on exchange (= neighbour
     // rebuild). Uploading them here (not every step) removes a per-step cudaMalloc/cudaFree +
     // host->device copy storm. (M5a)
-    if (fix_rigid_small) upload_bodies_to_device();
+    if (fix_rigid_small || fix_rigid) upload_bodies_to_device();
     upload_distributed_to_device();   // per-atom subgrid (ghost rows current after CPU border comm)
     binfo_lastbuild = neighbor->lastcall;
   }
@@ -893,12 +980,12 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   }
 
   // constants: grids + coeffs uploaded ONCE for the run.
-  if (!constants_uploaded && fix_rigid_small) {
+  if (!constants_uploaded && (fix_rigid_small || fix_rigid)) {
     upload_coeffs_to_device();
     upload_grids_to_device();
     constants_uploaded = true;
   }
-  if (!selfcheck_done && fix_rigid_small) { selfcheck_uploads(); selfcheck_done = true; }
+  if (!selfcheck_done && fix_rigid_small) { selfcheck_uploads(); selfcheck_done = true; }   // small-fix only
 
   if (nseg > 0) {
     // K1: device rep-indexed winner reduction (one contact per rep; replaces :278-298)

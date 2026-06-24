@@ -284,6 +284,7 @@ void FixRigidLSDEM::init()
     comm_border += n_dist_grid + 5;
   }
 
+  num_global_grids = index_global_grid;   // persist for the Kokkos pair device upload (large fix)
   if (index_global_grid) {
     if (storage_flag == WATERSHED) {
       global_ws_tables.resize(index_global_grid);

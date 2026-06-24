@@ -52,6 +52,19 @@ class FixRigidLSDEM : public FixRigid {
   inline int get_nbody() { return nbody; };
   inline int get_storage_model() { return storage_flag; };
 
+  // read-only accessors used by the Kokkos pair for the device GLOBAL get_ls_value (large fix).
+  // grid metadata is PER-BODY here (unlike the small fix's per-grid d_grid_min); global_grids is
+  // indexed by grid_index[body]; num_global_grids = # of distinct GLOBAL grids.
+  inline int get_num_global_grids() { return num_global_grids; };
+  inline double** get_global_grids_array() { return global_grids; };
+  inline int* get_grid_index_array() { return grid_index; };
+  inline int** get_grid_size_array() { return grid_size; };
+  inline double** get_grid_min_array() { return grid_min; };
+  inline double* get_grid_scale_array() { return grid_scale; };
+  inline double* get_grid_stride_array() { return grid_stride; };
+  inline int* get_grid_style_array() { return grid_style; };
+  inline int get_distributed_flag() { return distributed_flag; };
+
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);
@@ -80,6 +93,7 @@ class FixRigidLSDEM : public FixRigid {
   double **quatd2g;             // quaternion that rotates from diagonal to grid frame for each rigid body
 
   double **global_grids;
+  int num_global_grids = 0;     // # of distinct GLOBAL grids (= index_global_grid from setup)
   double *grid_scale;
   double maxcut;
   int rcell;
