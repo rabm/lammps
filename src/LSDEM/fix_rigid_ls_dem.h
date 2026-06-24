@@ -65,6 +65,12 @@ class FixRigidLSDEM : public FixRigid {
   inline int* get_grid_style_array() { return grid_style; };
   inline int get_distributed_flag() { return distributed_flag; };
 
+  // DISTRIBUTED per-atom subgrid (fix-owned raw arrays) — for the Kokkos pair device upload
+  inline int get_n_dist_grid() { return n_dist_grid; };
+  inline void get_subgrid_size(int out[3]) { out[0]=subgrid_size[0]; out[1]=subgrid_size[1]; out[2]=subgrid_size[2]; };
+  inline double** get_dist_grid_values() { return dist_grid_values; };
+  inline double** get_dist_grid_min() { return dist_grid_min; };
+
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);

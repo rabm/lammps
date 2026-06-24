@@ -719,17 +719,28 @@ void PairLSDEMKokkos<DeviceType>::upload_bodies_to_device()
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::upload_distributed_to_device()
 {
-  if (!fix_rigid_small || !fix_rigid_small->get_distributed_flag()) return;
-  if (idx_grid_values < 0) {                     // resolve the darray + dims once
-    int flag, cols;
-    idx_grid_values = atom->find_custom("grid_values", flag, cols);
-    dist_N = cols;
-    idx_grid_min = atom->find_custom("grid_min", flag, cols);
-    fix_rigid_small->get_subgrid_size(subgrid_dim);
-  }
+  // Source the per-atom subgrid from whichever fix owns it. SMALL fix: property/atom darray
+  // (resolved once via find_custom). LARGE fix: the fix's own dist_grid_values/dist_grid_min raw
+  // arrays. Both keep ghost rows current via the CPU border comm, so this is correct single-rank.
+  double **hv, **hm;
+  if (fix_rigid_small && fix_rigid_small->get_distributed_flag()) {
+    if (idx_grid_values < 0) {                   // resolve the darray + dims once
+      int flag, cols;
+      idx_grid_values = atom->find_custom("grid_values", flag, cols);
+      dist_N = cols;
+      idx_grid_min = atom->find_custom("grid_min", flag, cols);
+      fix_rigid_small->get_subgrid_size(subgrid_dim);
+    }
+    hv = atom->darray[idx_grid_values];
+    hm = atom->darray[idx_grid_min];
+  } else if (fix_rigid && fix_rigid->get_distributed_flag()) {   // LARGE fix: fix-owned per-atom arrays
+    dist_N = fix_rigid->get_n_dist_grid();
+    fix_rigid->get_subgrid_size(subgrid_dim);
+    hv = fix_rigid->get_dist_grid_values();
+    hm = fix_rigid->get_dist_grid_min();
+  } else return;
+
   const int ntotal = atom->nlocal + atom->nghost;
-  double **hv = atom->darray[idx_grid_values];
-  double **hm = atom->darray[idx_grid_min];
   const int needv = ntotal * dist_N, needm = ntotal * 3;
   if ((int) d_subgrid.extent(0) < needv) {
     Kokkos::realloc(d_subgrid, needv + needv/4 + 16);
@@ -919,8 +930,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   // device DISTRIBUTED path is single-GPU/single-rank for now.
   const bool small_ok = fix_rigid_small && !fix_rigid &&
                         (fix_rigid_small->get_num_global_grids() > 0 || fix_rigid_small->get_distributed_flag());
-  const bool large_ok = fix_rigid && !fix_rigid_small &&            // LARGE fix: GLOBAL + ARRAY only
-                        (fix_rigid->get_num_global_grids() > 0) && (fix_rigid->get_distributed_flag() == 0);
+  const bool large_ok = fix_rigid && !fix_rigid_small &&            // LARGE fix: GLOBAL and/or DISTRIBUTED, ARRAY
+                        (fix_rigid->get_num_global_grids() > 0 || fix_rigid->get_distributed_flag());
   const bool device_ok = (watershed_flag == 0) && (small_ok || large_ok);
   if (!device_ok) {
     atomKK->sync(Host, datamask_read);
