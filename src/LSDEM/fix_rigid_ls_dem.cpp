@@ -258,6 +258,16 @@ void FixRigidLSDEM::init()
   // ------------------------------ //
 
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
+
+  // n_dist_grid sizes the per-atom dist_grid_values rows, so it MUST be set
+  // before grow_arrays() allocates them (otherwise the rows are 0-wide and
+  // store_distributed() overruns them).
+  if (distributed_flag) {
+    for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
+    if (dimension == 2) subgrid_size[2] = 1;
+    n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+  }
+
   grow_arrays(atom->nmax);
 
   int nlocal = atom->nlocal;
@@ -273,10 +283,7 @@ void FixRigidLSDEM::init()
   }
 
   if (distributed_flag) {
-    for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
-    if (dimension == 2) subgrid_size[2] = 1;
-    n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-
+    // subgrid_size / n_dist_grid already computed above (before grow_arrays)
     maxexchange = n_dist_grid + 5; // +1 for flag to indicate whether grid info included
                                    // +3 for minimum values
                                    // +1 for body (always run)
