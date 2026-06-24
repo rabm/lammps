@@ -595,7 +595,8 @@ void FixRigidSmallLSDEM::process_levelsets()
   }
 
   double dx[3], gmin[3];
-  int index_local, index_global, error_code, error_code_global, nx[3];
+  int index_local, index_global, error_code, nx[3];
+  int any_padding = 0;   // accumulated over all local atoms; reduced ONCE after the loops (MPI-safe)
   for (const auto& pair : gridfile_data) {
     gridfile = pair.first;
 
@@ -650,13 +651,21 @@ void FixRigidSmallLSDEM::process_levelsets()
         if (error_code == -1)
           error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-        MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-        if (error_code_global && comm->me == 0)
-          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-            "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+        // store_distributed returns 1 when the body grid lacked a large enough buffer and the
+        // subgrid was padded with BIG. DO NOT reduce/warn here: this loop is over LOCAL atoms,
+        // whose count differs per rank, so an MPI collective inside it dead-locks under domain
+        // decomposition (np4 hang). Accumulate locally; reduce + warn once after the loops.
+        if (error_code == 1) any_padding = 1;
       }
     }
   }
+
+  // Single collective padding warning, hoisted out of the per-atom loop (see above) so every
+  // rank calls it exactly once -> no collective-count mismatch / deadlock under MPI.
+  MPI_Allreduce(MPI_IN_PLACE, &any_padding, 1, MPI_INT, MPI_MAX, world);
+  if (any_padding && comm->me == 0)
+    error->warning(FLERR, "A distributed level-set subgrid was padded with BIG values because the body "
+      "grid does not include a large enough buffer for the cutoff. Increase the grid buffer.");
 
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
