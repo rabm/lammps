@@ -134,6 +134,11 @@ struct PairLSDEMK2 {
   Kokkos::View<int*, DeviceType>    d_hist_touch;           // ntotal
   Kokkos::View<double*, DeviceType> d_hist_fn1, d_hist_fs1; // ntotal
 
+  // DISTRIBUTED per-atom subgrid (style-dispatched in get_ls_value via d_body_style)
+  Kokkos::View<double*, DeviceType> d_subgrid, d_dgrid_min;
+  Kokkos::View<int*,    DeviceType> d_body_style;
+  int dist_N, sg0, sg1, sg2;
+
   int nlocal, dim;
   double dt, xprd, yprd, zprd;
   int px, py, pz;
@@ -156,21 +161,35 @@ struct PairLSDEMK2 {
     double qconj[4]; LSDEMExtra::ls_dem_qconjugate(qj, qconj);
     double x_local[3]; LSDEMExtra::ls_dem_quatrotvec(qconj, dxv, x_local);
 
-    const int gi = d_body_grid_index(jbody);            // GLOBAL storage only
-    const double gscale = d_body_grid_scale(jbody);
-    const int base = d_grid_offset(gi);
-    int ngrid[3] = { d_grid_size(gi*3+0), d_grid_size(gi*3+1), d_grid_size(gi*3+2) };
-    x_local[0] -= d_grid_min(gi*3+0) * gscale;
-    x_local[1] -= d_grid_min(gi*3+1) * gscale;
-    x_local[2] -= d_grid_min(gi*3+2) * gscale;
+    // style dispatch: DISTRIBUTED samples node j's own per-atom subgrid (fix:1685-1694);
+    // GLOBAL samples the shared per-shape grid (fix:1695-1727).
+    const bool dist_body = (d_body_style(jbody) == 1);   // enum {GLOBAL=0, DISTRIBUTED=1}
+    int ngrid[3];
+    double *src;
+    double gscale = 1.0;
+    if (dist_body) {
+      ngrid[0]=sg0; ngrid[1]=sg1; ngrid[2]=sg2;
+      x_local[0] -= d_dgrid_min(j*3+0);                  // per-atom min, NO *gscale
+      x_local[1] -= d_dgrid_min(j*3+1);
+      x_local[2] -= d_dgrid_min(j*3+2);
+      src = &d_subgrid(j*dist_N);                        // node j's subgrid row (j may be a ghost)
+    } else {
+      const int gi = d_body_grid_index(jbody);
+      gscale = d_body_grid_scale(jbody);
+      ngrid[0]=d_grid_size(gi*3+0); ngrid[1]=d_grid_size(gi*3+1); ngrid[2]=d_grid_size(gi*3+2);
+      x_local[0] -= d_grid_min(gi*3+0) * gscale;
+      x_local[1] -= d_grid_min(gi*3+1) * gscale;
+      x_local[2] -= d_grid_min(gi*3+2) * gscale;
+      src = &d_grid_values(d_grid_offset(gi));
+    }
 
     double x_red[3] = { x_local[0]*strideinv, x_local[1]*strideinv, x_local[2]*strideinv };
     int ix[3] = { (int) x_red[0], (int) x_red[1], (int) x_red[2] };
     int mybin = ix[0] + ix[1]*ngrid[0] + ix[2]*ngrid[0]*ngrid[1];
 
-    double dist = LSDEMExtra::interpolate_LS_array(dim, mybin, &d_grid_values(base),
+    double dist = LSDEMExtra::interpolate_LS_array(dim, mybin, src,
                                                    ngrid, x_red, ix, normal, jstride);
-    dist *= gscale;                                     // GLOBAL post-multiply (fix:1667)
+    if (!dist_body) dist *= gscale;                     // GLOBAL post-multiply only (fix:1727)
     if (dist < 0.0) LSDEMExtra::ls_dem_quatrotvec(qj, normal, normal);   // back-rotate (fix:1671)
     return dist;
   }
@@ -606,6 +625,46 @@ void PairLSDEMKokkos<DeviceType>::upload_bodies_to_device()
 }
 
 /* ----------------------------------------------------------------------
+   DISTRIBUTED storage: upload the per-atom subgrid (grid_values) + grid_min to the device at
+   the reneighbor cadence. Source is the host property/atom darray; its ghost rows are kept
+   current by the CPU border comm, so this is correct for a single rank (multi-rank DISTRIBUTED
+   is a known CPU bug, BUG-1). A fully device-resident store (device exchange/border) is later.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::upload_distributed_to_device()
+{
+  if (!fix_rigid_small || !fix_rigid_small->get_distributed_flag()) return;
+  if (idx_grid_values < 0) {                     // resolve the darray + dims once
+    int flag, cols;
+    idx_grid_values = atom->find_custom("grid_values", flag, cols);
+    dist_N = cols;
+    idx_grid_min = atom->find_custom("grid_min", flag, cols);
+    fix_rigid_small->get_subgrid_size(subgrid_dim);
+  }
+  const int ntotal = atom->nlocal + atom->nghost;
+  double **hv = atom->darray[idx_grid_values];
+  double **hm = atom->darray[idx_grid_min];
+  const int needv = ntotal * dist_N, needm = ntotal * 3;
+  if ((int) d_subgrid.extent(0) < needv) {
+    Kokkos::realloc(d_subgrid, needv + needv/4 + 16);
+    h_subgrid = Kokkos::create_mirror_view(d_subgrid);
+  }
+  if ((int) d_dgrid_min.extent(0) < needm) {
+    Kokkos::realloc(d_dgrid_min, needm + needm/4 + 16);
+    h_dgrid_min = Kokkos::create_mirror_view(d_dgrid_min);
+  }
+  for (int ii = 0; ii < ntotal; ii++) {
+    for (int k = 0; k < dist_N; k++) h_subgrid(ii*dist_N + k) = hv[ii][k];
+    h_dgrid_min(ii*3+0) = hm[ii][0];
+    h_dgrid_min(ii*3+1) = hm[ii][1];
+    h_dgrid_min(ii*3+2) = hm[ii][2];
+  }
+  Kokkos::deep_copy(d_subgrid, h_subgrid);
+  Kokkos::deep_copy(d_dgrid_min, h_dgrid_min);
+}
+
+/* ----------------------------------------------------------------------
    Deep-copy every uploaded View back to host and assert byte-equality with the
    ORIGINAL host source arrays (not the upload mirrors), so a fill bug or a
    size/layout bug is caught. doubles compare exact (verbatim copy). One-shot.
@@ -767,15 +826,15 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   // K2 v1 handles the SMALL fix (fix rigid/small/ls/dem) + GLOBAL storage only, no watershed.
   // Defer to the exact CPU compute (host) in every other case: watershed, a LARGE fix
   // (fix rigid/ls/dem) present, the small fix absent, DISTRIBUTED storage, OR a MIXED
-  // global+distributed run (num_global_grids>0 AND distributed_flag==1): K2's get_ls_value is
-  // GLOBAL-only, so a distributed body in a mixed run would be mis-read through the GLOBAL grid
-  // branch -- require distributed_flag==0 (pure GLOBAL) as well.
-  // The large-body get_ls_value + DISTRIBUTED + watershed paths are future milestones; without
-  // this guard K2 would read unallocated upload Views (e.g. the sphere-plate cases use the large
-  // fix) and segfault. watershed_flag is set in PairLSDEM::setup().
+  // K2's get_ls_value style-dispatches per body (d_body_style): GLOBAL bodies sample the shared
+  // grid, DISTRIBUTED bodies sample their own per-atom subgrid -- pure-GLOBAL, pure-DISTRIBUTED,
+  // and MIXED all run on device. The LARGE fix + WATERSHED remain host-only (future); without
+  // this guard K2 would read unallocated upload Views (large-fix cases) and segfault.
+  // NOTE: multi-rank DISTRIBUTED is a known CPU bug (context/lsdem_known_bugs.md BUG-1) -> the
+  // device DISTRIBUTED path is single-GPU/single-rank for now.
   const bool device_ok = (watershed_flag == 0) && fix_rigid_small && !fix_rigid &&
-                         (fix_rigid_small->get_num_global_grids() > 0) &&
-                         (fix_rigid_small->get_distributed_flag() == 0);   // mixed-run guard: pure GLOBAL only
+                         (fix_rigid_small->get_num_global_grids() > 0 ||
+                          fix_rigid_small->get_distributed_flag());   // GLOBAL and/or DISTRIBUTED
   if (!device_ok) {
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
@@ -816,6 +875,7 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     // rebuild). Uploading them here (not every step) removes a per-step cudaMalloc/cudaFree +
     // host->device copy storm. (M5a)
     if (fix_rigid_small) upload_bodies_to_device();
+    upload_distributed_to_device();   // per-atom subgrid (ghost rows current after CPU border comm)
     binfo_lastbuild = neighbor->lastcall;
   }
   if (neighbor->lastcall != segs_lastbuild || (int) rep_segs.size() < ntotal) {
@@ -876,6 +936,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     f2.nlocal=nlocal; f2.dim=domain->dimension; f2.dt=update->dt;
     f2.xprd=domain->xprd; f2.yprd=domain->yprd; f2.zprd=domain->zprd;
     f2.px=domain->xperiodic; f2.py=domain->yperiodic; f2.pz=domain->zperiodic;
+    f2.d_subgrid=d_subgrid; f2.d_dgrid_min=d_dgrid_min; f2.d_body_style=d_body_style;
+    f2.dist_N=dist_N; f2.sg0=subgrid_dim[0]; f2.sg1=subgrid_dim[1]; f2.sg2=subgrid_dim[2];
     Kokkos::parallel_for("PairLSDEM::K2", Kokkos::RangePolicy<DeviceType>(0, ntotal), f2);
     Kokkos::fence();
 

@@ -85,6 +85,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   inline int get_nbodyLS() { return nlocal_bodyLS + nghost_bodyLS; };
   inline int get_num_global_grids() { return num_global_grids; };
   inline int get_distributed_flag() { return distributed_flag; };   // 1 if any body uses DISTRIBUTED storage
+  inline void get_subgrid_size(int out[3]) { out[0]=subgrid_size[0]; out[1]=subgrid_size[1]; out[2]=subgrid_size[2]; };
   inline double** get_global_grids_array() { return global_grids; };
   inline int** get_global_grids_size_array() { return global_grids_size; };
   inline double** get_global_grids_min_array() { return global_grids_min; };

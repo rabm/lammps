@@ -121,6 +121,15 @@ class PairLSDEMKokkos : public PairLSDEM {
   typename Kokkos::View<double*, DeviceType>::HostMirror h_hist_n, h_hist_fs, h_hist_fn1, h_hist_fs1;
   typename Kokkos::View<int*, DeviceType>::HostMirror    h_hist_touch;
   int hist_cap = 0;
+
+  // DISTRIBUTED per-atom subgrid: uploaded per reneighbor from the host property/atom darray
+  // (its ghost rows are kept current by the CPU border comm -> single-rank correct). A fully
+  // device-resident store (device exchange/border) is a later increment.
+  void upload_distributed_to_device();
+  Kokkos::View<double*, DeviceType> d_subgrid, d_dgrid_min;
+  typename Kokkos::View<double*, DeviceType>::HostMirror h_subgrid, h_dgrid_min;
+  int dist_N = 0, subgrid_dim[3] = {0,0,0};
+  int idx_grid_values = -1, idx_grid_min = -1;
 };
 
 }    // namespace LAMMPS_NS
