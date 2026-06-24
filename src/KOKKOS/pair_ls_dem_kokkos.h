@@ -121,6 +121,7 @@ class PairLSDEMKokkos : public PairLSDEM {
   typename Kokkos::View<double*, DeviceType>::HostMirror h_hist_n, h_hist_fs, h_hist_fn1, h_hist_fs1;
   typename Kokkos::View<int*, DeviceType>::HostMirror    h_hist_touch;
   int hist_cap = 0;
+  int hist_lastbuild = -1;   // reneighbor stamp: host->device history sync is reneighbor-cadence (M5)
 
   // DISTRIBUTED per-atom subgrid: uploaded per reneighbor from the host property/atom darray
   // (its ghost rows are kept current by the CPU border comm -> single-rank correct). A fully

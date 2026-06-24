@@ -1008,8 +1008,17 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     Kokkos::parallel_for("PairLSDEM::K1", Kokkos::RangePolicy<DeviceType>(0, ntotal), f1);
     Kokkos::fence();
 
-    // shear-history host -> device (bridge)
-    sync_history_to_device();
+    // shear-history host -> device: RENEIGHBOR-CADENCE, not per-step. The 5 history fields are a
+    // property/atom 'ghost yes' field whose owner->ghost refresh is a BORDER comm (FixPropertyAtom
+    // registers only Atom::BORDER, has no pack_forward_comm), so ghost rows change only on rebuild.
+    // Between rebuilds the device d_hist_* persist K2's own writes, so skipping the host->device copy
+    // is bitwise-identical to the per-step round-trip (which was copying back the same values). The
+    // device->host sync below stays per-step to keep host history current for the virial-step CPU
+    // fallback and the next reneighbor's border comm. (M5)
+    if (neighbor->lastcall != hist_lastbuild || hist_cap < ntotal) {
+      sync_history_to_device();
+      hist_lastbuild = neighbor->lastcall;
+    }
 
     // K2: device contact-force kernel (replaces the M3 device->host copy + host force pass)
     PairLSDEMK2<DeviceType> f2;
