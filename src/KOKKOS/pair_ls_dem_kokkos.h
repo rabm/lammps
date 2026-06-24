@@ -115,6 +115,10 @@ class PairLSDEMKokkos : public PairLSDEM {
   void sync_history_to_device();
   void sync_history_from_device();
 
+  // K2 launcher templated on EVFLAG: EVFLAG==1 -> parallel_reduce accumulating the global virial
+  // into `ev` (device virial); EVFLAG==0 -> parallel_for (no energy/virial). Defined in the .cpp.
+  template<int EVFLAG> void launch_K2(int ntotal, int nlocal, EV_FLOAT &ev);
+
   Kokkos::View<double*, DeviceType> d_hist_n, d_hist_fs;     // flat ntotal*3
   Kokkos::View<int*, DeviceType>    d_hist_touch;            // ntotal
   Kokkos::View<double*, DeviceType> d_hist_fn1, d_hist_fs1;  // ntotal

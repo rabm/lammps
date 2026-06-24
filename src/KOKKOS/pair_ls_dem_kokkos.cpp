@@ -107,10 +107,11 @@ struct PairLSDEMK1 {
    Within-tol vs CPU (atomic_add reorders the per-body force sum); NOT bitwise.
 ------------------------------------------------------------------------- */
 
-template<class DeviceType>
+template<class DeviceType, int EVFLAG>
 struct PairLSDEMK2 {
   typedef DeviceType device_type;
   typedef ArrayTypes<DeviceType> AT;
+  typedef EV_FLOAT value_type;   // (device virial) global virial accumulator for parallel_reduce
 
   typename AT::t_kkfloat_1d_3_randomread x, v, xcom, omega;
   typename AT::t_kkfloat_1d_4 quat;
@@ -194,8 +195,15 @@ struct PairLSDEMK2 {
     return dist;
   }
 
+  // parallel_for entry (EVFLAG==0, no energy/virial).
   KOKKOS_INLINE_FUNCTION
-  void operator()(const int r) const
+  void operator()(const int r) const { EV_FLOAT ev; contact(r, ev); }
+  // parallel_reduce entry (EVFLAG==1, global virial tally).
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const int r, value_type &ev) const { contact(r, ev); }
+
+  KOKKOS_INLINE_FUNCTION
+  void contact(const int r, EV_FLOAT &ev) const
   {
     const int i = d_ci(r);
     if (i < 0) return;                                  // no contact for this rep
@@ -374,7 +382,24 @@ struct PairLSDEMK2 {
       Kokkos::atomic_add(&torque(j,1), tqj[1]);
       Kokkos::atomic_add(&torque(j,2), tqj[2]);
     }
-    // virial (pair_ls_dem.cpp:919): not tallied on device — virial steps host-fall-back in compute().
+
+    // ---- global virial (device replica of pair_ls_dem.cpp:919 ev_tally_xyz, newton-off) ----
+    // The CPU call passes fx/fy/fz = the (sign-adjusted) fpair at this point and delx/dely/delz =
+    // normal*u. For newton_pair==0, ev_tally_xyz adds 0.5*v to the global virial for each of i,j that
+    // is local. The K1 emit rule guarantees i is ALWAYS local, so the factor is 0.5 (from i) +
+    // (j<nlocal ? 0.5 : 0) = (j<nlocal ? 1.0 : 0.5). `normal` (post-normsign) and `u` and `fpair`
+    // (negated iff j<nlocal) are exactly the CPU's at the call site, so this is the same tally
+    // (within FP reduction-order tol -- virial is diagnostic, not fed back into the trajectory).
+    if (EVFLAG) {
+      const double vx = normal[0]*u, vy = normal[1]*u, vz = normal[2]*u;
+      const double fac = (j < nlocal) ? 1.0 : 0.5;
+      ev.v[0] += fac*vx*fpair[0];
+      ev.v[1] += fac*vy*fpair[1];
+      ev.v[2] += fac*vz*fpair[2];
+      ev.v[3] += fac*vx*fpair[1];
+      ev.v[4] += fac*vx*fpair[2];
+      ev.v[5] += fac*vy*fpair[2];
+    }
   }
 };
 
@@ -914,6 +939,49 @@ void PairLSDEMKokkos<DeviceType>::sync_history_from_device()
   }
 }
 
+/* ----------------------------------------------------------------------
+   Construct + launch the K2 contact-force functor. EVFLAG==1 runs a parallel_reduce
+   that accumulates the global virial into `ev`; EVFLAG==0 runs a plain parallel_for.
+   Field-fill is identical for both, so it lives here once (templated on EVFLAG).
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+template<int EVFLAG>
+void PairLSDEMKokkos<DeviceType>::launch_K2(int ntotal, int nlocal, EV_FLOAT &ev)
+{
+  PairLSDEMK2<DeviceType,EVFLAG> f2;
+  f2.x = atomKK->k_x.view<DeviceType>();
+  f2.v = atomKK->k_v.view<DeviceType>();
+  f2.xcom = atomKK->k_xcom.view<DeviceType>();
+  f2.omega = atomKK->k_omega.view<DeviceType>();
+  f2.quat = atomKK->k_quat.view<DeviceType>();
+  f2.f = atomKK->k_f.view<DeviceType>();
+  f2.torque = atomKK->k_torque.view<DeviceType>();
+  f2.type = atomKK->k_type.view<DeviceType>();
+  f2.d_ci = d_contacts_i; f2.d_cj = d_contacts_j; f2.d_ccalc = d_contacts_calc;
+  f2.d_grid_values = d_grid_values; f2.d_grid_min = d_grid_min;
+  f2.d_grid_offset = d_grid_offset; f2.d_grid_size = d_grid_size;
+  f2.d_body_grid_index = d_body_grid_index;
+  f2.d_body_grid_scale = d_body_grid_scale; f2.d_body_grid_stride = d_body_grid_stride;
+  f2.d_atom2body = d_atom2body; f2.d_binfo_bID = d_binfo_bID;
+  f2.d_binfo_bidx = d_binfo_bidx; f2.d_binfo_area = d_binfo_area;
+  f2.d_kn=d_kn; f2.d_kt=d_kt; f2.d_mu=d_mu; f2.d_knp=d_knp;
+  f2.d_etan=d_etan; f2.d_etat=d_etat; f2.d_etan1=d_etan1; f2.d_decayn1=d_decayn1;
+  f2.d_etat1=d_etat1; f2.d_decayt1=d_decayt1; f2.coeff_stride=coeff_stride;
+  f2.d_hist_n=d_hist_n; f2.d_hist_fs=d_hist_fs; f2.d_hist_touch=d_hist_touch;
+  f2.d_hist_fn1=d_hist_fn1; f2.d_hist_fs1=d_hist_fs1;
+  f2.nlocal=nlocal; f2.dim=domain->dimension; f2.dt=update->dt;
+  f2.xprd=domain->xprd; f2.yprd=domain->yprd; f2.zprd=domain->zprd;
+  f2.px=domain->xperiodic; f2.py=domain->yperiodic; f2.pz=domain->zperiodic;
+  f2.d_subgrid=d_subgrid; f2.d_dgrid_min=d_dgrid_min; f2.d_body_style=d_body_style;
+  f2.dist_N=dist_N; f2.sg0=subgrid_dim[0]; f2.sg1=subgrid_dim[1]; f2.sg2=subgrid_dim[2];
+  if (EVFLAG)
+    Kokkos::parallel_reduce("PairLSDEM::K2", Kokkos::RangePolicy<DeviceType>(0, ntotal), f2, ev);
+  else
+    Kokkos::parallel_for("PairLSDEM::K2", Kokkos::RangePolicy<DeviceType>(0, ntotal), f2);
+  Kokkos::fence();
+}
+
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType>
@@ -944,13 +1012,11 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
   if (eflag || vflag) ev_setup(eflag, vflag);
   else evflag = vflag_fdotr = 0;
 
-  // Virial/stress is NOT computed in the device K2 kernel. On a virial step, run the exact CPU
-  // PairLSDEM::compute on host-synced data so pressure/stress is CORRECT (bitwise vs CPU) instead
-  // of silently wrong. (Energy alone needs no fallback: LS-DEM has no pair PE, evdwl==0.) Virial
-  // steps are infrequent (thermo cadence) so the host hop is negligible; a full device virial
-  // (ev_tally_xyz replica, pair_ls_dem.cpp:919) is a later increment. Completes the design noted
-  // at the K2 "virial DEFERRED" comment, which was never actually wired here.
-  if (vflag) {
+  // GLOBAL virial is now tallied on the device (K2 parallel_reduce -> EV_FLOAT, added to virial[]
+  // below). PER-ATOM energy/virial (eflag_atom/vflag_atom -- e.g. a compute stress/atom) still
+  // host-fall-back to the exact CPU path: K2 does not fill the per-atom eatom/vatom arrays. These
+  // steps are rare. (Global energy needs no work: LS-DEM has no pair PE, evdwl==0.)
+  if (eflag_atom || vflag_atom) {
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
@@ -1022,35 +1088,16 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
       hist_lastbuild = neighbor->lastcall;
     }
 
-    // K2: device contact-force kernel (replaces the M3 device->host copy + host force pass)
-    PairLSDEMK2<DeviceType> f2;
-    f2.x = atomKK->k_x.view<DeviceType>();
-    f2.v = atomKK->k_v.view<DeviceType>();
-    f2.xcom = atomKK->k_xcom.view<DeviceType>();
-    f2.omega = atomKK->k_omega.view<DeviceType>();
-    f2.quat = atomKK->k_quat.view<DeviceType>();
-    f2.f = atomKK->k_f.view<DeviceType>();
-    f2.torque = atomKK->k_torque.view<DeviceType>();
-    f2.type = atomKK->k_type.view<DeviceType>();
-    f2.d_ci = d_contacts_i; f2.d_cj = d_contacts_j; f2.d_ccalc = d_contacts_calc;
-    f2.d_grid_values = d_grid_values; f2.d_grid_min = d_grid_min;
-    f2.d_grid_offset = d_grid_offset; f2.d_grid_size = d_grid_size;
-    f2.d_body_grid_index = d_body_grid_index;
-    f2.d_body_grid_scale = d_body_grid_scale; f2.d_body_grid_stride = d_body_grid_stride;
-    f2.d_atom2body = d_atom2body; f2.d_binfo_bID = d_binfo_bID;
-    f2.d_binfo_bidx = d_binfo_bidx; f2.d_binfo_area = d_binfo_area;
-    f2.d_kn=d_kn; f2.d_kt=d_kt; f2.d_mu=d_mu; f2.d_knp=d_knp;
-    f2.d_etan=d_etan; f2.d_etat=d_etat; f2.d_etan1=d_etan1; f2.d_decayn1=d_decayn1;
-    f2.d_etat1=d_etat1; f2.d_decayt1=d_decayt1; f2.coeff_stride=coeff_stride;
-    f2.d_hist_n=d_hist_n; f2.d_hist_fs=d_hist_fs; f2.d_hist_touch=d_hist_touch;
-    f2.d_hist_fn1=d_hist_fn1; f2.d_hist_fs1=d_hist_fs1;
-    f2.nlocal=nlocal; f2.dim=domain->dimension; f2.dt=update->dt;
-    f2.xprd=domain->xprd; f2.yprd=domain->yprd; f2.zprd=domain->zprd;
-    f2.px=domain->xperiodic; f2.py=domain->yperiodic; f2.pz=domain->zperiodic;
-    f2.d_subgrid=d_subgrid; f2.d_dgrid_min=d_dgrid_min; f2.d_body_style=d_body_style;
-    f2.dist_N=dist_N; f2.sg0=subgrid_dim[0]; f2.sg1=subgrid_dim[1]; f2.sg2=subgrid_dim[2];
-    Kokkos::parallel_for("PairLSDEM::K2", Kokkos::RangePolicy<DeviceType>(0, ntotal), f2);
-    Kokkos::fence();
+    // K2: device contact-force kernel (replaces the M3 device->host copy + host force pass).
+    // On an evflag step it runs as a parallel_reduce tallying the GLOBAL virial into EV_FLOAT
+    // (added to virial[] below); otherwise a plain parallel_for. (launch_K2 fills + launches.)
+    EV_FLOAT ev;
+    if (evflag) launch_K2<1>(ntotal, nlocal, ev);
+    else        launch_K2<0>(ntotal, nlocal, ev);
+    if (vflag_global) {
+      virial[0]+=ev.v[0]; virial[1]+=ev.v[1]; virial[2]+=ev.v[2];
+      virial[3]+=ev.v[3]; virial[4]+=ev.v[4]; virial[5]+=ev.v[5];
+    }
 
     // shear-history device -> host (bridge); no reverse_comm (owner-authoritative writes)
     sync_history_from_device();
