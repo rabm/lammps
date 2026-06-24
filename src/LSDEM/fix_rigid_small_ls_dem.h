@@ -95,7 +95,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
  protected:
   // commflag_ls values for the LS-DEM body forward-comm (also used by the
   // rigid/small/ls/dem/kk device fix, so it lives here not in the .cpp).
-  enum { PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS };
+  enum { PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS, SUBGRID_LS };
 
   int ls_read_flag, global_flag, distributed_flag;
   int read_quat;
@@ -108,6 +108,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double maxcut, warncut;
   int dim, rcell;
   int subgrid_size[3];     // number of distributed subgrid points in each dimension
+  int n_dist_grid = 0;     // = prod(subgrid_size); per-atom subgrid length (DISTRIBUTED)
 
   BodyLS *bodyLS;          // list of rigid bodies, owned and ghost
   int nlocal_bodyLS;       // # of owned rigid bodies

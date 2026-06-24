@@ -312,6 +312,11 @@ void FixRigidSmallLSDEM::init()
     // todo try remove +1 and cast to int
     for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;
     if (domain->dimension == 2) subgrid_size[2] = 1;
+    n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+
+    // Room to forward-comm the per-atom subgrid (grid_values + grid_min) to ghosts at setup
+    // (process_levelsets), closing the gap before the first reneighbor (see process_levelsets).
+    comm_forward = MAX(comm_forward, n_dist_grid + 3);
 
     int tmp1, tmp2;
     index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
@@ -319,7 +324,7 @@ void FixRigidSmallLSDEM::init()
 
     if (index_grid_values == -1) {
       id_fix2 = utils::strdup(id + std::string("_FIX_PROP_ATOM_2"));
-      int ntotal = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+      int ntotal = n_dist_grid;
       if (ntotal > RECOMMENDED_MAX_NGRID)
         error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for distributed level sets with a cutoff of {} and a min stride of {}", subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
       const std::string as2 = atom->atom_style ? atom->atom_style : "";
@@ -669,6 +674,19 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
+
+  // Push the freshly-filled per-atom subgrid to ghosts. process_levelsets() runs in
+  // setup_pre_neighbor(), AFTER the setup comm->borders() that already populated ghosts from the
+  // (still-zero) subgrid darray. Without this, ghost subgrids stay zero until the FIRST reneighbor
+  // -- which can be many steps into a quasi-static initial contact -- so a cross-rank contact reads
+  // an empty ghost subgrid (dist = BIG -> no overlap) and computes a wrong normal force, breaking
+  // serial==MPI. One forward_comm here fixes the setup gap; every later reneighbor re-delivers the
+  // (constant, body-fixed) subgrid via the property/atom border comm.
+  if (distributed_flag) {
+    commflag_ls = SUBGRID_LS;
+    comm->forward_comm(this, n_dist_grid + 3);
+    commflag_ls = PARENT;
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1243,6 +1261,18 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
         m += bodysizeLS;
       }
     }
+  } else if (commflag_ls == SUBGRID_LS) {
+    // per-atom distributed subgrid (constant, body-fixed): owner -> ghost
+    double **gv = atom->darray[index_grid_values];
+    double **gm = atom->darray[index_grid_min];
+    m = 0;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      for (int k = 0; k < n_dist_grid; k++) buf[m++] = gv[j][k];
+      buf[m++] = gm[j][0];
+      buf[m++] = gm[j][1];
+      buf[m++] = gm[j][2];
+    }
   } else {
     m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
   }
@@ -1302,6 +1332,15 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
         bodyownLS[i] = j;
         nghost_bodyLS++;
       }
+    }
+  } else if (commflag_ls == SUBGRID_LS) {
+    double **gv = atom->darray[index_grid_values];
+    double **gm = atom->darray[index_grid_min];
+    for (i = first; i < last; i++) {
+      for (int k = 0; k < n_dist_grid; k++) gv[i][k] = buf[m++];
+      gm[i][0] = buf[m++];
+      gm[i][1] = buf[m++];
+      gm[i][2] = buf[m++];
     }
   } else {
     FixRigidSmall::unpack_forward_comm(n, first, buf);
