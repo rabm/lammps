@@ -839,7 +839,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
-    return;
+    atomKK->sync(execution_space, datamask_modify);   // clear host-dirty f/torque so the framework's
+    return;                                            // modified(Device) (VerletKokkos::setup) doesn't collide (BUG-2)
   }
 
   if (eflag || vflag) ev_setup(eflag, vflag);
@@ -855,7 +856,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag, int vflag)
     atomKK->sync(Host, datamask_read);
     PairLSDEM::compute(eflag, vflag);
     atomKK->modified(Host, datamask_modify);
-    return;
+    atomKK->sync(execution_space, datamask_modify);   // clear host-dirty f/torque so the framework's
+    return;                                            // modified(Device) (VerletKokkos::setup) doesn't collide (BUG-2)
   }
 
   const int ntotal = atom->nlocal + atom->nghost;
