@@ -90,6 +90,9 @@ class FixRigidLSDEM : public FixRigid {
   std::vector<std::unordered_map<int, double>> dist_ws_buffers;
   int *node_type;
 
+
+  void print_watershed_ownership_grid(int, int);
+  void print_watershed_buffer_grid(int, int);
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, double*, std::string);
   void read_gridfile(int, int, std::string, int **, double *);

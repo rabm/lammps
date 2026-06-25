@@ -279,6 +279,19 @@ double interpolate_LS_array(int dimension, int mybin, double *mygrid, int *ngrid
 }
 
 /* ----------------------------------------------------------------------
+  Search two unordered maps (owned + buffer) for LS value
+-------------------------------------------------------------------------*/
+
+double get_ws_ls_value(int mybin, std::unordered_map<int, double> *mytable, std::unordered_map<int, double> *mybuffer)
+{
+  if (mytable->find(mybin) != mytable->end())
+    return mytable->at(mybin);
+  if (mybuffer->find(mybin) != mybuffer->end())
+    return mybuffer->at(mybin);
+  return BIG;
+}
+
+/* ----------------------------------------------------------------------
   Perform trilinear interpolation to get level-set value and normal
 -------------------------------------------------------------------------*/
 
@@ -299,21 +312,19 @@ double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int
 
   double ls000 = mytable->at(mybin);
 
-
   // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
   // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
   // so 2.0 is safe.
   if (ls000 > 2.0 * stride)
     return ls000;
 
+  double ls100 = get_ws_ls_value(mybin + 1, mytable, mybuffer);
+  double ls010 = get_ws_ls_value(mybin + ngrid[0], mytable, mybuffer);
+  double ls110 = get_ws_ls_value(mybin + 1 + ngrid[0], mytable, mybuffer);
+
   // Rest of the level-set values on the grid points in the lower z plane (ind_z)
-  if (mytable->find(mybin + 1) == mytable->end() ||
-      mytable->find(mybin + ngrid[0]) == mytable->end() ||
-      mytable->find(mybin + 1 + ngrid[0]) == mytable->end())
+  if (ls100 == BIG || ls010 == BIG || ls110 == BIG)
     return BIG;
-  double ls100 = mytable->at(mybin + 1);
-  double ls010 = mytable->at(mybin + ngrid[0]);
-  double ls110 = mytable->at(mybin + 1 + ngrid[0]);
 
   // The normalised coordinates within the current grid cell.
   // May be safer to cap them with math::max(math::min(x_red, 1.0), 0.0)
@@ -334,16 +345,14 @@ double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int
   nvec[1] = ls010 - ls000 + x_red_local[0] * (ls110 - ls100 - ls010 + ls000);
   nvec[2] = 0.0;
   if (dimension == 3) { // 3D
+
+    double ls001 = get_ws_ls_value(mybin + ngrid[0] * ngrid[1], mytable, mybuffer);
+    double ls101 = get_ws_ls_value(mybin + 1 + ngrid[0] * ngrid[1], mytable, mybuffer);
+    double ls011 = get_ws_ls_value(mybin + ngrid[0] + ngrid[0] * ngrid[1], mytable, mybuffer);
+    double ls111 = get_ws_ls_value(mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1], mytable, mybuffer);
     // Level-set values on the grid points in the upper z plane (ind_z+1)
-    if (mytable->find(mybin + ngrid[0] * ngrid[1]) == mytable->end() ||
-        mytable->find(mybin + 1 + ngrid[0] * ngrid[1]) == mytable->end() ||
-        mytable->find(mybin + ngrid[0] + ngrid[0] * ngrid[1]) == mytable->end() ||
-        mytable->find(mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]) == mytable->end())
+    if (ls001 == BIG || ls101 == BIG || ls011 == BIG || ls111 == BIG)
       return BIG;
-    double ls001 = mytable->at(mybin + ngrid[0] * ngrid[1]);
-    double ls101 = mytable->at(mybin + 1 + ngrid[0] * ngrid[1]);
-    double ls011 = mytable->at(mybin + ngrid[0] + ngrid[0] * ngrid[1]);
-    double ls111 = mytable->at(mybin + 1 + ngrid[0] + ngrid[0] * ngrid[1]);
 
     // Bi-linear interpolation in the upper z plane (ind_z+1)
     double lsxy1 = ls001 + x_red_local[1] * (ls011 - ls001) +
@@ -357,6 +366,7 @@ double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int
     nvec[1] += x_red_local[2] * (ls011 - ls001 + x_red_local[0] * (ls111 - ls101 - ls011 + ls001));
     nvec[2] = lsxy1 - lsxy0;
   }
+
 
   // Normal normally doesn't need scaling, but we scaled grid_min and grid_stride
   // but not the level-set values, hence it is necessary. However, we'll normalise later anyway.

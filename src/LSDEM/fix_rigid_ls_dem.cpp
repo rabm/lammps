@@ -39,10 +39,9 @@
 #include <map>
 #include <set>
 
-// todo: make watershed/array an argument
+// todo: rename bin to cell, node type to ... node index?
 //       check serial watershed
 //       check parallel watershed + array
-//       make changes to pair style
 //       port to small
 
 using namespace LAMMPS_NS;
@@ -258,7 +257,6 @@ void FixRigidLSDEM::init()
   // ------------------------------ //
 
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
-  grow_arrays(atom->nmax);
 
   int nlocal = atom->nlocal;
   if (storage_flag == WATERSHED) {
@@ -277,6 +275,7 @@ void FixRigidLSDEM::init()
                                    // +1 for body (always run)
 
     comm_border += n_dist_grid + 5;
+    printf("n_dist_grid = %d, com mborder %d\n", n_dist_grid, comm_border);
   }
 
   if (index_global_grid) {
@@ -292,6 +291,8 @@ void FixRigidLSDEM::init()
       dist_ws_buffers.resize(nlocal);
     }
   }
+
+  grow_arrays(atom->nmax);
 
   // ------------------------------ //
   // Calculate node type            //
@@ -455,10 +456,13 @@ void FixRigidLSDEM::init()
 
       // Now, run watershed operation
       int j, ns, newbin, current_walker;
+      int max_bins_per_node = -1;
       int ntotal = nlocal + atom->nghost;
       std::vector <int> bin_owners(nbin);
       std::vector <std::pair <int, int>> walkers;
       std::vector <std::pair <int, int>> next_walkers;
+
+      printf("allocating binatom at %d\n", nbin);
 
       for (auto& s : node_bins) s.clear();
       for (auto& s : node_buffer_bins) s.clear();
@@ -534,44 +538,64 @@ void FixRigidLSDEM::init()
         next_walkers.clear();
       }
 
-      // Create buffer
+      // Create buffer (1st and 2nd neighbors of all bins)
       for (i = 0; i < nnt; i++) {
         for (const auto& mybin : node_bins[i]) {
-          for (int a = 0; a < dimension; a++) {
-            if (a == 0) ns = 1;
-            else if (a == 1) ns = nx;
-            else ns = nx * ny;
-            for (int sign = -1; sign <= 1; sign += 2) {
-              newbin = mybin + sign * ns;
-              if (bin_owners[newbin] == -1 || bin_owners[newbin] != i)
-                node_buffer_bins[i].insert(newbin);
+          for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+              for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                if (dimension == 2 && dz != 0) continue;
+                newbin = mybin + dx + dy * nx + dz * nx * ny;
+               // printf("node %d mybin %d newbin %d nx %d ny %d nz %d\n", i, mybin, newbin, nx, ny, nz);
+                if (newbin < 0 || newbin >= nbin)
+                  error->one(FLERR, "Bad bin index in watershed buffer creation");
+                if (bin_owners[newbin] != i)
+                  node_buffer_bins[i].insert(newbin);
+              }
             }
           }
         }
       }
 
-      // Size storage for the # of node types in this type of grain
-      global_ws_tables[index_global].resize(nnt);
-      global_ws_buffers[index_global].resize(nnt);
-
+      // Relocate bins to global per-grain/node-type storage
       if (global_flag) {
+        global_ws_tables[index_global].resize(nnt);
+        global_ws_buffers[index_global].resize(nnt);
+
         for (i = 0; i < nnt; i++) {
           for (auto bin : node_bins[i])
             global_ws_tables[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
           for (auto bin : node_buffer_bins[i])
             global_ws_buffers[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
+        //print_watershed_ownership_grid(0, index_global);
+        //print_watershed_buffer_grid(0, index_global);
+
+        //for (auto bin : node_bins[0])
+        //  printf("node 0 owns %d\n", bin);
+
+        //for (auto bin : node_buffer_bins[0])
+        //  printf("node 0 buffer %d\n", bin);
+
       } else {
+        int nt, size_sum;
         for (i = 0; i < nlocal; i++) {
           ibody = body[i];
           if (pair.second.find(ibody) == pair.second.end())
             continue;
 
-          for (auto bin : node_bins[node_type[i]])
+          nt = node_type[i];
+          size_sum = (int) (node_bins[nt].size() + node_buffer_bins[nt].size());
+          max_bins_per_node = MAX(max_bins_per_node, size_sum);
+
+          for (auto bin : node_bins[nt])
             dist_ws_tables[i].insert(std::make_pair(bin, temp_grid_values[bin]));
-          for (auto bin : node_buffer_bins[node_type[i]])
+          for (auto bin : node_buffer_bins[nt])
             dist_ws_buffers[i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
+
+        printf("Max bin count for distributed watershed = %d\n", max_bins_per_node);
       }
     }
   }
@@ -620,6 +644,152 @@ void FixRigidLSDEM::init()
   memory->destroy(itensor_custom);
   memory->destroy(quat_custom);
 }
+
+void FixRigidLSDEM::print_watershed_ownership_grid(int ibody, int index_global)
+{
+  int dim = domain->dimension;
+  int nx = grid_size[ibody][0];
+  int ny = grid_size[ibody][1];
+  int nz = grid_size[ibody][2];
+
+  // Build reverse map: bin -> atom tag
+  std::unordered_map<int, tagint> bin_to_tag;
+
+  tagint *tag = atom->tag;
+  tagint min_id = INT_MAX;
+
+  // Find minimum tag for this body
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (body[i] == ibody) {
+      min_id = std::min(min_id, tag[i]);
+    }
+  }
+
+  // Build reverse lookup
+  int nnt = node_type ? -1 : 0;
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (body[i] != ibody) continue;
+    int node_t = node_type[i];
+    for (const auto& bin_pair : global_ws_tables[index_global][node_t]) {
+      bin_to_tag[bin_pair.first] = tag[i];
+    }
+  }
+
+  // MPI_Allgather to collect all tags
+  MPI_Allreduce(nullptr, nullptr, 0, MPI_INT, MPI_MAX, world);
+
+  if (comm->me != 0) return;
+
+  // Print grid
+  utils::logmesg(lmp, "\n=== Watershed Ownership Grid for Body {} ===\n", ibody);
+  utils::logmesg(lmp, "Grid size: {}x{}x{}\n\n", nx, ny, nz);
+
+  if (dim == 3) {
+    for (int k = 0; k < nz; k++) {
+      utils::logmesg(lmp, "z = {}\n", k);
+      for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+          int bin = i + j * nx + k * nx * ny;
+          if (bin_to_tag.find(bin) != bin_to_tag.end()) {
+            utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
+          } else {
+            utils::logmesg(lmp, "   -- ");
+          }
+        }
+        utils::logmesg(lmp, "\n");
+      }
+      utils::logmesg(lmp, "\n");
+    }
+  } else {  // 2D case
+    for (int j = 0; j < ny; j++) {
+      for (int i = 0; i < nx; i++) {
+        int bin = i + j * nx;
+        if (bin_to_tag.find(bin) != bin_to_tag.end()) {
+          utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
+        } else {
+          utils::logmesg(lmp, "   -- ");
+        }
+      }
+      utils::logmesg(lmp, "\n");
+    }
+  }
+}
+
+
+
+
+
+
+void FixRigidLSDEM::print_watershed_buffer_grid(int ibody, int index_global)
+{
+  int dim = domain->dimension;
+  int nx = grid_size[ibody][0];
+  int ny = grid_size[ibody][1];
+  int nz = grid_size[ibody][2];
+
+  // Build reverse map: bin -> atom tag
+  std::unordered_map<int, tagint> bin_to_tag;
+
+  tagint *tag = atom->tag;
+  tagint min_id = INT_MAX;
+
+  // Find minimum tag for this body
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (body[i] == ibody) {
+      min_id = std::min(min_id, tag[i]);
+    }
+  }
+
+  // Build reverse lookup
+  int nnt = node_type ? -1 : 0;
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (body[i] != ibody) continue;
+    int node_t = node_type[i];
+    for (const auto& bin_pair : global_ws_buffers[index_global][node_t]) {
+      bin_to_tag[bin_pair.first] = tag[i];
+    }
+  }
+
+  // MPI_Allgather to collect all tags
+  MPI_Allreduce(nullptr, nullptr, 0, MPI_INT, MPI_MAX, world);
+
+  if (comm->me != 0) return;
+
+  // Print grid
+  utils::logmesg(lmp, "\n=== Watershed Buffer Grid for Body {} ===\n", ibody);
+  utils::logmesg(lmp, "Grid size: {}x{}x{}\n\n", nx, ny, nz);
+
+  if (dim == 3) {
+    for (int k = 0; k < nz; k++) {
+      utils::logmesg(lmp, "z = {}\n", k);
+      for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+          int bin = i + j * nx + k * nx * ny;
+          if (bin_to_tag.find(bin) != bin_to_tag.end()) {
+            utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
+          } else {
+            utils::logmesg(lmp, "   -- ");
+          }
+        }
+        utils::logmesg(lmp, "\n");
+      }
+      utils::logmesg(lmp, "\n");
+    }
+  } else {  // 2D case
+    for (int j = 0; j < ny; j++) {
+      for (int i = 0; i < nx; i++) {
+        int bin = i + j * nx;
+        if (bin_to_tag.find(bin) != bin_to_tag.end()) {
+          utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
+        } else {
+          utils::logmesg(lmp, "   -- ");
+        }
+      }
+      utils::logmesg(lmp, "\n");
+    }
+  }
+}
+
 
 /* ---------------------------------------------------------------------- */
 
@@ -804,12 +974,17 @@ void FixRigidLSDEM::grow_arrays(int nmax)
         "distributed level sets with a cutoff of {} and a min stride of {}",
         subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
 
-    memory->grow(dist_grid_values, nmax, n_dist_grid, "rigid/ls/dem:dist_grid_values");
-    memory->grow(dist_grid_min, nmax, 3, "rigid/ls/dem:dist_grid_min");
+    if (storage_flag == WATERSHED) {
+      dist_ws_tables.resize(nmax);
+      dist_ws_buffers.resize(nmax);
+    } else {
+      memory->grow(dist_grid_values, nmax, n_dist_grid, "rigid/ls/dem:dist_grid_values");
+      memory->grow(dist_grid_min, nmax, 3, "rigid/ls/dem:dist_grid_min");
+    }
   }
 
   if (storage_flag == WATERSHED)
-    memory->create(node_type, nmax, "rigid/ls/dem:node_type");
+    memory->grow(node_type, nmax, "rigid/ls/dem:node_type");
 }
 
 /* ----------------------------------------------------------------------
@@ -1436,6 +1611,11 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int mybin, double *no
   }
 
   double dist = interpolate_LS_watershed(dim, mybin, mytable, mybuffer, ngrid, x_local, ix, normal, grid_stride[jbody]);
+
+//if (atom->tag[i] == 8 || atom->tag[j] == 8)
+//if (atom->tag[i] == 95 || atom->tag[j] == 95)
+//  printf("ij %d %d (%d %d) mybin %d dist %g gj %d ntj %d size %d dx %g\n", atom->tag[i], atom->tag[j], i, j, mybin, dist, grid_index[jbody], node_type[j], mytable->size(), mybuffer->size(),atom->x[i][0] - atom->x[j][0]);
+
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
