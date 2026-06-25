@@ -454,8 +454,12 @@ void FixRigidLSDEM::init()
         nmax_node_current = MAX(nmax_node_current, node_type[i]);
       }
       nmax_node_current += 1;
-      MPI_Allreduce(global_node_bins, global_node_bins, nmax_node_type, MPI_INT, MPI_MAX, world);
-      MPI_Allreduce(&nmax_node_current, &nmax_node_current, 1, MPI_INT, MPI_MAX, world);
+      // MPI_IN_PLACE: send and receive buffers must not be aliased (MPI standard); passing the same
+      // pointer for both is undefined behaviour and aborts under MPI parameter checking. (WATERSHED
+      // storage only; multi-rank watershed has no regression test, so this is a standards-compliance
+      // fix of the obvious defect, not an end-to-end-validated watershed-multirank guarantee.)
+      MPI_Allreduce(MPI_IN_PLACE, global_node_bins, nmax_node_type, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(MPI_IN_PLACE, &nmax_node_current, 1, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation
 
