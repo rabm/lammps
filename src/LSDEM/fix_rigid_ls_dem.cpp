@@ -385,6 +385,7 @@ void FixRigidLSDEM::init()
       }
 
       if (distributed_flag) {
+        int error_code_any = 0;
         for (i = 0; i < atom->nlocal; i++) {
           if (!(mask[i] & groupbit)) continue;
           ibody = body[i];
@@ -404,11 +405,18 @@ void FixRigidLSDEM::init()
           if (error_code == -1)
             error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-          MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-          if (error_code_global && comm->me == 0)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-              "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+          error_code_any = MAX(error_code_any, error_code);   // accumulate; the collective is hoisted below
         }
+        // The padding-warning reduction MUST be OUTSIDE the per-local-atom loop. Ranks have DIFFERENT
+        // local-atom counts, so an MPI_Allreduce inside the loop makes a different number of collective
+        // calls per rank -> the collective desyncs -> MPI_ERR_TRUNCATE abort under np>2 (this is why
+        // large-dist crashed at np4 but ran at np2). Mirrors the small-fix BUG-1b fix. This file_map
+        // loop is itself synced across ranks (body->gridfile map is all-nbody-replicated), so one
+        // reduction per file is collective-safe.
+        MPI_Allreduce(&error_code_any, &error_code_global, 1, MPI_INT, MPI_MAX, world);
+        if (error_code_global && comm->me == 0)
+          error->warning(FLERR, "Level set of a distributed body does not include a large enough buffer "
+            "for the distributed grid cutoff on at least one node; local grid padded with BIG values.");
       }
     } else {
       // Calculate watershed and temporarily store peratom data
