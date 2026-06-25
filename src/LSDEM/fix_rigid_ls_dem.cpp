@@ -253,6 +253,36 @@ void FixRigidLSDEM::init()
     }
   }
 
+  // --- auto-size the communication (ghost) cutoff for body-owner lookups ---
+  // Mirrors fix rigid/small/ls/dem (which sizes it from the molecule template): the
+  // large fix has no template, so take the grain extent from the level-set grid
+  // bounding box just read (grid cells x physical cell size). A contact-partner ghost
+  // node sits up to the pair cutoff outside a boundary and that body's owning atom up
+  // to the grain extent further, so cutghost must reach maxcut + grain_extent. Only set
+  // it when the user gave no comm_modify cutoff; warn if theirs is too small.
+  {
+    double grain_extent = 0.0;
+    for (int jb = 0; jb < nbody; jb++)
+      for (int d = 0; d < 3; d++)
+        grain_extent = MAX(grain_extent, grid_size[jb][d] * grid_stride[jb] * grid_scale[jb]);
+    if (grain_extent > 0.0) {
+      double need = maxcut + grain_extent;
+      if (comm->cutghostuser == 0.0) {
+        comm->cutghostuser = need;
+        if (comm->me == 0)
+          utils::logmesg(lmp, "fix {}: auto communication cutoff = {:.4g} "
+                         "(grain extent {:.4g} + pair cutoff {:.4g}); "
+                         "override with comm_modify cutoff\n",
+                         style, need, grain_extent, maxcut);
+      } else if (comm->cutghostuser < need && comm->me == 0) {
+        error->warning(FLERR, "fix {}: comm_modify cutoff {:.4g} is below the LS-DEM "
+                       "body-owner reach {:.4g} (grain extent {:.4g} + pair cutoff {:.4g}); "
+                       "raise it if you hit 'cannot find atom that owns body'",
+                       style, comm->cutghostuser, need, grain_extent, maxcut);
+      }
+    }
+  }
+
   // ------------------------------ //
   // Allocate memory for level sets //
   // ------------------------------ //

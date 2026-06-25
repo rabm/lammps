@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 static constexpr double EPSILON = 1e-12;
 // "pair_style ls/dem auto": node-node cutoff = this factor x the (worst-case)
@@ -1168,9 +1169,44 @@ void PairLSDEM::init_style()
       }
       char_spacing = MAX(char_spacing, tmpl_max_nn);
     }
+    // No molecule templates (e.g. fix rigid/ls/dem built via read_data has none):
+    // derive the characteristic node spacing from the rigid-body ATOMS instead. The
+    // worst-case nearest-neighbour node gap is translation/rotation invariant, so a
+    // per-body LOCAL estimate reduced with MPI_MAX is decomposition-robust -- a body
+    // split across subdomains can only OVER-estimate its gap (a stray node's nearest
+    // local same-body node is farther), giving a safe, never-too-small cutoff.
+    if (char_spacing <= 0.0) {
+      tagint *molecule = atom->molecule;
+      double **x = atom->x;
+      const int nlocal = atom->nlocal;
+      std::unordered_map<tagint, std::vector<double>> bodies;
+      for (int i = 0; i < nlocal; i++) {
+        if (molecule[i] <= 0) continue;
+        std::vector<double> &v = bodies[molecule[i]];
+        v.push_back(x[i][0]); v.push_back(x[i][1]); v.push_back(x[i][2]);
+      }
+      double local_max_nn = 0.0;
+      for (auto &kv : bodies) {
+        const std::vector<double> &p = kv.second;
+        const int m = (int)(p.size() / 3);
+        if (m < 2) continue;
+        for (int a = 0; a < m; a++) {
+          double best = -1.0;
+          for (int b = 0; b < m; b++) {
+            if (b == a) continue;
+            double dx = p[3*a]-p[3*b], dy = p[3*a+1]-p[3*b+1], dz = p[3*a+2]-p[3*b+2];
+            double r2 = dx*dx + dy*dy + dz*dz;
+            if (best < 0.0 || r2 < best) best = r2;
+          }
+          if (best > 0.0) local_max_nn = MAX(local_max_nn, sqrt(best));
+        }
+      }
+      MPI_Allreduce(&local_max_nn, &char_spacing, 1, MPI_DOUBLE, MPI_MAX, world);
+    }
+
     if (char_spacing <= 0.0)
-      error->all(FLERR, "pair ls/dem cutoff 'auto' requires LS-DEM molecule templates "
-                 "(create_atoms ... mol); set the cutoff explicitly instead");
+      error->all(FLERR, "pair ls/dem cutoff 'auto' found no LS-DEM molecule templates "
+                 "(create_atoms ... mol) nor rigid-body atoms; set the cutoff explicitly instead");
 
     double auto_cut = auto_cut_factor * char_spacing;
     maxcut = auto_cut;
