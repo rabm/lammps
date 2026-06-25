@@ -132,6 +132,28 @@ void PairLSDEM::cache_body_info(int ntotal)
 }
 
 /* ----------------------------------------------------------------------
+   Decomposition-invariant representative test (BUG-6 fix). See the header for why the
+   tie-break for equal-volume grains must be physical (inter-COM direction), not the
+   molecule-id: create_atoms labels lattice sites decomposition-dependently, so an id
+   tie-break flips the representative grain across MPI decompositions.
+------------------------------------------------------------------------- */
+
+bool PairLSDEM::rep_is_i(int i, int j) const
+{
+  const double vi = binfo[i].vol, vj = binfo[j].vol;
+  if (vi != vj) return vi < vj;
+  double **xcom = atom->xcom;
+  double dcx = xcom[j][0] - xcom[i][0];
+  double dcy = xcom[j][1] - xcom[i][1];
+  double dcz = xcom[j][2] - xcom[i][2];
+  domain->minimum_image(FLERR, dcx, dcy, dcz);
+  const double tol = 1.0e-12;
+  if (dcx >  tol) return true;   if (dcx < -tol) return false;
+  if (dcy >  tol) return true;   if (dcy < -tol) return false;
+  return dcz > 0.0;
+}
+
+/* ----------------------------------------------------------------------
    Build the per-representative-node CANDIDATE SEGMENTS from the neighbour list.
    Called only when the list is rebuilt. No positions/rsq here: the rep choice and
    partner body are position-independent, so the per-step pass just re-reduces rsq
@@ -171,10 +193,10 @@ void PairLSDEM::build_rep_segments()
       const BodyInfo &bj = binfo[j];
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      // Representative = smaller grain (volume, then body-id tie-break). Same test as
-      // the force loop. Record the candidate on the partner body of the rep node.
+      // Representative = smaller grain (volume, then a DECOMPOSITION-INVARIANT inter-COM
+      // tie-break for equal grains -- NOT molecule-id; see rep_is_i() / BUG-6).
       int rep, pbody, poff, cand;
-      if (bi.vol < bj.vol || (bi.vol == bj.vol && bi.bID < bj.bID)) {
+      if (rep_is_i(i, j)) {
         rep = i; pbody = bj.bID; poff = bj.off; cand = j;
       } else {
         rep = j; pbody = bi.bID; poff = bi.off; cand = i;
@@ -389,8 +411,9 @@ void PairLSDEM::compute(int eflag, int vflag)
       calc_force_of_i_on_j = 0;
 
       if (watershed_flag) {
-        // Use the nodes of the smallest grain.
-        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
+        // Use the nodes of the smallest grain (equal-grain tie-break is the
+        // decomposition-invariant inter-COM rule, NOT molecule-id; see rep_is_i / BUG-6).
+        if (rep_is_i(i, j)) {
           calc_force_of_i_on_j = 1;
         } else {
           calc_force_of_j_on_i = 1;

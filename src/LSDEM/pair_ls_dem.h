@@ -97,6 +97,19 @@ class PairLSDEM : public Pair {
     return -1;
   }
 
+  // Decomposition-invariant REPRESENTATIVE test (BUG-6 fix). The contact uses the nodes of
+  // the smaller-volume grain. For EQUAL volumes the tie must be broken on a PHYSICAL key,
+  // not on molecule-id / atom-tag: create_atoms assigns atom tags and molecule-ids to
+  // lattice sites in a decomposition-DEPENDENT order (same physical config, different id
+  // labelling under MPI), so the former `bID` tie-break selected a DIFFERENT representative
+  // grain across decompositions for equal grains -> different rep-node position -> different
+  // (non-reproducible) dense-contact force. The inter-COM direction (min-image) is a
+  // physical quantity, identical on every rank, so it breaks the tie deterministically.
+  // Returns true if atom i is the representative (the canonically-"lower" grain).
+  // Defined in the .cpp (needs atom->xcom / domain->minimum_image). Called from
+  // build_rep_segments() (rebuilt only at reneighbor) so the call cost is amortized.
+  bool rep_is_i(int i, int j) const;
+
   // CSR-style CANDIDATE SEGMENTS, rebuilt only when the neighbour list is rebuilt.
   // For each representative node we keep, per partner body, the list of candidate
   // partner ATOM INDICES (in neighbour-sweep order). The rep choice + partner body
