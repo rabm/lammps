@@ -69,7 +69,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   ls_read_flag = 0;
 
   global_flag = 0;
-  distributed_flag = GLOBAL;
+  distributed_flag = 0;
   storage_flag = ARRAY; // Default is array
 
   n_extra_attributes = 3;
@@ -237,6 +237,7 @@ void FixRigidLSDEM::init()
     // Store global info
     grid_index[ibody] = -1;
     if (grid_style[ibody] == GLOBAL) {
+      global_flag = 1;
       // Copy from prior entry if it exists
       if (file_map.find(filename) != file_map.end())
         for (const auto& jbody : file_map[filename])
@@ -249,6 +250,8 @@ void FixRigidLSDEM::init()
         ntotal_global[index_global_grid] = grid_size_flat;
         index_global_grid += 1;
       }
+    } else {
+      distributed_flag = 1;
     }
   }
 
@@ -259,25 +262,6 @@ void FixRigidLSDEM::init()
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
 
   int nlocal = atom->nlocal;
-  if (storage_flag == WATERSHED) {
-    comm_border = 1;
-  } else {
-    comm_border = 0;
-  }
-
-  if (distributed_flag) {
-    for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
-    if (dimension == 2) subgrid_size[2] = 1;
-    n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
-
-    maxexchange = n_dist_grid + 5; // +1 for flag to indicate whether grid info included
-                                   // +3 for minimum values
-                                   // +1 for body (always run)
-
-    comm_border += n_dist_grid + 5;
-    printf("n_dist_grid = %d, com mborder %d\n", n_dist_grid, comm_border);
-  }
-
   if (index_global_grid) {
     if (storage_flag == WATERSHED) {
       global_ws_tables.resize(index_global_grid);
@@ -285,10 +269,16 @@ void FixRigidLSDEM::init()
     } else {
       memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/ls/dem:global_grids");
     }
-  } else {
+  }
+
+  if (distributed_flag) {
     if (storage_flag == WATERSHED) {
       dist_ws_tables.resize(nlocal);
       dist_ws_buffers.resize(nlocal);
+    } else {
+      for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
+      if (dimension == 2) subgrid_size[2] = 1;
+      n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
     }
   }
 
@@ -462,8 +452,6 @@ void FixRigidLSDEM::init()
       std::vector <std::pair <int, int>> walkers;
       std::vector <std::pair <int, int>> next_walkers;
 
-      printf("allocating binatom at %d\n", nbin);
-
       for (auto& s : node_bins) s.clear();
       for (auto& s : node_buffer_bins) s.clear();
 
@@ -547,7 +535,6 @@ void FixRigidLSDEM::init()
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 if (dimension == 2 && dz != 0) continue;
                 newbin = mybin + dx + dy * nx + dz * nx * ny;
-               // printf("node %d mybin %d newbin %d nx %d ny %d nz %d\n", i, mybin, newbin, nx, ny, nz);
                 if (newbin < 0 || newbin >= nbin)
                   error->one(FLERR, "Bad bin index in watershed buffer creation");
                 if (bin_owners[newbin] != i)
@@ -569,15 +556,6 @@ void FixRigidLSDEM::init()
           for (auto bin : node_buffer_bins[i])
             global_ws_buffers[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
-        //print_watershed_ownership_grid(0, index_global);
-        //print_watershed_buffer_grid(0, index_global);
-
-        //for (auto bin : node_bins[0])
-        //  printf("node 0 owns %d\n", bin);
-
-        //for (auto bin : node_buffer_bins[0])
-        //  printf("node 0 buffer %d\n", bin);
-
       } else {
         int nt, size_sum;
         for (i = 0; i < nlocal; i++) {
@@ -594,27 +572,38 @@ void FixRigidLSDEM::init()
           for (auto bin : node_buffer_bins[nt])
             dist_ws_buffers[i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
-
-        printf("Max bin count for distributed watershed = %d\n", max_bins_per_node);
       }
     }
   }
 
-  if (storage_flag == WATERSHED && distributed_flag) {
-    memory->destroy(global_node_bins);
-
-    int max_nbins = -1;
-    for (i = 0; i < nlocal; i++)
-      max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
-
-    int max_nbins_global;
-    MPI_Allreduce(&max_nbins, &max_nbins_global, 1, MPI_INT, MPI_MAX, world);
-
-    comm_forward += 2 + 2 * max_nbins_global; // +2 for # of owned/buffer bins
-  }
-
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
+  memory->destroy(global_node_bins);
+
+  // ------------------------------ //
+  // Set communication variables    //
+  // ------------------------------ //
+
+
+  if (storage_flag == WATERSHED) {
+    comm_border = 1;
+    if (distributed_flag) {
+      int max_nbins = -1;
+      for (i = 0; i < nlocal; i++)
+        max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
+      MPI_Allreduce(&max_nbins, &n_dist_grid, 1, MPI_INT, MPI_MAX, world);
+
+      maxexchange = 2 + 2 * n_dist_grid;  // +2 for # of owned & buffer bins
+      comm_border += 2 + 2 * n_dist_grid; // +2 x # bins for bin, value pairs
+    }
+  } else {
+    comm_border = 0;
+    if (distributed_flag) {
+      maxexchange = n_dist_grid + 5;  // +1 for flag to indicate whether grid info included
+      comm_border += n_dist_grid + 5; // +3 for minimum values
+                                      // +1 for body (always run)
+    }
+  }
 
   FixRigid::init();
 
@@ -644,152 +633,6 @@ void FixRigidLSDEM::init()
   memory->destroy(itensor_custom);
   memory->destroy(quat_custom);
 }
-
-void FixRigidLSDEM::print_watershed_ownership_grid(int ibody, int index_global)
-{
-  int dim = domain->dimension;
-  int nx = grid_size[ibody][0];
-  int ny = grid_size[ibody][1];
-  int nz = grid_size[ibody][2];
-
-  // Build reverse map: bin -> atom tag
-  std::unordered_map<int, tagint> bin_to_tag;
-
-  tagint *tag = atom->tag;
-  tagint min_id = INT_MAX;
-
-  // Find minimum tag for this body
-  for (int i = 0; i < atom->nlocal; i++) {
-    if (body[i] == ibody) {
-      min_id = std::min(min_id, tag[i]);
-    }
-  }
-
-  // Build reverse lookup
-  int nnt = node_type ? -1 : 0;
-  for (int i = 0; i < atom->nlocal; i++) {
-    if (body[i] != ibody) continue;
-    int node_t = node_type[i];
-    for (const auto& bin_pair : global_ws_tables[index_global][node_t]) {
-      bin_to_tag[bin_pair.first] = tag[i];
-    }
-  }
-
-  // MPI_Allgather to collect all tags
-  MPI_Allreduce(nullptr, nullptr, 0, MPI_INT, MPI_MAX, world);
-
-  if (comm->me != 0) return;
-
-  // Print grid
-  utils::logmesg(lmp, "\n=== Watershed Ownership Grid for Body {} ===\n", ibody);
-  utils::logmesg(lmp, "Grid size: {}x{}x{}\n\n", nx, ny, nz);
-
-  if (dim == 3) {
-    for (int k = 0; k < nz; k++) {
-      utils::logmesg(lmp, "z = {}\n", k);
-      for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-          int bin = i + j * nx + k * nx * ny;
-          if (bin_to_tag.find(bin) != bin_to_tag.end()) {
-            utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
-          } else {
-            utils::logmesg(lmp, "   -- ");
-          }
-        }
-        utils::logmesg(lmp, "\n");
-      }
-      utils::logmesg(lmp, "\n");
-    }
-  } else {  // 2D case
-    for (int j = 0; j < ny; j++) {
-      for (int i = 0; i < nx; i++) {
-        int bin = i + j * nx;
-        if (bin_to_tag.find(bin) != bin_to_tag.end()) {
-          utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
-        } else {
-          utils::logmesg(lmp, "   -- ");
-        }
-      }
-      utils::logmesg(lmp, "\n");
-    }
-  }
-}
-
-
-
-
-
-
-void FixRigidLSDEM::print_watershed_buffer_grid(int ibody, int index_global)
-{
-  int dim = domain->dimension;
-  int nx = grid_size[ibody][0];
-  int ny = grid_size[ibody][1];
-  int nz = grid_size[ibody][2];
-
-  // Build reverse map: bin -> atom tag
-  std::unordered_map<int, tagint> bin_to_tag;
-
-  tagint *tag = atom->tag;
-  tagint min_id = INT_MAX;
-
-  // Find minimum tag for this body
-  for (int i = 0; i < atom->nlocal; i++) {
-    if (body[i] == ibody) {
-      min_id = std::min(min_id, tag[i]);
-    }
-  }
-
-  // Build reverse lookup
-  int nnt = node_type ? -1 : 0;
-  for (int i = 0; i < atom->nlocal; i++) {
-    if (body[i] != ibody) continue;
-    int node_t = node_type[i];
-    for (const auto& bin_pair : global_ws_buffers[index_global][node_t]) {
-      bin_to_tag[bin_pair.first] = tag[i];
-    }
-  }
-
-  // MPI_Allgather to collect all tags
-  MPI_Allreduce(nullptr, nullptr, 0, MPI_INT, MPI_MAX, world);
-
-  if (comm->me != 0) return;
-
-  // Print grid
-  utils::logmesg(lmp, "\n=== Watershed Buffer Grid for Body {} ===\n", ibody);
-  utils::logmesg(lmp, "Grid size: {}x{}x{}\n\n", nx, ny, nz);
-
-  if (dim == 3) {
-    for (int k = 0; k < nz; k++) {
-      utils::logmesg(lmp, "z = {}\n", k);
-      for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-          int bin = i + j * nx + k * nx * ny;
-          if (bin_to_tag.find(bin) != bin_to_tag.end()) {
-            utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
-          } else {
-            utils::logmesg(lmp, "   -- ");
-          }
-        }
-        utils::logmesg(lmp, "\n");
-      }
-      utils::logmesg(lmp, "\n");
-    }
-  } else {  // 2D case
-    for (int j = 0; j < ny; j++) {
-      for (int i = 0; i < nx; i++) {
-        int bin = i + j * nx;
-        if (bin_to_tag.find(bin) != bin_to_tag.end()) {
-          utils::logmesg(lmp, "{:6}", bin_to_tag[bin]);
-        } else {
-          utils::logmesg(lmp, "   -- ");
-        }
-      }
-      utils::logmesg(lmp, "\n");
-    }
-  }
-}
-
 
 /* ---------------------------------------------------------------------- */
 
@@ -969,15 +812,14 @@ void FixRigidLSDEM::grow_arrays(int nmax)
   FixRigid::grow_arrays(nmax);
 
   if (distributed_flag) {
-    if (n_dist_grid > RECOMMENDED_MAX_NGRID)
-      error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for "
-        "distributed level sets with a cutoff of {} and a min stride of {}",
-        subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-
     if (storage_flag == WATERSHED) {
       dist_ws_tables.resize(nmax);
       dist_ws_buffers.resize(nmax);
     } else {
+      if (n_dist_grid > RECOMMENDED_MAX_NGRID)
+        error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for "
+        "distributed level sets with a cutoff of {} and a min stride of {}",
+        subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
       memory->grow(dist_grid_values, nmax, n_dist_grid, "rigid/ls/dem:dist_grid_values");
       memory->grow(dist_grid_min, nmax, 3, "rigid/ls/dem:dist_grid_min");
     }
@@ -1036,6 +878,8 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
     j = list[i];
     buf[m++] = ubuf(body[j]).d;
     if (distributed_flag) {
+
+      int m0 = m;
       if (grid_style[body[j]] != DISTRIBUTED) {
         buf[m++] = 0;
         continue;
@@ -1043,16 +887,18 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
       buf[m++] = 1;
 
       if (storage_flag == WATERSHED) {
-        buf[m++] = dist_ws_tables[j].size();
+        buf[m++] = (double) (dist_ws_tables[j].size());
         for (auto bin_pair : dist_ws_tables[j]) {
           buf[m++] = ubuf(bin_pair.first).d;
           buf[m++] = bin_pair.second;
         }
-        buf[m++] = dist_ws_buffers[j].size();
+        buf[m++] = (double) (dist_ws_buffers[j].size());
         for (auto buffer_pair : dist_ws_buffers[j]) {
           buf[m++] = ubuf(buffer_pair.first).d;
           buf[m++] = buffer_pair.second;
         }
+
+ //       m += (n_dist_grid - (int) dist_ws_tables[j].size() - (int) dist_ws_buffers[j].size()) * 2; // skip unused
       } else {
         for (k = 0; k < n_dist_grid; k++)
           buf[m++] = dist_grid_values[j][k];
@@ -1074,7 +920,8 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
 
 int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
 {
-  int i, k, last, flag;
+  int i, last, flag;
+  std::size_t k;
 
   int m = 0;
   last = first + n;
@@ -1085,18 +932,22 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
       if (flag == 0) continue; // no grid info for this atom
 
       if (storage_flag == WATERSHED) {
-        int n_table = buf[m++];
+        std::size_t n_table = (std::size_t) buf[m++];
         for (k = 0; k < n_table; k++) {
           int bin = ubuf(buf[m++]).i;
           double value = buf[m++];
+          dist_ws_tables[i].clear();
           dist_ws_tables[i].insert(std::make_pair(bin, value));
         }
-        int n_buffer = buf[m++];
+        std::size_t n_buffer = (std::size_t) buf[m++];
         for (k = 0; k < n_buffer; k++) {
           int bin = ubuf(buf[m++]).i;
           double value = buf[m++];
+          dist_ws_buffers[i].clear();
           dist_ws_buffers[i].insert(std::make_pair(bin, value));
         }
+
+//        m += (n_dist_grid - n_table - n_buffer) * 2; // skip unused
       } else {
         for (k = 0; k < n_dist_grid; k++) dist_grid_values[i][k] = buf[m++];
         dist_grid_min[i][0] = buf[m++];
@@ -1129,16 +980,18 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
     buf[m++] = 1;
 
     if (storage_flag == WATERSHED) {
-      buf[m++] = dist_ws_tables[i].size();
+      buf[m++] = (double) (dist_ws_tables[i].size());
       for (auto bin_pair : dist_ws_tables[i]) {
         buf[m++] = ubuf(bin_pair.first).d;
         buf[m++] = bin_pair.second;
       }
-      buf[m++] = dist_ws_buffers[i].size();
+      buf[m++] = (double) (dist_ws_buffers[i].size());
       for (auto buffer_pair : dist_ws_buffers[i]) {
         buf[m++] = ubuf(buffer_pair.first).d;
         buf[m++] = buffer_pair.second;
       }
+
+//      m += (n_dist_grid - (int) dist_ws_tables[i].size() - (int) dist_ws_buffers[i].size()) * 2; // skip unused
     } else {
       for (int n = 0; n < n_dist_grid; n++) buf[m++] = dist_grid_values[i][n];
       buf[m++] = dist_grid_min[i][0];
@@ -1148,7 +1001,7 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
   }
 
   if (storage_flag == WATERSHED)
-    buf[m++] = node_type[i];
+    buf[m++] = ubuf(node_type[i]).d;
 
   return m;
 }
@@ -1167,18 +1020,20 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
       return m;
 
     if (storage_flag == WATERSHED) {
-      int n_table = buf[m++];
-      for (int k = 0; k < n_table; k++) {
+      std::size_t n_table = (std::size_t) buf[m++];
+      for (std::size_t k = 0; k < n_table; k++) {
         int bin = ubuf(buf[m++]).i;
         double value = buf[m++];
         dist_ws_tables[nlocal].insert(std::make_pair(bin, value));
       }
-      int n_buffer = buf[m++];
-      for (int k = 0; k < n_buffer; k++) {
+      std::size_t n_buffer = (std::size_t) buf[m++];
+      for (std::size_t k = 0; k < n_buffer; k++) {
         int bin = ubuf(buf[m++]).i;
         double value = buf[m++];
         dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
       }
+
+//      m += (n_dist_grid - n_table - n_buffer) * 2; // skip unused
     } else {
       for (int n = 0; n < n_dist_grid; n++) dist_grid_values[nlocal][n] = buf[m++];
       dist_grid_min[nlocal][0] = buf[m++];
@@ -1188,7 +1043,7 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
   }
 
   if (storage_flag == WATERSHED)
-    node_type[nlocal] = (int) buf[m++];
+    node_type[nlocal] = (int) ubuf(buf[m++]).i;
 
   return m;
 }
@@ -1611,11 +1466,6 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int mybin, double *no
   }
 
   double dist = interpolate_LS_watershed(dim, mybin, mytable, mybuffer, ngrid, x_local, ix, normal, grid_stride[jbody]);
-
-//if (atom->tag[i] == 8 || atom->tag[j] == 8)
-//if (atom->tag[i] == 95 || atom->tag[j] == 95)
-//  printf("ij %d %d (%d %d) mybin %d dist %g gj %d ntj %d size %d dx %g\n", atom->tag[i], atom->tag[j], i, j, mybin, dist, grid_index[jbody], node_type[j], mytable->size(), mybuffer->size(),atom->x[i][0] - atom->x[j][0]);
-
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
