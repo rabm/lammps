@@ -61,7 +61,7 @@ class FixRigidLSDEM : public FixRigid {
   char *id_fix;
   int index_ls_dem_touch_id;
 
-  int n_dist_grid;
+  int nmax_distributed;
   double **dist_grid_values;
   double **dist_grid_min;
   double min_stride;

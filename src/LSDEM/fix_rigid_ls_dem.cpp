@@ -40,8 +40,7 @@
 #include <set>
 
 // todo: rename bin to cell, node type to ... node index?
-//       check serial watershed
-//       check parallel watershed + array
+//       check parallel
 //       port to small
 
 using namespace LAMMPS_NS;
@@ -276,9 +275,10 @@ void FixRigidLSDEM::init()
       dist_ws_tables.resize(nlocal);
       dist_ws_buffers.resize(nlocal);
     } else {
+      // calculate nmax_distributed early for arrays b/c needed to allocate
       for (a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1; // try remove +1 and cast to int
       if (dimension == 2) subgrid_size[2] = 1;
-      n_dist_grid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+      nmax_distributed = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
     }
   }
 
@@ -591,16 +591,16 @@ void FixRigidLSDEM::init()
       int max_nbins = -1;
       for (i = 0; i < nlocal; i++)
         max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
-      MPI_Allreduce(&max_nbins, &n_dist_grid, 1, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
-      maxexchange = 2 + 2 * n_dist_grid;  // +2 for # of owned & buffer bins
-      comm_border += 2 + 2 * n_dist_grid; // +2 x # bins for bin, value pairs
+      maxexchange = 2 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins
+      comm_border += 2 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
   } else {
     comm_border = 0;
     if (distributed_flag) {
-      maxexchange = n_dist_grid + 5;  // +1 for flag to indicate whether grid info included
-      comm_border += n_dist_grid + 5; // +3 for minimum values
+      maxexchange = nmax_distributed + 5;  // +1 for flag to indicate whether grid info included
+      comm_border += nmax_distributed + 5; // +3 for minimum values
                                       // +1 for body (always run)
     }
   }
@@ -816,11 +816,11 @@ void FixRigidLSDEM::grow_arrays(int nmax)
       dist_ws_tables.resize(nmax);
       dist_ws_buffers.resize(nmax);
     } else {
-      if (n_dist_grid > RECOMMENDED_MAX_NGRID)
+      if (nmax_distributed > RECOMMENDED_MAX_NGRID)
         error->warning(FLERR, "A large per-atom subgrid of size {}x{}x{} is being allocated for "
         "distributed level sets with a cutoff of {} and a min stride of {}",
         subgrid_size[0], subgrid_size[1], subgrid_size[2], maxcut, min_stride);
-      memory->grow(dist_grid_values, nmax, n_dist_grid, "rigid/ls/dem:dist_grid_values");
+      memory->grow(dist_grid_values, nmax, nmax_distributed, "rigid/ls/dem:dist_grid_values");
       memory->grow(dist_grid_min, nmax, 3, "rigid/ls/dem:dist_grid_min");
     }
   }
@@ -854,7 +854,7 @@ void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
       dist_ws_buffers[i].clear();
 
     } else {
-      for (int m = 0; m < n_dist_grid; m++)
+      for (int m = 0; m < nmax_distributed; m++)
         dist_grid_values[j][m] = dist_grid_values[i][m];
       dist_grid_min[j][0] = dist_grid_min[i][0];
       dist_grid_min[j][1] = dist_grid_min[i][1];
@@ -879,7 +879,6 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
     buf[m++] = ubuf(body[j]).d;
     if (distributed_flag) {
 
-      int m0 = m;
       if (grid_style[body[j]] != DISTRIBUTED) {
         buf[m++] = 0;
         continue;
@@ -898,9 +897,9 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
           buf[m++] = buffer_pair.second;
         }
 
- //       m += (n_dist_grid - (int) dist_ws_tables[j].size() - (int) dist_ws_buffers[j].size()) * 2; // skip unused
+ //       m += (nmax_distributed - (int) dist_ws_tables[j].size() - (int) dist_ws_buffers[j].size()) * 2; // skip unused
       } else {
-        for (k = 0; k < n_dist_grid; k++)
+        for (k = 0; k < nmax_distributed; k++)
           buf[m++] = dist_grid_values[j][k];
         buf[m++] = dist_grid_min[j][0];
         buf[m++] = dist_grid_min[j][1];
@@ -933,23 +932,23 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
 
       if (storage_flag == WATERSHED) {
         std::size_t n_table = (std::size_t) buf[m++];
+        dist_ws_tables[i].clear();
         for (k = 0; k < n_table; k++) {
           int bin = ubuf(buf[m++]).i;
           double value = buf[m++];
-          dist_ws_tables[i].clear();
           dist_ws_tables[i].insert(std::make_pair(bin, value));
         }
         std::size_t n_buffer = (std::size_t) buf[m++];
+        dist_ws_buffers[i].clear();
         for (k = 0; k < n_buffer; k++) {
           int bin = ubuf(buf[m++]).i;
           double value = buf[m++];
-          dist_ws_buffers[i].clear();
           dist_ws_buffers[i].insert(std::make_pair(bin, value));
         }
 
-//        m += (n_dist_grid - n_table - n_buffer) * 2; // skip unused
+//        m += (nmax_distributed - n_table - n_buffer) * 2; // skip unused
       } else {
-        for (k = 0; k < n_dist_grid; k++) dist_grid_values[i][k] = buf[m++];
+        for (k = 0; k < nmax_distributed; k++) dist_grid_values[i][k] = buf[m++];
         dist_grid_min[i][0] = buf[m++];
         dist_grid_min[i][1] = buf[m++];
         dist_grid_min[i][2] = buf[m++];
@@ -991,9 +990,9 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
         buf[m++] = buffer_pair.second;
       }
 
-//      m += (n_dist_grid - (int) dist_ws_tables[i].size() - (int) dist_ws_buffers[i].size()) * 2; // skip unused
+//      m += (nmax_distributed - (int) dist_ws_tables[i].size() - (int) dist_ws_buffers[i].size()) * 2; // skip unused
     } else {
-      for (int n = 0; n < n_dist_grid; n++) buf[m++] = dist_grid_values[i][n];
+      for (int n = 0; n < nmax_distributed; n++) buf[m++] = dist_grid_values[i][n];
       buf[m++] = dist_grid_min[i][0];
       buf[m++] = dist_grid_min[i][1];
       buf[m++] = dist_grid_min[i][2];
@@ -1021,21 +1020,23 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
 
     if (storage_flag == WATERSHED) {
       std::size_t n_table = (std::size_t) buf[m++];
+      dist_ws_tables[nlocal].clear();
       for (std::size_t k = 0; k < n_table; k++) {
         int bin = ubuf(buf[m++]).i;
         double value = buf[m++];
         dist_ws_tables[nlocal].insert(std::make_pair(bin, value));
       }
       std::size_t n_buffer = (std::size_t) buf[m++];
+      dist_ws_buffers[nlocal].clear();
       for (std::size_t k = 0; k < n_buffer; k++) {
         int bin = ubuf(buf[m++]).i;
         double value = buf[m++];
         dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
       }
 
-//      m += (n_dist_grid - n_table - n_buffer) * 2; // skip unused
+//      m += (nmax_distributed - n_table - n_buffer) * 2; // skip unused
     } else {
-      for (int n = 0; n < n_dist_grid; n++) dist_grid_values[nlocal][n] = buf[m++];
+      for (int n = 0; n < nmax_distributed; n++) dist_grid_values[nlocal][n] = buf[m++];
       dist_grid_min[nlocal][0] = buf[m++];
       dist_grid_min[nlocal][1] = buf[m++];
       dist_grid_min[nlocal][2] = buf[m++];
