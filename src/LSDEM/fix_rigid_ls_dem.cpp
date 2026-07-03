@@ -69,7 +69,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   global_flag = 0;
   distributed_flag = 0;
-  storage_flag = ARRAY; // Default is array
+  storage_mode = ARRAY;
   nmax_distributed = 0;
 
   n_extra_attributes = 3;
@@ -85,9 +85,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
       if (iarg + 2 > narg)
         utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
       if (strcmp(arg[iarg + 1], "array") == 0)
-        storage_flag = ARRAY;
+        storage_mode = ARRAY;
       else if (strcmp(arg[iarg + 1], "watershed") == 0)
-        storage_flag = WATERSHED;
+        storage_mode = WATERSHED;
       else
         error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
       iarg += 2;
@@ -110,7 +110,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
   memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
 
-  if (storage_flag == WATERSHED) {
+  if (storage_mode == WATERSHED) {
     memory->create(node_index, nbody, "rigid/ls/dem:node_index");
   }
 
@@ -263,7 +263,7 @@ void FixRigidLSDEM::init()
 
   int nlocal = atom->nlocal;
   if (index_global_grid) {
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       global_ws_tables.resize(index_global_grid);
       global_ws_buffers.resize(index_global_grid);
     } else {
@@ -272,7 +272,7 @@ void FixRigidLSDEM::init()
   }
 
   if (distributed_flag) {
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       dist_ws_tables.resize(nlocal);
       dist_ws_buffers.resize(nlocal);
       // calculate nmax_distributed after reading LS (need to perform WS to determine)
@@ -294,7 +294,7 @@ void FixRigidLSDEM::init()
   std::vector <std::set <int>> node_bins;
   std::vector <std::set <int>> node_buffer_bins;
   int *global_node_bins = nullptr;
-  if (storage_flag == WATERSHED) {
+  if (storage_mode == WATERSHED) {
 
     int max_node_index = -1;
     for (ibody = 0; ibody < nbody; ibody++) {
@@ -357,7 +357,7 @@ void FixRigidLSDEM::init()
       }
     }
 
-    if (storage_flag == ARRAY) {
+    if (storage_mode == ARRAY) {
       if (global_flag) {
         if (index_global != -1)
           for (int n = 0; n < ntotal_global[index_global]; n++)
@@ -587,7 +587,7 @@ void FixRigidLSDEM::init()
   // ------------------------------ //
 
 
-  if (storage_flag == WATERSHED) {
+  if (storage_mode == WATERSHED) {
     comm_border = 1;
     if (distributed_flag) {
       int max_nbins = -1;
@@ -743,7 +743,7 @@ void FixRigidLSDEM::set_arrays(int i)
 {
   FixRigid::set_arrays(i);
   atom->ivector[index_ls_dem_touch_id][i] = -1;
-  if (storage_flag == WATERSHED)
+  if (storage_mode == WATERSHED)
     node_index[i] = -1;
 }
 
@@ -820,7 +820,7 @@ void FixRigidLSDEM::grow_arrays(int nmax)
   FixRigid::grow_arrays(nmax);
 
   if (distributed_flag) {
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       dist_ws_tables.resize(nmax);
       dist_ws_buffers.resize(nmax);
     } else {
@@ -833,7 +833,7 @@ void FixRigidLSDEM::grow_arrays(int nmax)
     }
   }
 
-  if (storage_flag == WATERSHED)
+  if (storage_mode == WATERSHED)
     memory->grow(node_index, nmax, "rigid/ls/dem:node_index");
 }
 
@@ -849,7 +849,7 @@ void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
     if (grid_style[body[j]] != DISTRIBUTED)
       return;
 
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       dist_ws_tables[j].clear();
       dist_ws_buffers[j].clear();
 
@@ -870,7 +870,7 @@ void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
     }
   }
 
-  if (storage_flag == WATERSHED) node_index[j] = node_index[i];
+  if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 }
 
 /* ----------------------------------------------------------------------
@@ -893,7 +893,7 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
       }
       buf[m++] = 1;
 
-      if (storage_flag == WATERSHED) {
+      if (storage_mode == WATERSHED) {
         buf[m++] = (double) (dist_ws_tables[j].size());
         for (auto bin_pair : dist_ws_tables[j]) {
           buf[m++] = ubuf(bin_pair.first).d;
@@ -915,7 +915,7 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
       }
     }
 
-    if (storage_flag == WATERSHED)
+    if (storage_mode == WATERSHED)
       buf[m++] = ubuf(node_index[j]).d;
   }
   return m;
@@ -938,7 +938,7 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
       flag = buf[m++];
       if (flag == 0) continue; // no grid info for this atom
 
-      if (storage_flag == WATERSHED) {
+      if (storage_mode == WATERSHED) {
         std::size_t n_table = (std::size_t) buf[m++];
         dist_ws_tables[i].clear();
         for (k = 0; k < n_table; k++) {
@@ -963,7 +963,7 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
       }
     }
 
-    if (storage_flag == WATERSHED)
+    if (storage_mode == WATERSHED)
       node_index[i] = (int) ubuf(buf[m++]).i;
   }
 
@@ -986,7 +986,7 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
 
     buf[m++] = 1;
 
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       buf[m++] = (double) (dist_ws_tables[i].size());
       for (auto bin_pair : dist_ws_tables[i]) {
         buf[m++] = ubuf(bin_pair.first).d;
@@ -1007,7 +1007,7 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
     }
   }
 
-  if (storage_flag == WATERSHED)
+  if (storage_mode == WATERSHED)
     buf[m++] = ubuf(node_index[i]).d;
 
   return m;
@@ -1026,7 +1026,7 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
     if (flag == 0)
       return m;
 
-    if (storage_flag == WATERSHED) {
+    if (storage_mode == WATERSHED) {
       std::size_t n_table = (std::size_t) buf[m++];
       dist_ws_tables[nlocal].clear();
       for (std::size_t k = 0; k < n_table; k++) {
@@ -1051,7 +1051,7 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
     }
   }
 
-  if (storage_flag == WATERSHED)
+  if (storage_mode == WATERSHED)
     node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
   return m;
@@ -1368,7 +1368,7 @@ void FixRigidLSDEM::compute_grain_properties(int ibody, double *grid_values, std
 
 double FixRigidLSDEM::get_ls_value(int i, int j, int currentbin, double *normal, double *x_local)
 {
-  if (storage_flag == WATERSHED)
+  if (storage_mode == WATERSHED)
     return get_ls_value_watershed(i, j, currentbin, normal, x_local);
   else
     return get_ls_value_array(i, j, normal);
@@ -1406,7 +1406,7 @@ int FixRigidLSDEM::get_bin(int i, int j, double *x_local)
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
 
   int ngrid[3];
-  if (storage_flag == ARRAY && grid_style[jbody] == DISTRIBUTED) {
+  if (storage_mode == ARRAY && grid_style[jbody] == DISTRIBUTED) {
     // Translate local coordinates relative to lower corner of the node's grid
     MathExtra::sub3(x_local, dist_grid_min[j], x_local);
     ngrid[0] = subgrid_size[0];
@@ -1432,7 +1432,6 @@ int FixRigidLSDEM::get_bin(int i, int j, double *x_local)
 
 int FixRigidLSDEM::check_watershed_bin(int currentbin, int j)
 {
-
   int jbody = body[j];
   if (grid_style[jbody] == DISTRIBUTED ) {
     if (dist_ws_tables[j].find(currentbin) != dist_ws_tables[j].end())
@@ -1516,7 +1515,8 @@ double FixRigidLSDEM::get_ls_value_array(int i, int j, double *normal)
   }
 
   int dim = domain->dimension;
-  double dist = interpolate_LS_array(dim, currentbin, mygrid, ngrid, x_local, ix, normal, grid_stride[jbody]);
+  double jstride = grid_stride[jbody];
+  double dist = interpolate_LS_array(dim, currentbin, mygrid, ngrid, x_local, ix, normal, jstride);
 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];

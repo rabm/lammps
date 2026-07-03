@@ -50,14 +50,14 @@ class FixRigidLSDEM : public FixRigid {
   inline double *get_area_array() { return node_area; };
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
-  inline int get_storage_model() { return storage_flag; };
+  inline int get_storage_model() { return storage_mode; };
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);
 
  protected:
-  int ls_read_flag, global_flag, distributed_flag, storage_flag;
+  int ls_read_flag, global_flag, distributed_flag, storage_mode;
   char *id_fix;
   int index_ls_dem_touch_id;
 

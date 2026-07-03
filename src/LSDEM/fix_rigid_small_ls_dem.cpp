@@ -50,6 +50,7 @@ using namespace RigidConst;
 using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
+enum {ARRAY, WATERSHED};
 enum {PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
@@ -73,6 +74,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   ls_read_flag = 0;
   global_flag = 0;
   distributed_flag = 0;
+  storage_mode = ARRAY;
+
   n_extra_attributes = 3;
 
   nmax_bodyLS = nmax_body;
@@ -83,6 +86,23 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   // always write restart file
   restart_file = 1;
+
+  int iarg = 0;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg], "ls/storage") == 0) {
+      if (iarg + 2 > narg)
+        utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
+      if (strcmp(arg[iarg + 1], "array") == 0)
+        storage_mode = ARRAY;
+      else if (strcmp(arg[iarg + 1], "watershed") == 0)
+        storage_mode = WATERSHED;
+      else
+        error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
+      iarg += 2;
+    } else {
+      iarg ++;
+    }
+  }
 
   // set bodyownLS for owned atoms
 
@@ -1554,72 +1574,152 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
    see FixRigidLSDEM for context and explanation
 ------------------------------------------------------------------------- */
 
-double FixRigidSmallLSDEM::get_ls_value(int i, int j, double *normal)
+double FixRigidSmallLSDEM::get_ls_value(int i, int j, int currentbin, double *normal, double *x_local)
+{
+  if (storage_mode == WATERSHED)
+    return get_ls_value_watershed(i, j, currentbin, normal, x_local);
+  else
+    return get_ls_value_array(i, j, normal);
+}
+
+/* ---------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::get_bin(int i, int j, double *x_local)
 {
   double **x = atom->x;
   double **grain_com = atom->xcom;
   double **grain_quat = atom->quat;
-
   int jbody = atom2body[j];
-  double jstride = bodyLS[jbody].grid_stride;
-  double strideinv = 1.0 / jstride;
 
+  // Location of the node (atom) of i relative to the centre of mass (CoM) of j
   double delx = x[i][0] - grain_com[j][0];
   double dely = x[i][1] - grain_com[j][1];
   double delz = x[i][2] - grain_com[j][2];
+
+  // Account for PBCs
   domain->minimum_image(FLERR, delx, dely, delz);
 
-  double x_local[3];
+  // Apply quaternion rotation to move into local reference frame of grain j grid.
+  // Here, grain_quat is local->global. Therefore, grain_quat_conj is global -> local.
   double dx[3] = {delx, dely, delz};
   double grain_quat_conj[4];
+
   MathExtra::qconjugate(grain_quat[j], grain_quat_conj);
   MathExtra::quatrotvec(grain_quat_conj, dx, x_local);
+
+  int ngrid[3];
+  if (storage_mode == ARRAY && bodyLS[jbody].style == DISTRIBUTED) {
+    // Translate local coordinates relative to lower corner of the node's grid
+    double **local_grid_min = atom->darray[index_grid_min];
+    MathExtra::sub3(x_local, local_grid_min[j], x_local);
+    ngrid[0] = subgrid_size[0];
+    ngrid[1] = subgrid_size[1];
+    ngrid[2] = subgrid_size[2];
+  } else {
+    // Translate local coordinates relative to lower corner of the grain's grid
+    int gi = bodyLS[jbody].grid_index;
+    double grid_min_scaled[3];
+    MathExtra::scale3(bodyLS[jbody].grid_scale, global_grids_min[gi], grid_min_scaled);
+    MathExtra::sub3(x_local, grid_min_scaled, x_local);
+    ngrid[0] = global_grids_size[gi][0];
+    ngrid[1] = global_grids_size[gi][1];
+    ngrid[2] = global_grids_size[gi][2];
+  }
+
+  // Normalise the coordinates to be in units of the number of grid cells.
+  MathExtra::scale3(1.0 / bodyLS[jbody].grid_stride, x_local);
+
+  int currentbin = int(x_local[0]) + int(x_local[1]) * ngrid[0] + int(x_local[2]) * ngrid[0] * ngrid[1];
+
+  return currentbin;
+}
+
+/* ---------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
+{
+  /* to update
+  int jbody = atom2body[j];
+  if (bodyLS[jbody].style == DISTRIBUTED ) {
+    if (dist_ws_tables[j].find(currentbin) != dist_ws_tables[j].end())
+      return 1;
+  } else {
+    int gj = grid_index[jbody];
+    int ntj = node_index[j];
+    if (global_ws_tables[gj][ntj].find(currentbin) != global_ws_tables[gj][ntj].end())
+      return 1;
+  }
+  */
+  return 0;
+}
+
+/* ---------------------------------------------------------------------- */
+
+double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, double *normal, double *x_local)
+{
+  /* to update
+  int ngrid[3], ix[3];
+  int jbody = body[j];
+
+  ngrid[0] = grid_size[jbody][0];
+  ngrid[1] = grid_size[jbody][1];
+  ngrid[2] = grid_size[jbody][2];
+  ix[0] = int(x_local[0]);
+  ix[1] = int(x_local[1]);
+  ix[2] = int(x_local[2]);
+
+  int dim = domain->dimension;
+  std::unordered_map<int, double> *mytable;
+  std::unordered_map<int, double> *mybuffer;
+
+  if (grid_style[jbody] == DISTRIBUTED) {
+    //mytable = &dist_ws_tables[j];
+    //mybuffer = &dist_ws_buffers[j];
+  } else {
+    //int gj = grid_index[jbody];
+    //int ntj = node_index[j];
+    //mytable = &global_ws_tables[gj][ntj];
+    //mybuffer = &global_ws_buffers[gj][ntj];
+  }
+
+  double dist = interpolate_LS_watershed(dim, currentbin, mytable, mybuffer, ngrid, x_local, ix, normal, bodyLS[jbody].grid_stride);
+
+  // Grain-stored grid values are shared and un-scaled, so apply scaling
+  if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+
+  // Rotate normal back to global coordinates
+  double **grain_quat = atom->quat;
+  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+
+  return dist;
+  */
+}
+
+/* ---------------------------------------------------------------------- */
+
+double FixRigidSmallLSDEM::get_ls_value_array(int i, int j, double *normal)
+{
+  int ngrid[3], ix[3];
+  double x_local[3];
+  int jbody = atom2body[j];
+  int currentbin = get_bin(i, j, x_local);
+
+
 
   int ncol, nrow, nslice;
   double *mygrid;
   if (bodyLS[jbody].style == DISTRIBUTED) {
     mygrid = atom->darray[index_grid_values][j];
-    double **local_grid_min = atom->darray[index_grid_min];
-    x_local[0] -= local_grid_min[j][0];
-    x_local[1] -= local_grid_min[j][1];
-    x_local[2] -= local_grid_min[j][2];
-
-    ncol = subgrid_size[0];
-    nrow = subgrid_size[1];
-    nslice = subgrid_size[2];
   } else {
-    int gi = bodyLS[jbody].grid_index;
-    mygrid = global_grids[gi];
-    x_local[0] -= global_grids_min[gi][0] * bodyLS[jbody].grid_scale;
-    x_local[1] -= global_grids_min[gi][1] * bodyLS[jbody].grid_scale;
-    x_local[2] -= global_grids_min[gi][2] * bodyLS[jbody].grid_scale;
-
-    ncol = global_grids_size[gi][0];
-    nrow = global_grids_size[gi][1];
-    nslice = global_grids_size[gi][2];
+    mygrid = global_grids[bodyLS[jbody].grid_index];
   }
 
-  double x_red[3];
-  x_red[0] = x_local[0] * strideinv;
-  x_red[1] = x_local[1] * strideinv;
-  x_red[2] = x_local[2] * strideinv;
-
-  int ix[3];
-  ix[0] = int(x_red[0]);
-  ix[1] = int(x_red[1]);
-  ix[2] = int(x_red[2]);
-
-  int ngrid[3];
-  ngrid[0] = ncol;
-  ngrid[1] = nrow;
-  ngrid[2] = nslice;
-
-  int mybin = ix[0] + ix[1] * ngrid[0] + ix[2] * ngrid[0] * ngrid[1];
-
   int dim = domain->dimension;
-  double dist = interpolate_LS_array(dim, mybin, mygrid, ngrid, x_red, ix, normal, jstride);
+  double jstride = bodyLS[jbody].grid_stride;
+  double dist = interpolate_LS_array(dim, currentbin, mygrid, ngrid, x_local, ix, normal, jstride);
 
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+  double **grain_quat = atom->quat;
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;

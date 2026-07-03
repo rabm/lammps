@@ -340,8 +340,8 @@ void PairLSDEM::compute(int eflag, int vflag)
           if (saved_bins[i].find(jbodyID) == saved_bins[i].end()) {
             if (fix_rigid && (mask[j] & groupbit_large))
               tmp_bin = fix_rigid->get_bin(i, j, x_local);
-            //else if (fix_rigid_small && (mask[j] & groupbit_small))
-              // TBD tmp_bin_i = static_cast<int>(fix_rigid_small);
+            else if (fix_rigid_small && (mask[j] & groupbit_small))
+              tmp_bin = fix_rigid_small->get_bin(i, j, x_local);
             else
               error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
             saved_bins[i][jbodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
@@ -352,17 +352,14 @@ void PairLSDEM::compute(int eflag, int vflag)
             x_local[2] = std::get<3>(saved_bins[i][jbodyID]);
           }
           if (fix_rigid && (mask[j] & groupbit_large)) {
-           // if (atom->tag[i] == 8 || atom->tag[j] == 8)
-           // if (atom->tag[i] == 95 || atom->tag[j] == 95)
-           //   printf("pairtest i %d, j %d (%d %d), tmp_bin %d\, check %d\n", i, j, tag[i], tag[j], tmp_bin, fix_rigid->check_watershed_bin(tmp_bin, j));
             if (fix_rigid->check_watershed_bin(tmp_bin, j) == 0) continue;
           }
         } else {
           if (saved_bins[j].find(ibodyID) == saved_bins[j].end()) {
             if (fix_rigid && (mask[i] & groupbit_large))
               tmp_bin = fix_rigid->get_bin(j, i, x_local);
-            //else if (fix_rigid_small && (mask[i] & groupbit_small))
-              // TBD tmp_bin_j = static_cast<int>(fix_rigid_small);
+            else if (fix_rigid_small && (mask[i] & groupbit_small))
+              tmp_bin = fix_rigid_small->get_bin(j, i, x_local);
             else
               error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
             saved_bins[j][ibodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
@@ -373,9 +370,6 @@ void PairLSDEM::compute(int eflag, int vflag)
             x_local[2] = std::get<3>(saved_bins[j][ibodyID]);
           }
           if (fix_rigid && (mask[i] & groupbit_large)) {
-           // if (atom->tag[i] == 8 || atom->tag[j] == 8)
-           //   if (atom->tag[i] == 95 || atom->tag[j] == 95)
-           //   printf("pairtest i %d, j %d (%d %d), tmp_bin %d\, check %d\n", i, j, tag[i], tag[j], tmp_bin, fix_rigid->check_watershed_bin(tmp_bin, i));
             if (fix_rigid->check_watershed_bin(tmp_bin, i) == 0) continue;
           }
         }
@@ -419,14 +413,14 @@ void PairLSDEM::compute(int eflag, int vflag)
         if (fix_rigid && (mask[j] & groupbit_large))
           u = - fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
         else if (fix_rigid_small && (mask[j] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(i, j, normal);
+          u = - fix_rigid_small->get_ls_value(i, j, tmp_bin, normal, x_local);
         else
           error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
       } else { // Use node of j.
         if (fix_rigid && (mask[i] & groupbit_large))
           u = - fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
         else if (fix_rigid_small && (mask[i] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(j, i, normal);
+          u = - fix_rigid_small->get_ls_value(j, i, tmp_bin, normal, x_local);
         else
           error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       }

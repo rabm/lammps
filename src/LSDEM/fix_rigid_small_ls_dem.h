@@ -76,10 +76,12 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   inline BodyLS* get_bodyLS_array() { return bodyLS; };
   inline int* get_atom2body_array() { return atom2body; };
 
-  double get_ls_value(int, int, double*);
+  double get_ls_value(int, int, int, double*, double*);
+  int get_bin(int, int, double*);
+  int check_watershed_bin(int, int);
 
  protected:
-  int ls_read_flag, global_flag, distributed_flag;
+  int ls_read_flag, global_flag, distributed_flag, storage_mode;
   int read_quat;
   int commflag_ls;
   char *id_fix, *id_fix2;
@@ -139,6 +141,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void read_gridfile(int, std::string, double *);
   void grow_body_ls();
   void reset_atom2body_ghost();
+  double get_ls_value_array(int, int, double*);
+  double get_ls_value_watershed(int, int, int, double*, double*);
 };
 
 }    // namespace LAMMPS_NS
