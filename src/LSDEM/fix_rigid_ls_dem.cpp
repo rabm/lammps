@@ -584,7 +584,6 @@ void FixRigidLSDEM::init()
   // Set communication variables    //
   // ------------------------------ //
 
-
   if (storage_mode == WATERSHED) {
     comm_border = 1;
     if (distributed_flag) {
@@ -601,7 +600,7 @@ void FixRigidLSDEM::init()
     if (distributed_flag) {
       maxexchange = nmax_distributed + 5;  // +1 for flag to indicate whether grid info included
       comm_border += nmax_distributed + 5; // +3 for minimum values
-                                      // +1 for body (always run)
+                                           // +1 for body (always run)
     }
   }
 
@@ -842,9 +841,10 @@ void FixRigidLSDEM::grow_arrays(int nmax)
 void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
 {
   FixRigid::copy_arrays(i, j, 0);
+  if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 
   if (distributed_flag) {
-    if (grid_style[body[j]] != DISTRIBUTED)
+    if (grid_style[body[i]] != DISTRIBUTED)
       return;
 
     if (storage_mode == WATERSHED) {
@@ -867,8 +867,6 @@ void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
       dist_grid_min[j][2] = dist_grid_min[i][2];
     }
   }
-
-  if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 }
 
 /* ----------------------------------------------------------------------

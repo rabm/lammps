@@ -75,6 +75,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   global_flag = 0;
   distributed_flag = 0;
   storage_mode = ARRAY;
+  nmax_distributed = 0;
 
   n_extra_attributes = 3;
 
@@ -122,8 +123,10 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   commflag_ls = PARENT;
   comm_forward += 1 + bodysizeLS;
 
-  if (storage_mode == WATERSHED)
+  if (storage_mode == WATERSHED) {
+    atom->add_callback(Atom::BORDER);
     memory->create(node_index, nbody, "rigid/ls/dem:node_index");
+  }
 
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
@@ -515,7 +518,6 @@ void FixRigidSmallLSDEM::process_levelsets()
     }
   }
 
-
   // --------------------------------- //
   // If watershed, calculate node type //
   // --------------------------------- //
@@ -806,6 +808,24 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   memory->destroy(temp_grid_values);
   memory->destroy(ntotal_global);
+
+
+  // ------------------------------ //
+  // Set communication variables    //
+  // ------------------------------ //
+
+  if (storage_mode == WATERSHED) {
+    comm_border = 1;
+    if (distributed_flag) {
+      int max_nbins = -1;
+      for (i = 0; i < nlocal; i++)
+        max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
+      MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
+
+      maxexchange = 2 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins
+      comm_border += 2 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1010,8 +1030,13 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
   FixRigidSmall::grow_arrays(nmax);
   memory->grow(bodyownLS, nmax, "rigid/small/ls/dem:bodyownLS");
 
-  if (storage_mode == WATERSHED)
+  if (storage_mode == WATERSHED) {
     memory->grow(node_index, nmax, "rigid/small/ls/dem:node_index");
+    if (distributed_flag) {
+      dist_ws_tables.resize(nmax);
+      dist_ws_buffers.resize(nmax);
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -1035,6 +1060,26 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
 
   if (bodyownLS[i] >= 0 && i != j) bodyLS[bodyownLS[i]].ilocal = j;
   bodyownLS[j] = bodyownLS[i];
+
+  if (storage_mode == WATERSHED) node_index[j] = node_index[i];
+
+  if (distributed_flag) {
+    if (bodyLS[bodyownLS[i]].style != DISTRIBUTED)
+      return;
+
+    if (storage_mode == WATERSHED) {
+      dist_ws_tables[j].clear();
+      dist_ws_buffers[j].clear();
+
+      for (auto entry : dist_ws_tables[i])
+        dist_ws_tables[j][entry.first] = entry.second;
+      for (auto entry : dist_ws_buffers[i])
+        dist_ws_buffers[j][entry.first] = entry.second;
+
+      dist_ws_tables[i].clear();
+      dist_ws_buffers[i].clear();
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -1046,6 +1091,8 @@ void FixRigidSmallLSDEM::set_arrays(int i)
   FixRigidSmall::set_arrays(i);
   bodyownLS[i] = -1;
   atom->ivector[index_ls_dem_touch_id][i] = -1;
+  if (storage_mode == WATERSHED)
+    node_index[i] = -1;
 }
 
 /* ----------------------------------------------------------------------
@@ -1284,6 +1331,86 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 }
 
 /* ----------------------------------------------------------------------
+   pack values for border communication at re-neighboring
+------------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
+{
+  int i, j, k;
+  int m = 0;
+
+  if (storage_mode != WATERSHED) return 0;
+
+  for (i = 0; i < n; i++) {
+    j = list[i];
+
+    if (distributed_flag) {
+
+      if (bodyLS[bodyownLS[j]].style != DISTRIBUTED) {
+        buf[m++] = 0;
+        continue;
+      }
+      buf[m++] = 1;
+
+      buf[m++] = (double) (dist_ws_tables[j].size());
+      for (auto bin_pair : dist_ws_tables[j]) {
+        buf[m++] = ubuf(bin_pair.first).d;
+        buf[m++] = bin_pair.second;
+      }
+      buf[m++] = (double) (dist_ws_buffers[j].size());
+      for (auto buffer_pair : dist_ws_buffers[j]) {
+        buf[m++] = ubuf(buffer_pair.first).d;
+        buf[m++] = buffer_pair.second;
+      }
+    }
+
+    buf[m++] = ubuf(node_index[j]).d;
+  }
+  return m;
+}
+
+/* ----------------------------------------------------------------------
+   unpack values for border communication at re-neighboring
+------------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
+{
+  int i, last, flag;
+  std::size_t k;
+
+  if (storage_mode != WATERSHED) return 0;
+
+  int m = 0;
+  last = first + n;
+  for (i = first; i < last; i++) {
+
+    if (distributed_flag) {
+      flag = buf[m++];
+      if (flag == 0) continue; // no grid info for this atom
+
+      std::size_t n_table = (std::size_t) buf[m++];
+      dist_ws_tables[i].clear();
+      for (k = 0; k < n_table; k++) {
+        int bin = ubuf(buf[m++]).i;
+        double value = buf[m++];
+        dist_ws_tables[i].insert(std::make_pair(bin, value));
+      }
+      std::size_t n_buffer = (std::size_t) buf[m++];
+      dist_ws_buffers[i].clear();
+      for (k = 0; k < n_buffer; k++) {
+        int bin = ubuf(buf[m++]).i;
+        double value = buf[m++];
+        dist_ws_buffers[i].insert(std::make_pair(bin, value));
+      }
+    }
+
+    node_index[i] = (int) ubuf(buf[m++]).i;
+  }
+
+  return m;
+}
+
+/* ----------------------------------------------------------------------
    pack values in local atom-based arrays for exchange with another proc
 ------------------------------------------------------------------------- */
 
@@ -1307,6 +1434,32 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
   buf[m++] = 1;
   memcpy(&buf[m], &bodyLS[bodyownLS[i]], sizeof(BodyLS));
   m += bodysizeLS;
+
+  // handle distributed watershed here to adjust size
+
+  if (distributed_flag && storage_mode == WATERSHED) {
+    if (bodyLS[bodyownLS[i]].style != DISTRIBUTED) {
+      buf[m++] = 0;
+      return m;
+    }
+
+    buf[m++] = 1;
+
+    buf[m++] = (double) (dist_ws_tables[i].size());
+    for (auto bin_pair : dist_ws_tables[i]) {
+      buf[m++] = ubuf(bin_pair.first).d;
+      buf[m++] = bin_pair.second;
+    }
+    buf[m++] = (double) (dist_ws_buffers[i].size());
+    for (auto buffer_pair : dist_ws_buffers[i]) {
+      buf[m++] = ubuf(buffer_pair.first).d;
+      buf[m++] = buffer_pair.second;
+    }
+  }
+
+  if (storage_mode == WATERSHED)
+    buf[m++] = ubuf(node_index[i]).d;
+
   return m;
 }
 
@@ -1340,6 +1493,32 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
   m += bodysizeLS;
   bodyLS[nlocal_bodyLS].ilocal = nlocal;
   bodyownLS[nlocal] = nlocal_bodyLS++;
+
+
+  if (distributed_flag && storage_mode == WATERSHED) {
+    int flag = buf[m++];
+    if (flag == 0)
+      return m;
+
+    std::size_t n_table = (std::size_t) buf[m++];
+    dist_ws_tables[nlocal].clear();
+    for (std::size_t k = 0; k < n_table; k++) {
+      int bin = ubuf(buf[m++]).i;
+      double value = buf[m++];
+      dist_ws_tables[nlocal].insert(std::make_pair(bin, value));
+    }
+    std::size_t n_buffer = (std::size_t) buf[m++];
+    dist_ws_buffers[nlocal].clear();
+    for (std::size_t k = 0; k < n_buffer; k++) {
+      int bin = ubuf(buf[m++]).i;
+      double value = buf[m++];
+      dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
+    }
+  }
+
+  if (storage_mode == WATERSHED)
+    node_index[nlocal] = (int) ubuf(buf[m++]).i;
+
   return m;
 }
 
@@ -1888,18 +2067,17 @@ int FixRigidSmallLSDEM::get_bin(int i, int j, double *x_local)
 
 int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
 {
-  /* to update
   int jbody = atom2body[j];
   if (bodyLS[jbody].style == DISTRIBUTED ) {
     if (dist_ws_tables[j].find(currentbin) != dist_ws_tables[j].end())
       return 1;
   } else {
-    int gj = grid_index[jbody];
+    int gj = bodyLS[jbody].grid_index;
     int ntj = node_index[j];
     if (global_ws_tables[gj][ntj].find(currentbin) != global_ws_tables[gj][ntj].end())
       return 1;
   }
-  */
+
   return 0;
 }
 
@@ -1907,13 +2085,14 @@ int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
 
 double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, double *normal, double *x_local)
 {
-  /* to update
   int ngrid[3], ix[3];
-  int jbody = body[j];
+  int jbody = atom2body[j];
 
-  ngrid[0] = grid_size[jbody][0];
-  ngrid[1] = grid_size[jbody][1];
-  ngrid[2] = grid_size[jbody][2];
+  int id = bodyLS[jbody].file_id;
+
+  ngrid[0] = gridfile_data[id_to_gridfile[id]].grid_size[0];
+  ngrid[1] = gridfile_data[id_to_gridfile[id]].grid_size[1];
+  ngrid[2] = gridfile_data[id_to_gridfile[id]].grid_size[2];
   ix[0] = int(x_local[0]);
   ix[1] = int(x_local[1]);
   ix[2] = int(x_local[2]);
@@ -1922,14 +2101,14 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
   std::unordered_map<int, double> *mytable;
   std::unordered_map<int, double> *mybuffer;
 
-  if (grid_style[jbody] == DISTRIBUTED) {
-    //mytable = &dist_ws_tables[j];
-    //mybuffer = &dist_ws_buffers[j];
+  if (bodyLS[jbody].style == DISTRIBUTED) {
+    mytable = &dist_ws_tables[j];
+    mybuffer = &dist_ws_buffers[j];
   } else {
-    //int gj = grid_index[jbody];
-    //int ntj = node_index[j];
-    //mytable = &global_ws_tables[gj][ntj];
-    //mybuffer = &global_ws_buffers[gj][ntj];
+    int gj = bodyLS[jbody].grid_index;
+    int ntj = node_index[j];
+    mytable = &global_ws_tables[gj][ntj];
+    mybuffer = &global_ws_buffers[gj][ntj];
   }
 
   double dist = interpolate_LS_watershed(dim, currentbin, mytable, mybuffer, ngrid, x_local, ix, normal, bodyLS[jbody].grid_stride);
@@ -1942,8 +2121,6 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
   MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
-  */
-  return 0.0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1954,8 +2131,6 @@ double FixRigidSmallLSDEM::get_ls_value_array(int i, int j, double *normal)
   double x_local[3];
   int jbody = atom2body[j];
   int currentbin = get_bin(i, j, x_local);
-
-
 
   int ncol, nrow, nslice;
   double *mygrid;

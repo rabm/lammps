@@ -46,6 +46,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void write_restart_file(const char *) override;
   void set_molecule(int, tagint, int, double *, double *, double *) override;
 
+  int pack_border(int, int *, double *) override;
+  int unpack_border(int, int, double *) override;
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
   int pack_forward_comm(int, int *, double *, int, int *) override;
@@ -85,6 +87,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
   int read_quat;
   int commflag_ls;
+  int nmax_distributed;
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;
 
