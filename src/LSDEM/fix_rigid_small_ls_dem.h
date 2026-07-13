@@ -23,6 +23,7 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 #include "fix_rigid_small.h"
 
 #include <map>
+#include <unordered_map>
 
 namespace LAMMPS_NS {
 
@@ -103,6 +104,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // only defined for owned atoms, except bodyown for own+ghost
 
   int *bodyownLS;           // mirror of bodyown
+  int *node_index;          // node index in grain used in watershedding
 
   // pointers for per-atom distributed quantities
 
@@ -114,6 +116,16 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double **global_grids;
   int **global_grids_size;
   double **global_grids_min;
+
+  // storage for global watershed
+
+  std::vector<std::vector <std::unordered_map<int, double>>> global_ws_tables;
+  std::vector<std::vector <std::unordered_map<int, double>>> global_ws_buffers;
+
+  // storage for distributed watershed
+
+  std::vector<std::unordered_map<int, double>> dist_ws_tables;
+  std::vector<std::unordered_map<int, double>> dist_ws_buffers;
 
   // LS grid file data
 

@@ -152,14 +152,10 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
           else bodyID[0] = 0;
         delete[] value;
 
-      } else if (strcmp(arg[iarg], "ls/storage") == 0) {
-        if (!utils::strmatch(style, "ls"))
-          error->all(FLERR, "Illegal fix {} command option ls/storage", style);
-        if (iarg + 2 > narg)
-          utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
-        iarg += 2;
-
       } else error->all(FLERR,"Unsupported fix {} custom property", style, arg[4]);
+  } else if (strcmp(arg[3], "ls/storage") == 0) {
+    if (!utils::strmatch(style, "ls"))
+      error->all(FLERR, "Illegal fix {} command option ls/storage", style);
   } else error->all(FLERR,"Unknown fix {} keyword {}", style, arg[3]);
 
   if (atom->map_style == Atom::MAP_NONE)

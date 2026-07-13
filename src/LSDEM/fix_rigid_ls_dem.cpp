@@ -110,10 +110,6 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
   memory->create(gridfiles, nbody, MAXLINE, "rigid/ls/dem:gridfiles");
 
-  if (storage_mode == WATERSHED) {
-    memory->create(node_index, nbody, "rigid/ls/dem:node_index");
-  }
-
   atom->add_callback(Atom::BORDER);
 
   if (langflag)
@@ -262,7 +258,10 @@ void FixRigidLSDEM::init()
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
 
   int nlocal = atom->nlocal;
-  if (index_global_grid) {
+  if (global_flag) {
+    if (index_global_grid == 0)
+      error->all(FLERR, "No global grids defined but global_flag set");
+
     if (storage_mode == WATERSHED) {
       global_ws_tables.resize(index_global_grid);
       global_ws_buffers.resize(index_global_grid);
@@ -286,10 +285,9 @@ void FixRigidLSDEM::init()
 
   grow_arrays(atom->nmax);
 
-  // ------------------------------ //
-  // Calculate node type            //
-  // ------------------------------ //
-
+  // --------------------------------- //
+  // If watershed, calculate node type //
+  // --------------------------------- //
 
   std::vector <std::set <int>> node_bins;
   std::vector <std::set <int>> node_buffer_bins;

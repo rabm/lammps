@@ -122,6 +122,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   commflag_ls = PARENT;
   comm_forward += 1 + bodysizeLS;
 
+  if (storage_mode == WATERSHED)
+    memory->create(node_index, nbody, "rigid/ls/dem:node_index");
+
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
 
@@ -270,7 +273,7 @@ void FixRigidSmallLSDEM::init()
   // All local grids sized on finest grid (fix property/atom requiresfixed-size containers)
   rcell = maxcut / min_stride + 2; // +1 for interpolation +1 for safety
 
-  if (distributed_flag) {
+  if (distributed_flag && storage_mode == ARRAY) {
     // todo try remove +1 and cast to int
     for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;
     if (domain->dimension == 2) subgrid_size[2] = 1;
@@ -485,7 +488,8 @@ void FixRigidSmallLSDEM::process_levelsets()
   memory->create(temp_grid_values, max_grid_size_flat, "rigid/small/lsdem:temp_grid_values");
 
   double **grid_values, **grid_min_local;
-  if (distributed_flag) {
+  int nlocal = atom->nlocal;
+  if (distributed_flag && storage_mode == ARRAY) {
     grid_values = atom->darray[index_grid_values];
     grid_min_local = atom->darray[index_grid_min];
   }
@@ -493,10 +497,62 @@ void FixRigidSmallLSDEM::process_levelsets()
   if (global_flag) {
     if (index_global_grid == 0)
       error->all(FLERR, "No global grids defined but global_flag set");
-    memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
-    memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
-    memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
+
+    if (storage_mode == WATERSHED) {
+      global_ws_tables.resize(index_global_grid);
+      global_ws_buffers.resize(index_global_grid);
+    } else {
+      memory->create_ragged(global_grids, index_global_grid, ntotal_global, "rigid/small/ls/dem:global_grids");
+      memory->create(global_grids_min, index_global_grid, 3, "rigid/small/ls/dem:global_grids_min");
+      memory->create(global_grids_size, index_global_grid, 3, "rigid/small/ls/dem:global_grids_size");
+    }
   }
+
+  if (distributed_flag) {
+    if (storage_mode == WATERSHED) {
+      dist_ws_tables.resize(nlocal);
+      dist_ws_buffers.resize(nlocal);
+    }
+  }
+
+
+  // --------------------------------- //
+  // If watershed, calculate node type //
+  // --------------------------------- //
+
+  std::vector <std::set <int>> node_bins;
+  std::vector <std::set <int>> node_buffer_bins;
+  int *global_node_bins = nullptr;
+  if (storage_mode == WATERSHED) {
+
+    int max_node_index = -1;
+    for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
+
+      tagint min_id = -1;
+      tagint *tag = atom->tag;
+      for (i = 0; i < nlocal; i++) {
+        if (atom2body[i] != ibody) continue;
+
+        if (min_id == -1 || tag[i] < min_id)
+          min_id = tag[i];
+      }
+
+      for (i = 0; i < nlocal; i++) {
+        if (atom2body[i] != ibody) continue;
+        node_index[i] = tag[i] - min_id;
+        max_node_index = MAX(max_node_index, node_index[i]);
+      }
+    }
+
+    MPI_Allreduce(&max_node_index, &max_node_index, 1, MPI_INT, MPI_MAX, world);
+
+    node_bins.resize(max_node_index + 1);
+    node_buffer_bins.resize(max_node_index + 1);
+  }
+
+  // ------------------------------ //
+  // Read and store level sets      //
+  // ------------------------------ //
 
   double dx[3], gmin[3];
   int index_local, index_global, error_code, error_code_global, nx[3];
@@ -512,47 +568,238 @@ void FixRigidSmallLSDEM::process_levelsets()
       compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
     }
 
-    if (gridfile_data[gridfile].style == GLOBAL) {
+    if (gridfile_data[gridfile].style == GLOBAL)
       index_global_grid = gridfile_data[gridfile].grid_index;
-      for (int n = 0; n < ntotal_global[index_global_grid]; n++)
-        // Unscaled values (and min) stored globally to avoid duplicating memory
-        global_grids[index_global_grid][n] = temp_grid_values[n];
 
-      for (a = 0; a < 3; a++) {
-        global_grids_min[index_global_grid][a] = gridfile_data[gridfile].grid_min[a];
-        global_grids_size[index_global_grid][a] = gridfile_data[gridfile].grid_size[a];
+    if (storage_mode == ARRAY) {
+      if (gridfile_data[gridfile].style == GLOBAL) {
+        index_global_grid = gridfile_data[gridfile].grid_index;
+        for (int n = 0; n < ntotal_global[index_global_grid]; n++)
+          // Unscaled values (and min) stored globally to avoid duplicating memory
+          global_grids[index_global_grid][n] = temp_grid_values[n];
+
+        for (a = 0; a < 3; a++) {
+          global_grids_min[index_global_grid][a] = gridfile_data[gridfile].grid_min[a];
+          global_grids_size[index_global_grid][a] = gridfile_data[gridfile].grid_size[a];
+        }
+      } else {
+
+        for (i = 0; i < atom->nlocal; i++) {
+          if (!(mask[i] & groupbit)) continue;
+          ibody = atom2body[i];
+
+          // Ideally use list of all atoms in body... not sure this exists
+          if (pair.second.id != bodyLS[ibody].file_id)
+            continue;
+
+          nx[0] = gridfile_data[gridfile].grid_size[0];
+          nx[1] = gridfile_data[gridfile].grid_size[1];
+          nx[2] = gridfile_data[gridfile].grid_size[2];
+
+          MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
+
+          // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
+          MathExtra::sub3(x[i], xcm_custom[ibody], dx);
+          domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+
+          // Calculate local grid values and minima
+          error_code = store_distributed(i, dimension, nx, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
+                                         rcell, dx, gmin, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
+
+          if (error_code == -1)
+            error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
+
+          MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
+          if (error_code_global && comm->me == 0)
+            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
+              "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+        }
       }
     } else {
+      // Calculate watershed and temporarily store peratom data
 
-      for (i = 0; i < atom->nlocal; i++) {
-        if (!(mask[i] & groupbit)) continue;
-        ibody = atom2body[i];
+      // First, accumulate list of all bins in the grain
 
-        // Ideally use list of all atoms in body... not sure this exists
+      // calculate the # bins & nodes in this gridfile
+      int nbin, nx, ny, nz;
+      int max_node_index = -1;
+      for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
 
-        nx[0] = gridfile_data[gridfile].grid_size[0];
-        nx[1] = gridfile_data[gridfile].grid_size[1];
-        nx[2] = gridfile_data[gridfile].grid_size[2];
+        gridfile = bodyLS[ibody].grid_index;
 
-        MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
+        nx = gridfile_data[gridfile].grid_size[0];
+        ny = gridfile_data[gridfile].grid_size[1];
+        nz = gridfile_data[gridfile].grid_size[2];
+        nbin = nx * ny * nz;
 
-        // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
-        MathExtra::sub3(x[i], xcm_custom[ibody], dx);
-        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
+        max_node_index = MAX(max_node_index, node_index[i]);
+      }
+      max_node_index += 1; // zero indexed
 
-        // Calculate local grid values and minima
-        error_code = store_distributed(i, dimension, nx, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
-                                       rcell, dx, gmin, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
+      if (nbin > max_grid_size_flat) {
+        max_grid_size_flat = nbin;
+        memory->grow(global_node_bins, max_grid_size_flat, "rigid/ls/dem:global_node_bins");
+      }
 
-        if (error_code == -1)
-          error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-        MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-        if (error_code_global && comm->me == 0)
-          error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-            "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+      // Next find the bins which contain nodes
+      int currentbin, ix[3];
+      double x_local[3], quat_conj[4];
+      for (i = 0; i < nlocal; i++) {
+        ibody = atom2body[i];
+        if (ibody != pair.second.id)
+          continue;
+
+        nx = gridfile_data[gridfile].grid_size[0];
+        ny = gridfile_data[gridfile].grid_size[1];
+        nz = gridfile_data[gridfile].grid_size[2];
+        MathExtra::sub3(x[i], body[ibody].xcm, dx);
+
+        MathExtra::qconjugate(quat_atom[i], quat_conj);
+        MathExtra::quatrotvec(quat_conj, dx, x_local);
+        MathExtra::sub3(x_local, gridfile_data[gridfile].grid_min, x_local);
+        MathExtra::scale3(1.0 / bodyLS[ibody].grid_stride, x_local);
+
+        ix[0] = int(x_local[0]);
+        ix[1] = int(x_local[1]);
+        ix[2] = int(x_local[2]);
+
+        currentbin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+
+        global_node_bins[node_index[i]] = currentbin;
+      }
+      MPI_Allreduce(global_node_bins, global_node_bins, nbin, MPI_INT, MPI_MAX, world);
+
+      // Now, run watershed operation
+      int j, ns, newbin, current_walker;
+      int max_bins_per_node = -1;
+      int ntotal = nlocal + atom->nghost;
+      std::vector <int> bin_owners(nbin);
+      std::vector <std::pair <int, int>> walkers;
+      std::vector <std::pair <int, int>> next_walkers;
+
+      for (auto& s : node_bins) s.clear();
+      for (auto& s : node_buffer_bins) s.clear();
+
+      walkers.clear();
+      next_walkers.clear();
+      for (i = 0; i < nbin; i++)
+        bin_owners[i] = -1;
+
+      for (i = 0; i < max_node_index; i++) {
+        currentbin = global_node_bins[i];
+
+        // Skip if not a bin which contains a node
+        if (currentbin < 0) continue;
+
+        bin_owners[currentbin] = i;
+        node_bins[i].insert(currentbin);
+        walkers.emplace_back(std::make_pair(i, currentbin));
+      }
+
+      while (!walkers.empty()) {
+        // find unvisited sites and add new walkers
+        //   if a walker borders a visited site, only add owner to create a buffer
+        int cycle = 0;
+        for (auto walker : walkers) {
+          i = walker.first;
+          currentbin = walker.second;
+
+          cycle += 1;
+
+          for (int a = 0; a < dimension; a++) {
+            if (a == 0) ns = 1;
+            else if (a == 1) ns = nx;
+            else ns = nx * ny;
+            for (int sign = -1; sign <= 1; sign += 2) {
+
+              newbin = currentbin + sign * ns;
+
+              if (newbin < 0 || newbin >= nbin) continue;
+              if (temp_grid_values[newbin] > bodyLS[ibody].grid_stride) continue;
+              if (temp_grid_values[newbin] < -rcell) continue;
+
+              // if unvisited, add walker
+              if (bin_owners[newbin] == -1)
+                next_walkers.emplace_back(std::make_pair(i, newbin));
+            }
+          }
+        }
+
+        // add ownership from all of these walkers
+        //   break ties depending on which atom owns fewer bins
+        for (auto walker : walkers) {
+          i = walker.first;
+          currentbin = walker.second;
+
+          if (bin_owners[currentbin] == -1) {
+            bin_owners[currentbin] = i;
+             if (i < nlocal)
+              node_bins[node_index[i]].insert(currentbin);
+          } else {
+            j = bin_owners[currentbin];
+            if (node_bins[node_index[i]].size() < node_bins[node_index[j]].size()) {
+              bin_owners[currentbin] = i;
+              if (i < nlocal)
+                node_bins[node_index[i]].insert(currentbin);
+              node_bins[node_index[j]].erase(currentbin);
+            }
+          }
+        }
+
+        // replace walkers
+        std::swap(walkers, next_walkers);
+        next_walkers.clear();
+      }
+
+      // Create buffer (1st and 2nd neighbors of all bins)
+      for (i = 0; i < max_node_index; i++) {
+        for (const auto& currentbin : node_bins[i]) {
+          for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+              for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                if (dimension == 2 && dz != 0) continue;
+                newbin = currentbin + dx + dy * nx + dz * nx * ny;
+                if (newbin < 0 || newbin >= nbin)
+                  error->one(FLERR, "Bad bin index in watershed buffer creation");
+                if (bin_owners[newbin] != i)
+                  node_buffer_bins[i].insert(newbin);
+              }
+            }
+          }
+        }
+      }
+
+      // Relocate bins to global per-grain/node-type storage
+      if (global_flag) {
+        global_ws_tables[index_global].resize(max_node_index);
+        global_ws_buffers[index_global].resize(max_node_index);
+
+        for (i = 0; i < max_node_index; i++) {
+          for (auto bin : node_bins[i])
+            global_ws_tables[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+          for (auto bin : node_buffer_bins[i])
+            global_ws_buffers[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+        }
+      } else {
+        int nt, size_sum;
+        for (i = 0; i < nlocal; i++) {
+          ibody = atom2body[i];
+          if (ibody != pair.second.id)
+            continue;
+
+          nt = node_index[i];
+          size_sum = (int) (node_bins[nt].size() + node_buffer_bins[nt].size());
+          max_bins_per_node = MAX(max_bins_per_node, size_sum);
+
+          for (auto bin : node_bins[nt])
+            dist_ws_tables[i].insert(std::make_pair(bin, temp_grid_values[bin]));
+          for (auto bin : node_buffer_bins[nt])
+            dist_ws_buffers[i].insert(std::make_pair(bin, temp_grid_values[bin]));
+        }
       }
     }
   }
@@ -762,6 +1009,9 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
 {
   FixRigidSmall::grow_arrays(nmax);
   memory->grow(bodyownLS, nmax, "rigid/small/ls/dem:bodyownLS");
+
+  if (storage_mode == WATERSHED)
+    memory->grow(node_index, nmax, "rigid/small/ls/dem:node_index");
 }
 
 /* ----------------------------------------------------------------------
@@ -1693,6 +1943,7 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
 
   return dist;
   */
+  return 0.0;
 }
 
 /* ---------------------------------------------------------------------- */
