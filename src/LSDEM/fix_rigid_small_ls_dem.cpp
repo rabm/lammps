@@ -1061,10 +1061,12 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
   if (bodyownLS[i] >= 0 && i != j) bodyLS[bodyownLS[i]].ilocal = j;
   bodyownLS[j] = bodyownLS[i];
 
+  if (!ls_read_flag) return; // if called before processing LS (e.g. when sorting in setup)
+
   if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 
   if (distributed_flag) {
-    if (bodyLS[bodyownLS[i]].style != DISTRIBUTED)
+    if (bodyLS[atom2body[i]].style != DISTRIBUTED)
       return;
 
     if (storage_mode == WATERSHED) {
@@ -1090,6 +1092,7 @@ void FixRigidSmallLSDEM::set_arrays(int i)
 {
   FixRigidSmall::set_arrays(i);
   bodyownLS[i] = -1;
+
   atom->ivector[index_ls_dem_touch_id][i] = -1;
   if (storage_mode == WATERSHED)
     node_index[i] = -1;
@@ -2131,6 +2134,21 @@ double FixRigidSmallLSDEM::get_ls_value_array(int i, int j, double *normal)
   double x_local[3];
   int jbody = atom2body[j];
   int currentbin = get_bin(i, j, x_local);
+
+if (bodyLS[jbody].style == DISTRIBUTED) {
+    ngrid[0] = subgrid_size[0];
+    ngrid[1] = subgrid_size[1];
+    ngrid[2] = subgrid_size[2];
+  } else {
+    int gj = bodyLS[jbody].grid_index;
+    ngrid[0] = global_grids_size[gj][0];
+    ngrid[1] = global_grids_size[gj][1];
+    ngrid[2] = global_grids_size[gj][2];
+  }
+
+  ix[0] = int(x_local[0]);
+  ix[1] = int(x_local[1]);
+  ix[2] = int(x_local[2]);
 
   int ncol, nrow, nslice;
   double *mygrid;
