@@ -109,15 +109,17 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int *bodyownLS;           // mirror of bodyown
   int *node_index;          // node index in grain used in watershedding
 
-  // pointers for per-atom distributed quantities
+  // variables for global quantities
 
+  int max_grid_size_flat;
+  int *global_grids_size_flat;
+  int **global_grids_size;
+
+  int n_global_grids;
   int index_grid_values;
   int index_grid_min;
 
-  // arrays for global quantities
-
   double **global_grids;
-  int **global_grids_size;
   double **global_grids_min;
 
   // storage for global watershed
@@ -150,6 +152,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // local methods
 
   void process_levelsets();
+  void calculate_xcom();
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, int*, double*, double*);
   void read_infile();
