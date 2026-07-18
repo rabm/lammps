@@ -67,8 +67,8 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
-  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr), global_grids_min(nullptr),
-  global_grids_size(nullptr), global_grids_size_flat(nullptr),id_fix(nullptr), id_fix2(nullptr), quat_custom(nullptr), node_index(nullptr)
+  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr),
+  id_fix(nullptr), id_fix2(nullptr), quat_custom(nullptr), node_index(nullptr)
 {
   maxcut = -1;
   ls_read_flag = 0;
@@ -147,9 +147,6 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 
   memory->sfree(bodyLS);
   memory->destroy(global_grids);
-  memory->destroy(global_grids_min);
-  memory->destroy(global_grids_size);
-  memory->destroy(global_grids_size_flat);
 
   memory->destroy(itensor_custom);
   memory->destroy(xcm_custom);
@@ -476,22 +473,23 @@ void FixRigidSmallLSDEM::process_levelsets()
   // -------------------------------- //
 
   // Find max grid size and location+size of all globally stored grids
-  memory->create(global_grids_size_flat, nbody, "rigid/ls/dem:global_grids_size_flat");
+  int *grid_size_flat;
+  memory->create(grid_size_flat, nbody, "rigid/ls/dem:grid_size_flat");
 
   std::string gridfile;
-  int grid_size_flat;
+  int size_tmp;
   n_global_grids = max_grid_size_flat = 0;
   for (const auto& pair : gridfile_data) {
     gridfile = pair.first;
 
-    grid_size_flat = gridfile_data[gridfile].grid_size[0];
-    grid_size_flat *= gridfile_data[gridfile].grid_size[1];
-    grid_size_flat *= gridfile_data[gridfile].grid_size[2];
-    max_grid_size_flat = MAX(max_grid_size_flat, grid_size_flat);
+    size_tmp = gridfile_data[gridfile].grid_size[0];
+    size_tmp *= gridfile_data[gridfile].grid_size[1];
+    size_tmp *= gridfile_data[gridfile].grid_size[2];
+    max_grid_size_flat = MAX(max_grid_size_flat, size_tmp);
 
     if (gridfile_data[gridfile].style == GLOBAL) {
       gridfile_data[gridfile].grid_index = n_global_grids;
-      global_grids_size_flat[n_global_grids] = grid_size_flat;
+      grid_size_flat[n_global_grids] = size_tmp;
       n_global_grids += 1;
     } else {
       gridfile_data[gridfile].grid_index = -1;
@@ -590,10 +588,8 @@ void FixRigidSmallLSDEM::process_levelsets()
       global_ws_tables.resize(n_global_grids);
       global_ws_buffers.resize(n_global_grids);
     } else {
-      memory->create_ragged(global_grids, n_global_grids, global_grids_size_flat, "rigid/small/ls/dem:global_grids");
+      memory->create_ragged(global_grids, n_global_grids, grid_size_flat, "rigid/small/ls/dem:global_grids");
     }
-    memory->create(global_grids_min, n_global_grids, 3, "rigid/small/ls/dem:global_grids_min");
-    memory->create(global_grids_size, n_global_grids, 3, "rigid/small/ls/dem:global_grids_size");
   }
 
   if (distributed_flag) {
@@ -663,7 +659,7 @@ void FixRigidSmallLSDEM::process_levelsets()
     if (storage_mode == ARRAY) {
       if (gridfile_data[gridfile].style == GLOBAL) {
         index_global_grid = gridfile_data[gridfile].grid_index;
-        for (int n = 0; n < global_grids_size_flat[index_global_grid]; n++)
+        for (int n = 0; n < grid_size_flat[index_global_grid]; n++)
           // Unscaled values (and min) stored globally to avoid duplicating memory
           global_grids[index_global_grid][n] = temp_grid_values[n];
       } else {
@@ -676,19 +672,13 @@ void FixRigidSmallLSDEM::process_levelsets()
           if (pair.second.id != bodyLS[ibody].file_id)
             continue;
 
-          nx[0] = gridfile_data[gridfile].grid_size[0];
-          nx[1] = gridfile_data[gridfile].grid_size[1];
-          nx[2] = gridfile_data[gridfile].grid_size[2];
-
-          MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
-
           // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
           MathExtra::sub3(x[i], xcm_custom[ibody], dx);
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
           // Calculate local grid values and minima
-          error_code = store_distributed(i, dimension, nx, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
-                                         rcell, dx, gmin, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
+          error_code = store_dist_array(i, dimension, bodyLS[ibody].grid_size, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
+                                         rcell, dx, bodyLS[ibody].grid_min, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
 
           if (error_code == -1)
             error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
@@ -735,8 +725,7 @@ void FixRigidSmallLSDEM::process_levelsets()
         MathExtra::sub3(x[i], body[ibody].xcm, dx);
         MathExtra::qconjugate(quat_atom[i], quat_conj);
         MathExtra::quatrotvec(quat_conj, dx, x_local);
-        MathExtra::scale3(bodyLS[ibody].grid_scale, gridfile_data[gridfile].grid_min, gmin);
-        MathExtra::sub3(x_local, gmin, x_local);
+        MathExtra::sub3(x_local, bodyLS[ibody].grid_min, x_local);
         MathExtra::scale3(1.0 / bodyLS[ibody].grid_stride, x_local);
 
         ix[0] = int(x_local[0]);
@@ -878,19 +867,10 @@ void FixRigidSmallLSDEM::process_levelsets()
         }
       }
     }
-
-    if (gridfile_data[gridfile].style == GLOBAL) {
-      index_global_grid = gridfile_data[gridfile].grid_index;
-
-      for (a = 0; a < 3; a++) {
-        global_grids_min[index_global_grid][a] = gridfile_data[gridfile].grid_min[a];
-        global_grids_size[index_global_grid][a] = gridfile_data[gridfile].grid_size[a];
-      }
-    }
   }
 
   memory->destroy(temp_grid_values);
-  memory->destroy(global_grids_size_flat);
+  memory->destroy(grid_size_flat);
 
 
   // ------------------------------ //
@@ -1434,8 +1414,7 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
     buf[m++] = ubuf(node_index[j]).d;
 
     if (distributed_flag) {
-
-      if (bodyLS[bodyownLS[j]].style != DISTRIBUTED) {
+      if (bodyLS[atom2body[j]].style != DISTRIBUTED) {
         buf[m++] = 0;
         continue;
       }
@@ -1513,23 +1492,10 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
   if (storage_mode == WATERSHED)
     buf[m++] = ubuf(node_index[i]).d;
 
-  // atom does not own its rigid body
-
-  if (bodyownLS[i] < 0) {
-    buf[m++] = 0;
-    return m;
-  }
-
-  // body info for atom that owns a rigid body
-
-  buf[m++] = 1;
-  memcpy(&buf[m], &bodyLS[bodyownLS[i]], sizeof(BodyLS));
-  m += bodysizeLS;
-
   // handle distributed watershed here to adjust size
 
   if (distributed_flag && storage_mode == WATERSHED) {
-    if (bodyLS[bodyownLS[i]].style != DISTRIBUTED) {
+    if (bodyLS[atom2body[i]].style != DISTRIBUTED) {
       buf[m++] = 0;
       return m;
     }
@@ -1547,6 +1513,19 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
       buf[m++] = buffer_pair.second;
     }
   }
+
+  // atom does not own its rigid body
+
+  if (bodyownLS[i] < 0) {
+    buf[m++] = 0;
+    return m;
+  }
+
+  // body info for atom that owns a rigid body
+
+  buf[m++] = 1;
+  memcpy(&buf[m], &bodyLS[bodyownLS[i]], sizeof(BodyLS));
+  m += bodysizeLS;
 
   return m;
 }
@@ -1569,23 +1548,6 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
   if (storage_mode == WATERSHED)
     node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
-  // atom does not own its rigid body
-
-  bodyownLS[nlocal] = static_cast<int> (buf[m++]);
-  if (bodyownLS[nlocal] == 0) {
-    bodyownLS[nlocal] = -1;
-    return m;
-  }
-
-  // body info for atom that owns a rigid body
-
-  if (nlocal_bodyLS == nmax_body) grow_body_ls();
-  memcpy(&bodyLS[nlocal_bodyLS], &buf[m], sizeof(BodyLS));
-  m += bodysizeLS;
-  bodyLS[nlocal_bodyLS].ilocal = nlocal;
-  bodyownLS[nlocal] = nlocal_bodyLS++;
-
-
   if (distributed_flag && storage_mode == WATERSHED) {
     int flag = buf[m++];
     if (flag == 0)
@@ -1606,6 +1568,22 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
       dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
     }
   }
+
+  // atom does not own its rigid body
+
+  bodyownLS[nlocal] = static_cast<int> (buf[m++]);
+  if (bodyownLS[nlocal] == 0) {
+    bodyownLS[nlocal] = -1;
+    return m;
+  }
+
+  // body info for atom that owns a rigid body
+
+  if (nlocal_bodyLS == nmax_body) grow_body_ls();
+  memcpy(&bodyLS[nlocal_bodyLS], &buf[m], sizeof(BodyLS));
+  m += bodysizeLS;
+  bodyLS[nlocal_bodyLS].ilocal = nlocal;
+  bodyownLS[nlocal] = nlocal_bodyLS++;
 
   return m;
 }
@@ -2066,6 +2044,16 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
     error->all(FLERR, "Invalid surface area calculated {}", area);
   bodyLS[ibody].node_area = area;
 
+  // Copy size/min to body structure
+
+  bodyLS[ibody].grid_size[0] = grid_size[0];
+  bodyLS[ibody].grid_size[1] = grid_size[1];
+  bodyLS[ibody].grid_size[2] = grid_size[2];
+
+  bodyLS[ibody].grid_min[0] = grid_min[0] * bodyLS[ibody].grid_scale;
+  bodyLS[ibody].grid_min[1] = grid_min[1] * bodyLS[ibody].grid_scale;
+  bodyLS[ibody].grid_min[2] = grid_min[2] * bodyLS[ibody].grid_scale;
+
   // Scale relevant quantities by grain size
 
   double scale = bodyLS[ibody].grid_scale;
@@ -2133,14 +2121,11 @@ int FixRigidSmallLSDEM::get_bin(int i, int j, double *x_local)
     ngrid[1] = subgrid_size[1];
     ngrid[2] = subgrid_size[2];
   } else {
+    MathExtra::sub3(x_local, bodyLS[jbody].grid_min, x_local);
     // Translate local coordinates relative to lower corner of the grain's grid
-    int gi = bodyLS[jbody].grid_index;
-    double grid_min_scaled[3];
-    MathExtra::scale3(bodyLS[jbody].grid_scale, global_grids_min[gi], grid_min_scaled);
-    MathExtra::sub3(x_local, grid_min_scaled, x_local);
-    ngrid[0] = global_grids_size[gi][0];
-    ngrid[1] = global_grids_size[gi][1];
-    ngrid[2] = global_grids_size[gi][2];
+    ngrid[0] = bodyLS[jbody].grid_size[0];
+    ngrid[1] = bodyLS[jbody].grid_size[1];
+    ngrid[2] = bodyLS[jbody].grid_size[2];
   }
 
   // Normalise the coordinates to be in units of the number of grid cells.
@@ -2178,9 +2163,9 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
 
   int id = bodyLS[jbody].file_id;
 
-  ngrid[0] = gridfile_data[id_to_gridfile[id]].grid_size[0];
-  ngrid[1] = gridfile_data[id_to_gridfile[id]].grid_size[1];
-  ngrid[2] = gridfile_data[id_to_gridfile[id]].grid_size[2];
+  ngrid[0] = bodyLS[jbody].grid_size[0];
+  ngrid[1] = bodyLS[jbody].grid_size[1];
+  ngrid[2] = bodyLS[jbody].grid_size[2];
   ix[0] = int(x_local[0]);
   ix[1] = int(x_local[1]);
   ix[2] = int(x_local[2]);
@@ -2225,10 +2210,9 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
     ngrid[1] = subgrid_size[1];
     ngrid[2] = subgrid_size[2];
   } else {
-    int gj = bodyLS[jbody].grid_index;
-    ngrid[0] = global_grids_size[gj][0];
-    ngrid[1] = global_grids_size[gj][1];
-    ngrid[2] = global_grids_size[gj][2];
+    ngrid[0] = bodyLS[jbody].grid_size[0];
+    ngrid[1] = bodyLS[jbody].grid_size[1];
+    ngrid[2] = bodyLS[jbody].grid_size[2];
   }
 
   ix[0] = int(x_local[0]);

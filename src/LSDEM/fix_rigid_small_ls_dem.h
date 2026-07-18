@@ -68,8 +68,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     double node_area;      // area associated with each grid node
 
     // These are needed by local + ghost bodies
-    int style;             // style of memory, GLOBAL or distributed
+    int style;             // style of memory, GLOBAL or DISTRIBUTED
     int grid_index;        // index of body's global memory
+    int grid_size[3];      // size of total grain grid
+    double grid_min[3];    // minimum values of total grain grid
     double grid_scale;     // scale factor for grid values, only needed for GLOBAL
     double grid_stride;    // the LS grid stride, assumed equal in all direction
     double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
@@ -112,15 +114,11 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // variables for global quantities
 
   int max_grid_size_flat;
-  int *global_grids_size_flat;
-  int **global_grids_size;
-
   int n_global_grids;
   int index_grid_values;
   int index_grid_min;
 
   double **global_grids;
-  double **global_grids_min;
 
   // storage for global watershed
 

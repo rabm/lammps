@@ -377,7 +377,7 @@ void FixRigidLSDEM::init()
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
           // Calculate local grid values and minima
-          error_code = store_distributed(i, dimension, grid_size[ibody], subgrid_size, grid_stride[ibody], grid_scale[ibody],
+          error_code = store_dist_array(i, dimension, grid_size[ibody], subgrid_size, grid_stride[ibody], grid_scale[ibody],
                                         rcell, dx, grid_min[ibody], quat_atom[i], temp_grid_values, dist_grid_min[i], dist_grid_values[i]);
 
           if (error_code == -1)

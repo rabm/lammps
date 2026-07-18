@@ -380,7 +380,7 @@ double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int
   Store local grid values and calculate grid minima
 -------------------------------------------------------------------------*/
 
-int store_distributed(int i, int dimension, int *nx, int *subgrid_size, double stride, double scale, double rcell,
+int store_dist_array(int i, int dimension, int *nx, int *subgrid_size, double stride, double scale, double rcell,
                       double *dx, double *gmin, double *qatom, double *global_grid_values, double *gmin_local, double *grid_values)
 {
   int need_padding = 0;
