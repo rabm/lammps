@@ -878,16 +878,20 @@ void FixRigidSmallLSDEM::process_levelsets()
   // ------------------------------ //
 
   if (storage_mode == WATERSHED) {
-    comm_border = 1;
+    comm_border = 1; // node index
+    maxexchange = 1;
     if (distributed_flag) {
-      int max_nbins = -1;
+      int max_nbins = 0;
       for (i = 0; i < nlocal; i++)
         max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
       MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
-      maxexchange = 2 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins
-      comm_border += 2 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
+      maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
+      comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
+
+    // resize buffers as necessary
+    comm->init();
   }
 }
 

@@ -583,15 +583,16 @@ void FixRigidLSDEM::init()
   // ------------------------------ //
 
   if (storage_mode == WATERSHED) {
-    comm_border = 1;
+    comm_border = 1; // +1 for node index
+    maxexchange = 1;
     if (distributed_flag) {
-      int max_nbins = -1;
+      int max_nbins = 0;
       for (i = 0; i < nlocal; i++)
         max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
       MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
-      maxexchange = 2 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins
-      comm_border += 2 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
+      maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
+      comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
   } else {
     comm_border = 0;
@@ -898,8 +899,6 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
           buf[m++] = ubuf(buffer_pair.first).d;
           buf[m++] = buffer_pair.second;
         }
-
- //       m += (nmax_distributed - (int) dist_ws_tables[j].size() - (int) dist_ws_buffers[j].size()) * 2; // skip unused
       } else {
         for (k = 0; k < nmax_distributed; k++)
           buf[m++] = dist_grid_values[j][k];
@@ -947,8 +946,6 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
           double value = buf[m++];
           dist_ws_buffers[i].insert(std::make_pair(bin, value));
         }
-
-//        m += (nmax_distributed - n_table - n_buffer) * 2; // skip unused
       } else {
         for (k = 0; k < nmax_distributed; k++) dist_grid_values[i][k] = buf[m++];
         dist_grid_min[i][0] = buf[m++];
@@ -991,8 +988,6 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
         buf[m++] = ubuf(buffer_pair.first).d;
         buf[m++] = buffer_pair.second;
       }
-
-//      m += (nmax_distributed - (int) dist_ws_tables[i].size() - (int) dist_ws_buffers[i].size()) * 2; // skip unused
     } else {
       for (int n = 0; n < nmax_distributed; n++) buf[m++] = dist_grid_values[i][n];
       buf[m++] = dist_grid_min[i][0];
@@ -1035,8 +1030,6 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
         double value = buf[m++];
         dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
       }
-
-//      m += (nmax_distributed - n_table - n_buffer) * 2; // skip unused
     } else {
       for (int n = 0; n < nmax_distributed; n++) dist_grid_values[nlocal][n] = buf[m++];
       dist_grid_min[nlocal][0] = buf[m++];
