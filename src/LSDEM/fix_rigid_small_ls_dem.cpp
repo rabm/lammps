@@ -724,9 +724,12 @@ void FixRigidSmallLSDEM::process_levelsets()
       // Next find the bins which contain nodes
       int currentbin, ix[3];
       double x_local[3], quat_conj[4];
+      for (int k = 0; k < max_node_index; k ++)
+        global_node_bins[k] = -1;
+
       for (i = 0; i < nlocal; i++) {
         ibody = atom2body[i];
-        if (ibody != pair.second.id)
+        if (pair.second.id != bodyLS[ibody].file_id)
           continue;
 
         MathExtra::sub3(x[i], body[ibody].xcm, dx);
@@ -744,7 +747,7 @@ void FixRigidSmallLSDEM::process_levelsets()
 
         global_node_bins[node_index[i]] = currentbin;
       }
-      MPI_Allreduce(global_node_bins, global_node_bins, nbin, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(global_node_bins, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation
       int j, ns, newbin, current_walker;
@@ -810,15 +813,13 @@ void FixRigidSmallLSDEM::process_levelsets()
 
           if (bin_owners[currentbin] == -1) {
             bin_owners[currentbin] = i;
-             if (i < nlocal)
-              node_bins[node_index[i]].insert(currentbin);
+            node_bins[i].insert(currentbin);
           } else {
             j = bin_owners[currentbin];
-            if (node_bins[node_index[i]].size() < node_bins[node_index[j]].size()) {
+            if (node_bins[i].size() < node_bins[node_index[j]].size()) {
               bin_owners[currentbin] = i;
-              if (i < nlocal)
-                node_bins[node_index[i]].insert(currentbin);
-              node_bins[node_index[j]].erase(currentbin);
+              node_bins[i].insert(currentbin);
+              node_bins[j].erase(currentbin);
             }
           }
         }
@@ -839,8 +840,9 @@ void FixRigidSmallLSDEM::process_levelsets()
                 newbin = currentbin + dx + dy * nx + dz * nx * ny;
                 if (newbin < 0 || newbin >= nbin)
                   error->one(FLERR, "Bad bin index in watershed buffer creation");
-                if (bin_owners[newbin] != i)
+                if (bin_owners[newbin] != i) {
                   node_buffer_bins[i].insert(newbin);
+                }
               }
             }
           }
@@ -862,7 +864,7 @@ void FixRigidSmallLSDEM::process_levelsets()
         int nt, size_sum;
         for (i = 0; i < nlocal; i++) {
           ibody = atom2body[i];
-          if (ibody != pair.second.id)
+          if (pair.second.id != bodyLS[ibody].file_id)
             continue;
 
           nt = node_index[i];
@@ -1429,6 +1431,8 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
   for (i = 0; i < n; i++) {
     j = list[i];
 
+    buf[m++] = ubuf(node_index[j]).d;
+
     if (distributed_flag) {
 
       if (bodyLS[bodyownLS[j]].style != DISTRIBUTED) {
@@ -1448,8 +1452,6 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
         buf[m++] = buffer_pair.second;
       }
     }
-
-    buf[m++] = ubuf(node_index[j]).d;
   }
   return m;
 }
@@ -1470,6 +1472,8 @@ int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
   last = first + n;
   for (i = first; i < last; i++) {
 
+    node_index[i] = (int) ubuf(buf[m++]).i;
+
     if (distributed_flag) {
       flag = buf[m++];
       if (flag == 0) continue; // no grid info for this atom
@@ -1489,8 +1493,6 @@ int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
         dist_ws_buffers[i].insert(std::make_pair(bin, value));
       }
     }
-
-    node_index[i] = (int) ubuf(buf[m++]).i;
   }
 
   return m;
@@ -1507,6 +1509,9 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
   // atom not in a rigid body
 
   if (!bodytag[i]) return m;
+
+  if (storage_mode == WATERSHED)
+    buf[m++] = ubuf(node_index[i]).d;
 
   // atom does not own its rigid body
 
@@ -1543,9 +1548,6 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
     }
   }
 
-  if (storage_mode == WATERSHED)
-    buf[m++] = ubuf(node_index[i]).d;
-
   return m;
 }
 
@@ -1563,6 +1565,9 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
     bodyownLS[nlocal] = -1;
     return m;
   }
+
+  if (storage_mode == WATERSHED)
+    node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
   // atom does not own its rigid body
 
@@ -1601,9 +1606,6 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
       dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
     }
   }
-
-  if (storage_mode == WATERSHED)
-    node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
   return m;
 }

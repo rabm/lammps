@@ -508,15 +508,13 @@ void FixRigidLSDEM::init()
 
           if (bin_owners[currentbin] == -1) {
             bin_owners[currentbin] = i;
-             if (i < nlocal)
-              node_bins[node_index[i]].insert(currentbin);
+            node_bins[i].insert(currentbin);
           } else {
             j = bin_owners[currentbin];
-            if (node_bins[node_index[i]].size() < node_bins[node_index[j]].size()) {
+            if (node_bins[i].size() < node_bins[j].size()) {
               bin_owners[currentbin] = i;
-              if (i < nlocal)
-                node_bins[node_index[i]].insert(currentbin);
-              node_bins[node_index[j]].erase(currentbin);
+              node_bins[i].insert(currentbin);
+              node_bins[j].erase(currentbin);
             }
           }
         }

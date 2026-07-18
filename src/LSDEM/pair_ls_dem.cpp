@@ -438,11 +438,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       double *fs_ni = fs[ni];
       double *n_ni = n[ni];
 
-
-  //    if (atom->tag[i] == 8 || atom->tag[j] == 8)
-  //      if (atom->tag[i] == 95 || atom->tag[j] == 95)
-  //      printf("piar i %d, j %d (tag %d %d), u %g dx %g %g\n", i, j, tag[i], tag[j], u, x[i][0]-x[j][0], x[i][1]-x[j][1]);
-
       // No adhesion, cohesion, or ranged forces.
       if (u <= 0) {
         // Reset shear force if no contact
@@ -513,8 +508,6 @@ void PairLSDEM::compute(int eflag, int vflag)
       } else {
         fn_mag = knij * pow(u, knpij);
       }
-
-   //   printf("%d %d (%d %d ) u %g fmag %g\n", atom->tag[i], atom->tag[j], i, j, u, fn_mag);
 
       // Relative velocity at the grain surface at the half step t + 0.5*dt.
       // Note: The velocity at the node due to an angular velocity of the grain around its
@@ -716,7 +709,6 @@ void PairLSDEM::compute(int eflag, int vflag)
         fs1[ni] += decayt1ij * fs1[ni] * MathExtra::dot3(tangent_old, tangent)
           + etat1ij * (1 - decayt1ij) * v_rel_t_mag; // v_rel_t_mag is always positive
         fs_mag_add += fs1[ni];
-        printf("fs1[%d] = %g\n", fs1[ni], ni);
         // Maxwell arm (2nd)
         // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
         // fs_mag -= fs2_mag[i]
