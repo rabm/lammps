@@ -144,6 +144,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
   }
+
   if (fix_rigid_small) {
     mybody_small = fix_rigid_small->get_atom2body_array();
     maxbodyID_small = fix_rigid_small->get_maxmol();
@@ -161,7 +162,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   // upper estimate and only affects performance, never the stored result.
   min_distances.reserve(static_cast<size_t>(4) * allnum);
 
-  // MIGHT BE ABLE TO DELETE THIS WITH OPTIMISATIONS
   // Loop over local + ghost atoms to find closest neighbors
   if (watershed_flag == 0) {
     for (ii = 0; ii < allnum; ii++) {
@@ -353,6 +353,8 @@ void PairLSDEM::compute(int eflag, int vflag)
           }
           if (fix_rigid && (mask[j] & groupbit_large)) {
             if (fix_rigid->check_watershed_bin(tmp_bin, j) == 0) continue;
+          } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+            if (fix_rigid_small->check_watershed_bin(tmp_bin, j) == 0) continue;
           }
         } else {
           if (saved_bins[j].find(ibodyID) == saved_bins[j].end()) {
@@ -371,6 +373,8 @@ void PairLSDEM::compute(int eflag, int vflag)
           }
           if (fix_rigid && (mask[i] & groupbit_large)) {
             if (fix_rigid->check_watershed_bin(tmp_bin, i) == 0) continue;
+          } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+            if (fix_rigid_small->check_watershed_bin(tmp_bin, i) == 0) continue;
           }
         }
       } else {
@@ -1003,7 +1007,7 @@ void PairLSDEM::setup()
     fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
     groupbit_small = fix_rigid_small->groupbit;
     igroup_small = fix_rigid_small->igroup;
-    //ws_small = fix_rigid_small->get_storage_model();
+    ws_small = fix_rigid_small->get_storage_model();
   }
 
   if (ws_large != -1 && ws_small != -1)

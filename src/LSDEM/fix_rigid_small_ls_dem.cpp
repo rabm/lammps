@@ -60,8 +60,6 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 // Todo: should fix we have different instance of fix property/atom
 //   for distributed memory when there are different cutoffs between
 //   two types of grains?
-// Todo: do we want to manually handle communication of distributed data to skip global atoms?
-//    and if so, skip that stored_distributed call?
 // Todo: can create_atoms be used twice with two run commands?
 
 /* ---------------------------------------------------------------------- */
@@ -235,7 +233,7 @@ void FixRigidSmallLSDEM::init()
         set_size = gridfile_data.size();
         gridfile_data[gridfile] = mydata;
         if (onemol->grid_style != DISTRIBUTED && onemol->grid_style != GLOBAL)
-          error->all(FLERR, "Invalid_rigid memory model {}", onemol->grid_style);
+          error->all(FLERR, "Invalid ls/dem memory model {}", onemol->grid_style);
         gridfile_data[gridfile].style = onemol->grid_style;
         gridfile_data[gridfile].id = set_size;
         id_to_gridfile[set_size] = gridfile;
@@ -370,6 +368,9 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       error->one(FLERR, "Different bodies detected, {} vs {}, for atom {}", bodyown[i], bodyownLS[i], atom->tag[i]);
     }
   }
+
+  // can now clear meta data about LS grid files
+  gridfile_data.clear();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -877,9 +878,14 @@ void FixRigidSmallLSDEM::process_levelsets()
   // Set communication variables    //
   // ------------------------------ //
 
+  // pack_exchange/unpack_exchange always pack an own-body flag, and (for
+  // atoms that own a rigid body) the BodyLS struct (1 + bodysizeLS doubles),
+  // regardless of storage_mode or distributed_flag.
+  maxexchange = 1 + bodysizeLS;
+
   if (storage_mode == WATERSHED) {
     comm_border = 1; // node index
-    maxexchange = 1;
+    maxexchange += 1; // node index
     if (distributed_flag) {
       int max_nbins = 0;
       for (i = 0; i < nlocal; i++)
@@ -889,10 +895,10 @@ void FixRigidSmallLSDEM::process_levelsets()
       maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
       comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
-
-    // resize buffers as necessary
-    comm->init();
   }
+
+  // resize buffers as necessary
+  comm->init();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1501,20 +1507,19 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
   if (distributed_flag && storage_mode == WATERSHED) {
     if (bodyLS[atom2body[i]].style != DISTRIBUTED) {
       buf[m++] = 0;
-      return m;
-    }
+    } else {
+      buf[m++] = 1;
 
-    buf[m++] = 1;
-
-    buf[m++] = (double) (dist_ws_tables[i].size());
-    for (auto bin_pair : dist_ws_tables[i]) {
-      buf[m++] = ubuf(bin_pair.first).d;
-      buf[m++] = bin_pair.second;
-    }
-    buf[m++] = (double) (dist_ws_buffers[i].size());
-    for (auto buffer_pair : dist_ws_buffers[i]) {
-      buf[m++] = ubuf(buffer_pair.first).d;
-      buf[m++] = buffer_pair.second;
+      buf[m++] = (double) (dist_ws_tables[i].size());
+      for (auto bin_pair : dist_ws_tables[i]) {
+        buf[m++] = ubuf(bin_pair.first).d;
+        buf[m++] = bin_pair.second;
+      }
+      buf[m++] = (double) (dist_ws_buffers[i].size());
+      for (auto buffer_pair : dist_ws_buffers[i]) {
+        buf[m++] = ubuf(buffer_pair.first).d;
+        buf[m++] = buffer_pair.second;
+      }
     }
   }
 
@@ -1552,24 +1557,26 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
   if (storage_mode == WATERSHED)
     node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
+  // note: must NOT early-return here, otherwise the own-body flag and
+  // BodyLS struct below would never be unpacked for atoms in GLOBAL bodies
+
   if (distributed_flag && storage_mode == WATERSHED) {
     int flag = buf[m++];
-    if (flag == 0)
-      return m;
-
-    std::size_t n_table = (std::size_t) buf[m++];
-    dist_ws_tables[nlocal].clear();
-    for (std::size_t k = 0; k < n_table; k++) {
-      int bin = ubuf(buf[m++]).i;
-      double value = buf[m++];
-      dist_ws_tables[nlocal].insert(std::make_pair(bin, value));
-    }
-    std::size_t n_buffer = (std::size_t) buf[m++];
-    dist_ws_buffers[nlocal].clear();
-    for (std::size_t k = 0; k < n_buffer; k++) {
-      int bin = ubuf(buf[m++]).i;
-      double value = buf[m++];
-      dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
+    if (flag != 0) {
+      std::size_t n_table = (std::size_t) buf[m++];
+      dist_ws_tables[nlocal].clear();
+      for (std::size_t k = 0; k < n_table; k++) {
+        int bin = ubuf(buf[m++]).i;
+        double value = buf[m++];
+        dist_ws_tables[nlocal].insert(std::make_pair(bin, value));
+      }
+      std::size_t n_buffer = (std::size_t) buf[m++];
+      dist_ws_buffers[nlocal].clear();
+      for (std::size_t k = 0; k < n_buffer; k++) {
+        int bin = ubuf(buf[m++]).i;
+        double value = buf[m++];
+        dist_ws_buffers[nlocal].insert(std::make_pair(bin, value));
+      }
     }
   }
 

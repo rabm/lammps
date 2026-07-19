@@ -583,7 +583,7 @@ void FixRigidLSDEM::init()
   // ------------------------------ //
 
   if (storage_mode == WATERSHED) {
-    comm_border = 1; // +1 for node index
+    comm_border = 2; // +1 for body index (always run), +1 for node index
     maxexchange = 1;
     if (distributed_flag) {
       int max_nbins = 0;
@@ -595,11 +595,10 @@ void FixRigidLSDEM::init()
       comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
   } else {
-    comm_border = 0;
+    comm_border = 1; // +1 for body index (always run)
     if (distributed_flag) {
       maxexchange = nmax_distributed + 5;  // +1 for flag to indicate whether grid info included
-      comm_border += nmax_distributed + 5; // +3 for minimum values
-                                           // +1 for body (always run)
+      comm_border += nmax_distributed + 4; // +1 for flag, +3 for minimum values
     }
   }
 
@@ -880,6 +879,10 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
   for (i = 0; i < n; i++) {
     j = list[i];
     buf[m++] = ubuf(body[j]).d;
+
+    if (storage_mode == WATERSHED)
+      buf[m++] = ubuf(node_index[j]).d;
+
     if (distributed_flag) {
 
       if (grid_style[body[j]] != DISTRIBUTED) {
@@ -907,9 +910,6 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
         buf[m++] = dist_grid_min[j][2];
       }
     }
-
-    if (storage_mode == WATERSHED)
-      buf[m++] = ubuf(node_index[j]).d;
   }
   return m;
 }
@@ -927,6 +927,10 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
   last = first + n;
   for (i = first; i < last; i++) {
     body[i] = (int) ubuf(buf[m++]).i;
+
+    if (storage_mode == WATERSHED)
+      node_index[i] = (int) ubuf(buf[m++]).i;
+
     if (distributed_flag) {
       flag = buf[m++];
       if (flag == 0) continue; // no grid info for this atom
@@ -953,9 +957,6 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
         dist_grid_min[i][2] = buf[m++];
       }
     }
-
-    if (storage_mode == WATERSHED)
-      node_index[i] = (int) ubuf(buf[m++]).i;
   }
 
   return m;
@@ -968,6 +969,9 @@ int FixRigidLSDEM::unpack_border(int n, int first, double *buf)
 int FixRigidLSDEM::pack_exchange(int i, double *buf)
 {
   int m = FixRigid::pack_exchange(i, buf);
+
+  if (storage_mode == WATERSHED)
+    buf[m++] = ubuf(node_index[i]).d;
 
   if (distributed_flag) {
     if (grid_style[body[i]] != DISTRIBUTED) {
@@ -996,9 +1000,6 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
     }
   }
 
-  if (storage_mode == WATERSHED)
-    buf[m++] = ubuf(node_index[i]).d;
-
   return m;
 }
 
@@ -1009,6 +1010,9 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
 int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
 {
   int m = FixRigid::unpack_exchange(nlocal, buf);
+
+  if (storage_mode == WATERSHED)
+    node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
   if (distributed_flag) {
     int flag = buf[m++];
@@ -1037,9 +1041,6 @@ int FixRigidLSDEM::unpack_exchange(int nlocal, double *buf)
       dist_grid_min[nlocal][2] = buf[m++];
     }
   }
-
-  if (storage_mode == WATERSHED)
-    node_index[nlocal] = (int) ubuf(buf[m++]).i;
 
   return m;
 }
