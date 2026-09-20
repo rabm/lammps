@@ -306,8 +306,11 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     comm->forward_comm(this);
     reset_atom2body();
 
-    if (storage_mode == WATERSHED)
-      calculate_xcom(); // needed for partitioning
+  // Have only set data for input file so far
+  if (!inpfile) set_molecule_data();
+
+  if (storage_mode == WATERSHED)
+    calculate_xcom();
 
     process_levelsets();
   }
@@ -371,6 +374,32 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
   // can now clear meta data about LS grid files
   gridfile_data.clear();
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::set_molecule_data()
+{
+  if (inpfile) return; // already populated by read_infile() in init()
+
+  int *mask = atom->mask;
+  int *grid_index = atom->grid_index;
+  double **xcom = atom->xcom;
+  Molecule *onemol;
+
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (!(mask[i] & groupbit)) continue;
+    if (bodyownLS[i] == -1) continue;
+    onemol = atom->molecules[grid_index[i]];
+    int ibody = atom2body[i];
+    bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
+    bodyLS[ibody].style = onemol->grid_style;
+    bodyLS[ibody].grid_scale = onemol->grid_scale;
+    mass_custom[ibody] = onemol->masstotal;
+    xcm_custom[ibody][0] = xcom[i][0];
+    xcm_custom[ibody][1] = xcom[i][1];
+    xcm_custom[ibody][2] = xcom[i][2];
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -506,45 +535,6 @@ void FixRigidSmallLSDEM::process_levelsets()
     if (mask[i] & groupbit)
       touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
-  // Copy body geometry + infile data into body structure
-  if (inpfile) {
-    tagint myid;
-    for (int i = 0; i < atom->nlocal; i++) {
-      if (!(mask[i] & groupbit)) continue;
-      if (bodyown[i] < 0) continue;
-      myid = molecule[i];
-      ibody = atom2body[i];
-
-      // check all bodies in infile to find match, O(nlocal_body x nbody)
-      //   only done once and presumably nbody small if using infile
-      for (const auto& pair : gridfile_data) {
-        gridfile = pair.first;
-        mydata = pair.second;
-        for (int j = 0; j < mydata.bodies.size(); j++) {
-          if (mydata.bodies[j] == myid) {
-            bodyLS[ibody].file_id = mydata.id;
-            bodyLS[ibody].grid_scale = mydata.scales[j];
-          }
-        }
-      }
-    }
-  } else {
-    Molecule *onemol;
-    for (i = 0; i < atom->nlocal; i++) {
-      if (!(mask[i] & groupbit)) continue;
-      if (bodyownLS[i] == -1) continue;
-      onemol = atom->molecules[grid_index[i]];
-      ibody = atom2body[i];
-      bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
-      bodyLS[ibody].style = onemol->grid_style;
-      bodyLS[ibody].grid_scale = onemol->grid_scale;
-      mass_custom[ibody] = onemol->masstotal;
-      xcm_custom[ibody][0] = xcom[i][0];
-      xcm_custom[ibody][1] = xcom[i][1];
-      xcm_custom[ibody][2] = xcom[i][2];
-    }
-  }
-
   // Copy gridfile extra data to bodyLS structure
   for (int i = 0; i < atom->nlocal; i++) {
     if (!(mask[i] & groupbit)) continue;
@@ -572,7 +562,6 @@ void FixRigidSmallLSDEM::process_levelsets()
   int *global_node_bins = nullptr;
   if (storage_mode == WATERSHED)
     memory->grow(global_node_bins, max_grid_size_flat, "rigid/ls/dem:global_node_bins");
-
 
   double **grid_values, **grid_min_local;
   int nlocal = atom->nlocal;
@@ -736,6 +725,8 @@ void FixRigidSmallLSDEM::process_levelsets()
         currentbin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
 
         global_node_bins[node_index[i]] = currentbin;
+        if (currentbin < 0)
+          error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
       }
       MPI_Allreduce(global_node_bins, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
