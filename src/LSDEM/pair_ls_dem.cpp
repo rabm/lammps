@@ -993,6 +993,7 @@ void PairLSDEM::setup()
 
   int igroup_large, igroup_small, ws_large, ws_small;
   groupbit_large = -1;
+  igroup_large = -1;
   ws_large = -1;
   if (fixlist1.size() == 1) {
     fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
@@ -1002,6 +1003,7 @@ void PairLSDEM::setup()
   }
 
   groupbit_small = -1;
+  igroup_small = -1;
   ws_small = -1;
   if (fixlist2.size() == 1) {
     fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
