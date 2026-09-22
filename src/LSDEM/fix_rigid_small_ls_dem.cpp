@@ -306,13 +306,18 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     comm->forward_comm(this);
     reset_atom2body();
 
-  // Have only set data for input file so far
-  if (!inpfile) set_molecule_data();
+    // Copy data saved from infile or molecule file to local body structures
+    //   This is the file id and scale for both, but also xcom for molecules
+    if (inpfile) {
+      copy_in_data_to_bodies();
+    } else {
+      copy_mol_data_to_bodies();
+    }
 
-  if (storage_mode == WATERSHED)
-    calculate_xcom();
-
-    process_levelsets();
+    if (storage_mode == WATERSHED) {
+      calculate_xcom();
+      process_levelsets();
+    }
   }
 
   // setup bodies after infile data read (e.g. xcm) and LS grid values calculated (e.g. itensor)
@@ -378,10 +383,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::set_molecule_data()
+void FixRigidSmallLSDEM::copy_mol_data_to_bodies()
 {
-  if (inpfile) return; // already populated by read_infile() in init()
-
   int *mask = atom->mask;
   int *grid_index = atom->grid_index;
   double **xcom = atom->xcom;
@@ -399,6 +402,34 @@ void FixRigidSmallLSDEM::set_molecule_data()
     xcm_custom[ibody][0] = xcom[i][0];
     xcm_custom[ibody][1] = xcom[i][1];
     xcm_custom[ibody][2] = xcom[i][2];
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::copy_in_data_to_bodies()
+{
+  tagint myid;
+  int *mask = atom->mask;
+  tagint *molecule = atom->molecule;
+
+  for (int i = 0; i < atom->nlocal; i++) {
+    if (!(mask[i] & groupbit)) continue;
+    if (bodyown[i] < 0) continue;
+
+    myid = molecule[i];
+    int ibody = atom2body[i];
+
+    for (const auto &pair : gridfile_data) {
+      const auto &data = pair.second;
+
+      for (int j = 0; j < data.bodies.size(); j++) {
+        if (data.bodies[j] == myid) {
+          bodyLS[ibody].file_id = data.id;
+          bodyLS[ibody].grid_scale = data.scales[j];
+        }
+      }
+    }
   }
 }
 

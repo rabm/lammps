@@ -152,7 +152,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   void process_levelsets();
   void calculate_xcom();
-  void set_molecule_data();
+  void copy_mol_data_to_bodies();
+  void copy_in_data_to_bodies();
   void compute_forces_and_torques() override;
   void compute_grain_properties(int, int*, double*, double*);
   void read_infile();
