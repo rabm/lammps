@@ -439,6 +439,8 @@ void FixRigidLSDEM::init()
         ix[2] = int(x_local[2]);
 
         currentbin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
+        if (currentbin < 0)
+          error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
 
         global_node_bins[node_index[i]] = currentbin;
       }
@@ -449,17 +451,19 @@ void FixRigidLSDEM::init()
       int max_bins_per_node = -1;
       int ntotal = nlocal + atom->nghost;
       std::vector <int> bin_owners(nbin);
-      std::vector <std::pair <int, int>> walkers;
-      std::vector <std::pair <int, int>> next_walkers;
+      std::vector <std::unordered_set <int>> walkers;
+      std::vector <std::unordered_set <int>> next_walkers;
 
       for (auto& s : node_bins) s.clear();
       for (auto& s : node_buffer_bins) s.clear();
 
-      walkers.clear();
-      next_walkers.clear();
+
+      walkers.resize(max_node_index);
+      next_walkers.resize(max_node_index);
       for (i = 0; i < nbin; i++)
         bin_owners[i] = -1;
 
+      int nwalkers = 0;
       for (i = 0; i < max_node_index; i++) {
         currentbin = global_node_bins[i];
 
@@ -468,60 +472,64 @@ void FixRigidLSDEM::init()
 
         bin_owners[currentbin] = i;
         node_bins[i].insert(currentbin);
-        walkers.emplace_back(std::make_pair(i, currentbin));
+        walkers[i].insert(currentbin);
+        nwalkers++;
       }
 
-      while (!walkers.empty()) {
+      while (nwalkers > 0) {
         // find unvisited sites and add new walkers
         //   if a walker borders a visited site, only add owner to create a buffer
-        int cycle = 0;
-        for (auto walker : walkers) {
-          i = walker.first;
-          currentbin = walker.second;
 
-          cycle += 1;
+        for (i = 0; i < walkers.size(); i++) {
+          for (auto currentbin : walkers[i]) {
 
-          for (int a = 0; a < dimension; a++) {
-            if (a == 0) ns = 1;
-            else if (a == 1) ns = nx;
-            else ns = nx * ny;
-            for (int sign = -1; sign <= 1; sign += 2) {
 
-              newbin = currentbin + sign * ns;
+            for (int a = 0; a < dimension; a++) {
+              if (a == 0) ns = 1;
+              else if (a == 1) ns = nx;
+              else ns = nx * ny;
+              for (int sign = -1; sign <= 1; sign += 2) {
 
-              if (newbin < 0 || newbin >= nbin) continue;
-              if (temp_grid_values[newbin] > grid_stride[ibody]) continue;
-              if (temp_grid_values[newbin] < -rcell) continue;
+                newbin = currentbin + sign * ns;
 
-              // if unvisited, add walker
-              if (bin_owners[newbin] == -1)
-                next_walkers.emplace_back(std::make_pair(i, newbin));
+                if (newbin < 0 || newbin >= nbin) continue;
+                if (temp_grid_values[newbin] > grid_stride[ibody]) continue;
+                if (temp_grid_values[newbin] < -rcell) continue;
+
+                // if unvisited, add walker
+                if (bin_owners[newbin] == -1)
+                  next_walkers[i].insert(newbin);
+              }
             }
           }
         }
 
         // add ownership from all of these walkers
         //   break ties depending on which atom owns fewer bins
-        for (auto walker : walkers) {
-          i = walker.first;
-          currentbin = walker.second;
+        for (i = 0; i < max_node_index; i++) {
+          for (auto currentbin : walkers[i]) {
 
-          if (bin_owners[currentbin] == -1) {
-            bin_owners[currentbin] = i;
-            node_bins[i].insert(currentbin);
-          } else {
-            j = bin_owners[currentbin];
-            if (node_bins[i].size() < node_bins[j].size()) {
+            if (bin_owners[currentbin] == -1) {
               bin_owners[currentbin] = i;
               node_bins[i].insert(currentbin);
-              node_bins[j].erase(currentbin);
+            } else {
+              j = bin_owners[currentbin];
+              if (node_bins[i].size() < node_bins[j].size()) {
+                bin_owners[currentbin] = i;
+                node_bins[i].insert(currentbin);
+                node_bins[j].erase(currentbin);
+              }
             }
           }
         }
 
         // replace walkers
         std::swap(walkers, next_walkers);
-        next_walkers.clear();
+        nwalkers = 0;
+        for (i = 0; i < max_node_index; i++) {
+          next_walkers[i].clear();
+          nwalkers += walkers[i].size();
+        }
       }
 
       // Create buffer (1st and 2nd neighbors of all bins)

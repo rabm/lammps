@@ -755,10 +755,10 @@ void FixRigidSmallLSDEM::process_levelsets()
         ix[2] = int(x_local[2]);
 
         currentbin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
-
-        global_node_bins[node_index[i]] = currentbin;
         if (currentbin < 0)
           error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
+
+        global_node_bins[node_index[i]] = currentbin;
       }
       MPI_Allreduce(global_node_bins, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
