@@ -509,6 +509,10 @@ void FixRigidSmallLSDEM::calculate_xcom()
     if (mass_custom)
       body[ibody].mass = mass_custom[ibody];
   }
+
+  // forward communicate xcm, mass to all ghosts
+  commflag = INITIAL;
+  comm->forward_comm(this);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -660,7 +664,7 @@ void FixRigidSmallLSDEM::process_levelsets()
   // ------------------------------ //
 
   double dx[3], gmin[3];
-  int index_local, index_global, error_code, error_code_global, nx[3];
+  int error_code, error_code_global, nx[3];
   for (const auto& pair : gridfile_data) {
     gridfile = pair.first;
 
@@ -711,11 +715,15 @@ void FixRigidSmallLSDEM::process_levelsets()
         }
       }
     } else {
-
       // Calculate watershed and temporarily store peratom data
 
-      // First, accumulate list of all bins in the grain
+      // First, forward properties computed for each grain
+      nghost_bodyLS = 0;
+      commflag_ls = FULL_BODY_LS;
+      comm->forward_comm(this, 1 + bodysizeLS);
+      commflag_ls = PARENT;
 
+      // Then, accumulate list of all bins in the grain
       // calculate the # bins & nodes in this gridfile
       int max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
@@ -760,7 +768,10 @@ void FixRigidSmallLSDEM::process_levelsets()
 
         global_node_bins[node_index[i]] = currentbin;
       }
-      MPI_Allreduce(global_node_bins, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
+
+      // Note that global_node_bins is sized earlier based on the largest grid
+      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(MPI_IN_PLACE, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation
       int j, ns, newbin, current_walker;
@@ -867,14 +878,14 @@ void FixRigidSmallLSDEM::process_levelsets()
 
       // Relocate bins to global per-grain/node-type storage
       if (global_flag) {
-        global_ws_tables[index_global].resize(max_node_index);
-        global_ws_buffers[index_global].resize(max_node_index);
+        global_ws_tables[index_global_grid].resize(max_node_index);
+        global_ws_buffers[index_global_grid].resize(max_node_index);
 
         for (i = 0; i < max_node_index; i++) {
           for (auto bin : node_bins[i])
-            global_ws_tables[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+            global_ws_tables[index_global_grid][i].insert(std::make_pair(bin, temp_grid_values[bin]));
           for (auto bin : node_buffer_bins[i])
-            global_ws_buffers[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+            global_ws_buffers[index_global_grid][i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
       } else {
         int nt, size_sum;
