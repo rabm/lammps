@@ -637,9 +637,7 @@ void FixRigidSmall::setup(int vflag)
   double cutghost = MAX(neighbor->cutneighmax,comm->cutghostuser);
   if (maxextent > cutghost)
     error->all(FLERR,"Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
-
   compute_forces_and_torques();
-
   // enforce 2d body forces and torques
 
   if (domain->dimension == 2) enforce2d();
@@ -647,7 +645,6 @@ void FixRigidSmall::setup(int vflag)
   // virial setup before call to set_v
 
   v_init(vflag);
-
   // compute and forward communicate vcm and omega of all bodies
 
   for (ibody = 0; ibody < nlocal_body; ibody++) {
@@ -655,14 +652,11 @@ void FixRigidSmall::setup(int vflag)
     MathExtra::angmom_to_omega(b->angmom,b->ex_space,b->ey_space,
                                b->ez_space,b->inertia,b->omega);
   }
-
   commflag = FINAL;
   comm->forward_comm(this,10);
-
   // set velocity/rotation of atoms in rigid bodues
 
   set_v();
-
   // guesstimate virial as 2x the set_v contribution
 
   if (vflag_global)

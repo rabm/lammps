@@ -314,10 +314,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       copy_mol_data_to_bodies();
     }
 
-    if (storage_mode == WATERSHED) {
-      calculate_xcom();
-      process_levelsets();
-    }
+    process_levelsets();
   }
 
   // setup bodies after infile data read (e.g. xcm) and LS grid values calculated (e.g. itensor)
@@ -671,6 +668,7 @@ void FixRigidSmallLSDEM::process_levelsets()
     read_gridfile(1, gridfile, temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
+
     for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
       if (pair.second.id != bodyLS[ibody].file_id)
         continue;
@@ -717,7 +715,11 @@ void FixRigidSmallLSDEM::process_levelsets()
     } else {
       // Calculate watershed and temporarily store peratom data
 
-      // First, forward properties computed for each grain
+      // First manually calculate xcom before static_bodies called
+      //   Needed to map nodes to bins
+      calculate_xcom();
+
+      // Second, forward properties computed for each grain
       nghost_bodyLS = 0;
       commflag_ls = FULL_BODY_LS;
       comm->forward_comm(this, 1 + bodysizeLS);
