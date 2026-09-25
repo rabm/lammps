@@ -563,11 +563,15 @@ void FixRigidSmallLSDEM::process_levelsets()
   // ------------------------------- //
 
   int *mask = atom->mask;
+  tagint *tag = atom->tag;
   for (i = 0; i < atom->nlocal; i++)
     if (mask[i] & groupbit)
       touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
   // Copy gridfile extra data to bodyLS structure
+  for (i = 0; i < nbody; i++)
+    bodyLS[i].tagmin = -1;
+
   for (int i = 0; i < atom->nlocal; i++) {
     if (!(mask[i] & groupbit)) continue;
     if (bodyown[i] < 0) continue;
@@ -576,6 +580,8 @@ void FixRigidSmallLSDEM::process_levelsets()
     bodyLS[ibody].grid_index = mydata.grid_index;
     bodyLS[ibody].style = mydata.style;
     bodyLS[ibody].grid_stride = mydata.stride;
+    if (bodyLS[i].tagmin == -1 || tag[i] < bodyLS[i].tagmin)
+      bodyLS[i].tagmin = tag[i];
   }
 
   // Send to ghosts
@@ -631,21 +637,13 @@ void FixRigidSmallLSDEM::process_levelsets()
   std::vector <std::set <int>> node_buffer_bins;
   if (storage_mode == WATERSHED) {
 
+    // This does not compress atom tags, so for best performance
+    //   all atoms in a body should have sequential tags
     int max_node_index = -1;
     for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
-
-      tagint min_id = -1;
-      tagint *tag = atom->tag;
       for (i = 0; i < nlocal; i++) {
         if (atom2body[i] != ibody) continue;
-
-        if (min_id == -1 || tag[i] < min_id)
-          min_id = tag[i];
-      }
-
-      for (i = 0; i < nlocal; i++) {
-        if (atom2body[i] != ibody) continue;
-        node_index[i] = tag[i] - min_id;
+        node_index[i] = tag[i] - bodyLS[ibody].tagmin;
         max_node_index = MAX(max_node_index, node_index[i]);
       }
     }
@@ -725,17 +723,27 @@ void FixRigidSmallLSDEM::process_levelsets()
       comm->forward_comm(this, 1 + bodysizeLS);
       commflag_ls = PARENT;
 
-      // Then, accumulate list of all bins in the grain
-      // calculate the # bins & nodes in this gridfile
+      // Among all bodies with the same file, pick the one with the smallest id
+      int target_body = -1;
+      for (ibody = 0; i < nbody; i++) {
+        if (pair.second.id != bodyLS[ibody].file_id)
+          continue;
+        if (target_body == -1 || bodytag[ibody] < target_body)
+          target_body = bodytag[ibody];
+      }
+      MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_INT, MPI_MIN, world);
+
+      // Then, calculate the max node index needed for this gridfile
       int max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
         ibody = atom2body[i];
-        if (pair.second.id != bodyLS[ibody].file_id)
+        if (bodytag[ibody] != target_body)
           continue;
 
         max_node_index = MAX(max_node_index, node_index[i]);
       }
       max_node_index += 1; // zero indexed
+      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
 
       int nx = gridfile_data[gridfile].grid_size[0];
       int ny = gridfile_data[gridfile].grid_size[1];
@@ -743,14 +751,16 @@ void FixRigidSmallLSDEM::process_levelsets()
       int nbin = nx * ny * nz;
 
       // Next find the bins which contain nodes
+
       int currentbin, ix[3];
       double x_local[3], quat_conj[4];
       for (int k = 0; k < max_node_index; k ++)
         global_node_bins[k] = -1;
 
+      // Check if this processor owns any nodes in that body
       for (i = 0; i < nlocal; i++) {
         ibody = atom2body[i];
-        if (pair.second.id != bodyLS[ibody].file_id)
+        if (bodytag[ibody] != target_body)
           continue;
 
         MathExtra::sub3(x[i], body[ibody].xcm, dx);
@@ -768,11 +778,13 @@ void FixRigidSmallLSDEM::process_levelsets()
         if (currentbin < 0)
           error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
 
+        if (global_node_bins[node_index[i]] != -1)
+          error->one(FLERR, "Second copy of ndoe detected for atom {} on body {}", atom->tag[i], ibody);
+
         global_node_bins[node_index[i]] = currentbin;
       }
 
       // Note that global_node_bins is sized earlier based on the largest grid
-      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
       MPI_Allreduce(MPI_IN_PLACE, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation
@@ -833,6 +845,8 @@ void FixRigidSmallLSDEM::process_levelsets()
         // add ownership from all of these walkers
         //   break ties depending on which atom owns fewer bins
         for (i = 0; i < max_node_index; i++) {
+          if (global_node_bins[i] < 0) continue; // skip if unused node slot
+
           for (auto currentbin : walkers[i]) {
 
             if (bin_owners[currentbin] == -1) {
@@ -840,7 +854,7 @@ void FixRigidSmallLSDEM::process_levelsets()
               node_bins[i].insert(currentbin);
             } else {
               j = bin_owners[currentbin];
-              if (node_bins[i].size() < node_bins[node_index[j]].size()) {
+              if (node_bins[i].size() < node_bins[j].size()) {
                 bin_owners[currentbin] = i;
                 node_bins[i].insert(currentbin);
                 node_bins[j].erase(currentbin);
@@ -860,6 +874,8 @@ void FixRigidSmallLSDEM::process_levelsets()
 
       // Create buffer (1st and 2nd neighbors of all bins)
       for (i = 0; i < max_node_index; i++) {
+        if (global_node_bins[i] < 0) continue; // skip if unused node slot
+
         for (const auto& currentbin : node_bins[i]) {
           for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
@@ -890,19 +906,19 @@ void FixRigidSmallLSDEM::process_levelsets()
             global_ws_buffers[index_global_grid][i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
       } else {
-        int nt, size_sum;
+        int ni, size_sum;
         for (i = 0; i < nlocal; i++) {
           ibody = atom2body[i];
           if (pair.second.id != bodyLS[ibody].file_id)
             continue;
 
-          nt = node_index[i];
-          size_sum = (int) (node_bins[nt].size() + node_buffer_bins[nt].size());
+          ni = node_index[i];
+          size_sum = (int) (node_bins[ni].size() + node_buffer_bins[ni].size());
           max_bins_per_node = MAX(max_bins_per_node, size_sum);
 
-          for (auto bin : node_bins[nt])
+          for (auto bin : node_bins[ni])
             dist_ws_tables[i].insert(std::make_pair(bin, temp_grid_values[bin]));
-          for (auto bin : node_buffer_bins[nt])
+          for (auto bin : node_buffer_bins[ni])
             dist_ws_buffers[i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
       }
@@ -2196,8 +2212,8 @@ int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
       return 1;
   } else {
     int gj = bodyLS[jbody].grid_index;
-    int ntj = node_index[j];
-    if (global_ws_tables[gj][ntj].find(currentbin) != global_ws_tables[gj][ntj].end())
+    int ni_j = node_index[j];
+    if (global_ws_tables[gj][ni_j].find(currentbin) != global_ws_tables[gj][ni_j].end())
       return 1;
   }
 
@@ -2229,9 +2245,9 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
     mybuffer = &dist_ws_buffers[j];
   } else {
     int gj = bodyLS[jbody].grid_index;
-    int ntj = node_index[j];
-    mytable = &global_ws_tables[gj][ntj];
-    mybuffer = &global_ws_buffers[gj][ntj];
+    int ni_j = node_index[j];
+    mytable = &global_ws_tables[gj][ni_j];
+    mybuffer = &global_ws_buffers[gj][ni_j];
   }
 
   double dist = interpolate_LS_watershed(dim, currentbin, mytable, mybuffer, ngrid, x_local, ix, normal, bodyLS[jbody].grid_stride);

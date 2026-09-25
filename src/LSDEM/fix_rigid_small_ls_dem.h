@@ -75,6 +75,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     double grid_scale;     // scale factor for grid values, only needed for GLOBAL
     double grid_stride;    // the LS grid stride, assumed equal in all direction
     double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
+    tagint tagmin;              // smallest tag of atom in the body
   };
 
   inline int get_maxmol() { return maxmol; };
