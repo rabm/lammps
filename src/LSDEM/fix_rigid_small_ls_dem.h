@@ -91,6 +91,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
   int read_quat;
   int commflag_ls;
+  int commflag_rev_ls;
   int nmax_distributed;
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;

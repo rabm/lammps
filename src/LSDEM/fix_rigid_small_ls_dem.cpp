@@ -52,6 +52,7 @@ using namespace LSDEMExtra;
 enum {GLOBAL, DISTRIBUTED};
 enum {ARRAY, WATERSHED};
 enum {PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS};
+enum {RPARENT, RTAGMIN};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
 static constexpr int MAX_ITERATIONS = 100; // For surface area integration
@@ -61,6 +62,7 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 //   for distributed memory when there are different cutoffs between
 //   two types of grains?
 // Todo: can create_atoms be used twice with two run commands?
+// Todo: trim comment information after debugging
 
 /* ---------------------------------------------------------------------- */
 
@@ -119,6 +121,7 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   if (bodysizeLS * sizeof(double) != sizeof(BodyLS)) bodysizeLS++;
 
   commflag_ls = PARENT;
+  commflag_rev_ls = RPARENT;
   comm_forward += 1 + bodysizeLS;
 
   if (storage_mode == WATERSHED)
@@ -217,7 +220,7 @@ void FixRigidSmallLSDEM::init()
 
     for (int i = 0; i < nlocal_body; i++)
       if (mass_custom[i] == -1)
-        error->all(FLERR, "Must define all bodies in infile for ls/dem");
+        error->one(FLERR, "Must define all bodies in infile for ls/dem");
   } else {
     Molecule *onemol;
     int *grid_index = atom->grid_index;
@@ -569,20 +572,25 @@ void FixRigidSmallLSDEM::process_levelsets()
       touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
 
   // Copy gridfile extra data to bodyLS structure
-  for (i = 0; i < nbody; i++)
-    bodyLS[i].tagmin = -1;
+  for (i = 0; i < nmax_body; i++)
+    bodyLS[i].tagmin = MAXTAGINT;
 
   for (int i = 0; i < atom->nlocal; i++) {
     if (!(mask[i] & groupbit)) continue;
-    if (bodyown[i] < 0) continue;
     ibody = atom2body[i];
+    if (ibody >= 0)
+      if (tag[i] < bodyLS[ibody].tagmin)
+        bodyLS[ibody].tagmin = tag[i];
+    if (bodyown[i] < 0) continue;
     mydata = gridfile_data[id_to_gridfile[bodyLS[ibody].file_id]];
     bodyLS[ibody].grid_index = mydata.grid_index;
     bodyLS[ibody].style = mydata.style;
     bodyLS[ibody].grid_stride = mydata.stride;
-    if (bodyLS[i].tagmin == -1 || tag[i] < bodyLS[i].tagmin)
-      bodyLS[i].tagmin = tag[i];
   }
+
+  commflag_rev_ls = RTAGMIN;
+  comm->reverse_comm(this, 1);
+  commflag_rev_ls = RPARENT;
 
   // Send to ghosts
   nghost_bodyLS = 0;
@@ -639,16 +647,18 @@ void FixRigidSmallLSDEM::process_levelsets()
 
     // This does not compress atom tags, so for best performance
     //   all atoms in a body should have sequential tags
-    int max_node_index = -1;
+    tagint max_node_index = -1;
     for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
       for (i = 0; i < nlocal; i++) {
         if (atom2body[i] != ibody) continue;
         node_index[i] = tag[i] - bodyLS[ibody].tagmin;
+        if (node_index[i] < 0)
+          error->one(FLERR, "Negative node index for atom {} i {} tagmin {} negative! on body {}", tag[i], i, bodyLS[ibody].tagmin, ibody);
         max_node_index = MAX(max_node_index, node_index[i]);
       }
     }
 
-    MPI_Allreduce(&max_node_index, &max_node_index, 1, MPI_INT, MPI_MAX, world);
+    MPI_Allreduce(&max_node_index, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
 
     node_bins.resize(max_node_index + 1);
     node_buffer_bins.resize(max_node_index + 1);
@@ -724,26 +734,26 @@ void FixRigidSmallLSDEM::process_levelsets()
       commflag_ls = PARENT;
 
       // Among all bodies with the same file, pick the one with the smallest id
-      int target_body = -1;
-      for (ibody = 0; i < nbody; i++) {
+      tagint target_body = MAXTAGINT;
+      for (ibody = 0; ibody < nbody; ibody++) {
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
-        if (target_body == -1 || bodytag[ibody] < target_body)
-          target_body = bodytag[ibody];
+        if (bodytag[body[ibody].ilocal] < target_body)
+          target_body = bodytag[body[ibody].ilocal];
       }
-      MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_INT, MPI_MIN, world);
+      MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_LMP_TAGINT, MPI_MIN, world);
 
       // Then, calculate the max node index needed for this gridfile
-      int max_node_index = -1;
+      tagint max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
         ibody = atom2body[i];
-        if (bodytag[ibody] != target_body)
+        if (bodytag[i] != target_body)
           continue;
 
         max_node_index = MAX(max_node_index, node_index[i]);
       }
       max_node_index += 1; // zero indexed
-      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
 
       int nx = gridfile_data[gridfile].grid_size[0];
       int ny = gridfile_data[gridfile].grid_size[1];
@@ -760,7 +770,7 @@ void FixRigidSmallLSDEM::process_levelsets()
       // Check if this processor owns any nodes in that body
       for (i = 0; i < nlocal; i++) {
         ibody = atom2body[i];
-        if (bodytag[ibody] != target_body)
+        if (bodytag[i] != target_body)
           continue;
 
         MathExtra::sub3(x[i], body[ibody].xcm, dx);
@@ -779,8 +789,7 @@ void FixRigidSmallLSDEM::process_levelsets()
           error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
 
         if (global_node_bins[node_index[i]] != -1)
-          error->one(FLERR, "Second copy of ndoe detected for atom {} on body {}", atom->tag[i], ibody);
-
+          error->one(FLERR, "Second copy of node {} detected for atom {} on body {}, tag {}", node_index[i], atom->tag[i], ibody, bodytag[i]);
         global_node_bins[node_index[i]] = currentbin;
       }
 
@@ -927,7 +936,6 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   memory->destroy(temp_grid_values);
   memory->destroy(grid_size_flat);
-
 
   // ------------------------------ //
   // Set communication variables    //
@@ -1777,8 +1785,24 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
 
 int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
 {
-  int m = FixRigidSmall::pack_reverse_comm(n, first, buf);
-  return m;
+  if (commflag_rev_ls == RPARENT) {
+    int m = FixRigidSmall::pack_reverse_comm(n, first, buf);
+    return m;
+  }
+
+  if (commflag_rev_ls == RTAGMIN) {
+    int i, m, last;
+
+    m = 0;
+    last = first + n;
+
+    for (i = first; i < last; i++) {
+      if (bodyown[i] < 0) continue;
+      buf[m++] = static_cast<double>(bodyLS[bodyown[i]].tagmin);
+    }
+    return m;
+  }
+  return 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -1787,9 +1811,20 @@ int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
 
 void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
 {
-  FixRigidSmall::unpack_reverse_comm(n, list, buf);
-}
+  if (commflag_rev_ls == RPARENT)
+    FixRigidSmall::unpack_reverse_comm(n, list, buf);
 
+  if (commflag_rev_ls == RTAGMIN) {
+    int i, j, m, tagcomm;
+    m = 0;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      if (bodyown[j] < 0) continue;
+      tagcomm = static_cast<tagint>(buf[m++]);
+      bodyLS[bodyown[j]].tagmin = MIN(bodyLS[bodyown[j]].tagmin, tagcomm);
+    }
+  }
+}
 
 /* ----------------------------------------------------------------------
    grow bodyLS data structure
@@ -1814,7 +1849,7 @@ double FixRigidSmallLSDEM::memory_usage()
   int nmax = atom->nmax;
   double bytes = FixRigidSmall::memory_usage();
   bytes += (double)nmax * sizeof(int);
-  bytes += (double)nmax_body * sizeof(BodyLS);
+  bytes += (double)nmax_bodyLS * sizeof(BodyLS);
   return bytes;
 }
 
