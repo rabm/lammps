@@ -187,6 +187,22 @@ void FixRigidLSDEM::init()
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
+  // Check for other ls/dem fixes
+
+  auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
+  auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
+
+  if (fixlist1.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/ls/dem");
+  if (fixlist2.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
+
+  if (fixlist2.size() == 1) {
+    auto fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+    if (storage_mode != fix_rigid_small->get_storage_model())
+      error->all(FLERR, "Storage mode mismatch between fix rigid/ls/dem and fix rigid/small/ls/dem");
+  }
+
   // Pair cutoff sets size of LS around nodes for distributed case
   if (!utils::strmatch(force->pair_style,"^ls/dem"))
     error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
@@ -299,6 +315,7 @@ void FixRigidLSDEM::init()
       tagint min_id = -1;
       tagint *tag = atom->tag;
       for (i = 0; i < nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
         if (body[i] != ibody) continue;
 
         if (min_id == -1 || tag[i] < min_id)
@@ -306,6 +323,7 @@ void FixRigidLSDEM::init()
       }
 
       for (i = 0; i < nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
         if (body[i] != ibody) continue;
         node_index[i] = tag[i] - min_id;
         max_node_index = MAX(max_node_index, node_index[i]);
@@ -398,6 +416,8 @@ void FixRigidLSDEM::init()
       int nbin, nx, ny, nz;
       int max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
+
         ibody = body[i];
         if (pair.second.find(ibody) == pair.second.end())
           continue;
@@ -420,6 +440,7 @@ void FixRigidLSDEM::init()
       int currentbin, ix[3];
       double x_local[3], quat_conj[4];
       for (i = 0; i < nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
         ibody = body[i];
         if (pair.second.find(ibody) == pair.second.end())
           continue;
@@ -565,6 +586,8 @@ void FixRigidLSDEM::init()
       } else {
         int nt, size_sum;
         for (i = 0; i < nlocal; i++) {
+          if (!(mask[i] & groupbit)) continue;
+
           ibody = body[i];
           if (pair.second.find(ibody) == pair.second.end())
             continue;
@@ -596,7 +619,8 @@ void FixRigidLSDEM::init()
     if (distributed_flag) {
       int max_nbins = 0;
       for (i = 0; i < nlocal; i++)
-        max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
+        if (mask[i] & groupbit)
+          max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
       MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
       maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
@@ -850,6 +874,7 @@ void FixRigidLSDEM::copy_arrays(int i, int j, int /*delflag*/)
   if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 
   if (distributed_flag) {
+    if (body[i] < 0) return;
     if (grid_style[body[i]] != DISTRIBUTED)
       return;
 
@@ -893,7 +918,7 @@ int FixRigidLSDEM::pack_border(int n, int *list, double *buf)
 
     if (distributed_flag) {
 
-      if (grid_style[body[j]] != DISTRIBUTED) {
+      if (body[j] == -1 || grid_style[body[j]] != DISTRIBUTED) {
         buf[m++] = 0;
         continue;
       }
@@ -982,7 +1007,7 @@ int FixRigidLSDEM::pack_exchange(int i, double *buf)
     buf[m++] = ubuf(node_index[i]).d;
 
   if (distributed_flag) {
-    if (grid_style[body[i]] != DISTRIBUTED) {
+    if (body[i] == -1 || grid_style[body[i]] != DISTRIBUTED) {
       buf[m++] = 0;
       return m;
     }

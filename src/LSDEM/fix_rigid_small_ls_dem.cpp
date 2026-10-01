@@ -106,11 +106,11 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   }
 
   // set bodyownLS for owned atoms
-
+  int *mask = atom->mask;
   tagint *tag = atom->tag;
   nlocal_bodyLS = nghost_bodyLS = 0;
   for (int i = 0; i < atom->nlocal; i++)
-    if (bodytag[i] == tag[i]) {
+    if ((mask[i] & groupbit) && (bodytag[i] == tag[i])) {
       bodyLS[nlocal_bodyLS].ilocal = i;
       bodyownLS[i] = nlocal_bodyLS++;
     } else bodyownLS[i] = -1;
@@ -190,6 +190,22 @@ void FixRigidSmallLSDEM::init()
 
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
+
+  // Check for other ls/dem fixes
+
+  auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
+  auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
+
+  if (fixlist1.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/ls/dem");
+  if (fixlist2.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
+
+  if (fixlist1.size() == 1) {
+    auto fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
+    if (storage_mode != fix_rigid->get_storage_model())
+      error->all(FLERR, "Storage mode mismatch between fix rigid/ls/dem and fix rigid/small/ls/dem");
+  }
 
   // Pair cutoff sets size of LS around nodes for distributed case
   if (!utils::strmatch(force->pair_style, "^ls/dem"))
@@ -371,11 +387,10 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
   }
 
   // Sanity check for agreement with parent
-  for (int i = 0; i < atom->nlocal + atom->nghost; i++) {
-    if (bodyown[i] != bodyownLS[i]) {
+  int *mask = atom->mask;
+  for (int i = 0; i < atom->nlocal + atom->nghost; i++)
+    if ((mask[i] & groupbit) && (bodyown[i] != bodyownLS[i]))
       error->one(FLERR, "Different bodies detected, {} vs {}, for atom {}", bodyown[i], bodyownLS[i], atom->tag[i]);
-    }
-  }
 
   // can now clear meta data about LS grid files
   gridfile_data.clear();
@@ -448,11 +463,12 @@ void FixRigidSmallLSDEM::calculate_xcom()
   double *rmass = atom->rmass;
   double **x = atom->x;
   int *type = atom->type;
+  int *mask = atom->mask;
 
   double *xcm;
   double *xgc;
 
-  for (ibody = 0; ibody < nlocal_body+nghost_body; ibody++) {
+  for (ibody = 0; ibody < nlocal_body + nghost_body; ibody++) {
     xcm = body[ibody].xcm;
     xgc = body[ibody].xgc;
     xcm[0] = xcm[1] = xcm[2] = 0.0;
@@ -465,6 +481,7 @@ void FixRigidSmallLSDEM::calculate_xcom()
   double massone;
 
   for (i = 0; i < nlocal; i++) {
+    if (!(mask[i] & groupbit)) continue;
     if (atom2body[i] < 0) continue;
     Body *b = &body[atom2body[i]];
 
@@ -645,11 +662,15 @@ void FixRigidSmallLSDEM::process_levelsets()
   std::vector <std::set <int>> node_buffer_bins;
   if (storage_mode == WATERSHED) {
 
+    for (i = 0; i < nlocal; i++)
+      node_index[i] = -1;
+
     // This does not compress atom tags, so for best performance
     //   all atoms in a body should have sequential tags
     tagint max_node_index = -1;
     for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
       for (i = 0; i < nlocal; i++) {
+        if (!(mask[i] & groupbit)) continue;
         if (atom2body[i] != ibody) continue;
         node_index[i] = tag[i] - bodyLS[ibody].tagmin;
         if (node_index[i] < 0)
@@ -746,9 +767,8 @@ void FixRigidSmallLSDEM::process_levelsets()
       // Then, calculate the max node index needed for this gridfile
       tagint max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
-        ibody = atom2body[i];
-        if (bodytag[i] != target_body)
-          continue;
+        if (!(mask[i] & groupbit)) continue;
+        if (bodytag[i] != target_body) continue;
 
         max_node_index = MAX(max_node_index, node_index[i]);
       }
@@ -769,10 +789,10 @@ void FixRigidSmallLSDEM::process_levelsets()
 
       // Check if this processor owns any nodes in that body
       for (i = 0; i < nlocal; i++) {
-        ibody = atom2body[i];
-        if (bodytag[i] != target_body)
-          continue;
+        if (!(mask[i] & groupbit)) continue;
+        if (bodytag[i] != target_body) continue;
 
+        ibody = atom2body[i];
         MathExtra::sub3(x[i], body[ibody].xcm, dx);
         domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
         MathExtra::qconjugate(quat_atom[i], quat_conj);
@@ -799,7 +819,6 @@ void FixRigidSmallLSDEM::process_levelsets()
       // Now, run watershed operation
       int j, ns, newbin, current_walker;
       int max_bins_per_node = -1;
-      int ntotal = nlocal + atom->nghost;
       std::vector <int> bin_owners(nbin);
       std::vector <std::unordered_set <int>> walkers;
       std::vector <std::unordered_set <int>> next_walkers;
@@ -917,9 +936,9 @@ void FixRigidSmallLSDEM::process_levelsets()
       } else {
         int ni, size_sum;
         for (i = 0; i < nlocal; i++) {
+          if (!(mask[i] & groupbit)) continue;
           ibody = atom2body[i];
-          if (pair.second.id != bodyLS[ibody].file_id)
-            continue;
+          if (pair.second.id != bodyLS[ibody].file_id) continue;
 
           ni = node_index[i];
           size_sum = (int) (node_bins[ni].size() + node_buffer_bins[ni].size());
@@ -952,7 +971,8 @@ void FixRigidSmallLSDEM::process_levelsets()
     if (distributed_flag) {
       int max_nbins = 0;
       for (i = 0; i < nlocal; i++)
-        max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
+        if (mask[i] & groupbit)
+          max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
       MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
       maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
@@ -1198,6 +1218,8 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
   bodyownLS[j] = bodyownLS[i];
 
   if (!ls_read_flag) return; // if called before processing LS (e.g. when sorting in setup)
+
+  if (!(atom->mask[i] & groupbit)) return;
 
   if (storage_mode == WATERSHED) node_index[j] = node_index[i];
 
@@ -1485,6 +1507,7 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
     j = list[i];
 
     buf[m++] = ubuf(node_index[j]).d;
+    if (node_index[j] == -1) continue;
 
     if (distributed_flag) {
       if (bodyLS[atom2body[j]].style != DISTRIBUTED) {
@@ -1525,6 +1548,7 @@ int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
   for (i = first; i < last; i++) {
 
     node_index[i] = (int) ubuf(buf[m++]).i;
+    if (node_index[i] == -1) continue;
 
     if (distributed_flag) {
       flag = buf[m++];
