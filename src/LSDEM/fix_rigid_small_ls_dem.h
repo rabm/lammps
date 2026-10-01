@@ -109,10 +109,10 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int bodysizeLS;          // sizeof(BodyLS) in doubles
 
   // per-atom quantities
-  // only defined for owned atoms, except bodyown for own+ghost
 
   int *bodyownLS;           // mirror of bodyown
   int *node_index;          // node index in grain used in watershedding
+  int *atom_grid_style;     // copy of LSData style for communication (hard to access BodyLS)
 
   // variables for global quantities
 
