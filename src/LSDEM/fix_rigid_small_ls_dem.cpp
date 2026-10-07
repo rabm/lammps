@@ -51,7 +51,7 @@ using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 enum {ARRAY, WATERSHED};
-enum {PARENT, FULL_BODY_LS, INITIAL_LS, PREFORCE_LS};
+enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS};
 enum {RPARENT, RTAGMIN};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
@@ -410,7 +410,7 @@ void FixRigidSmallLSDEM::copy_mol_data_to_bodies()
 
   for (int i = 0; i < atom->nlocal; i++) {
     if (!(mask[i] & groupbit)) continue;
-    if (bodyownLS[i] == -1) continue;
+    if (bodyownLS[i] < 0) continue;
     onemol = atom->molecules[grid_index[i]];
     int ibody = atom2body[i];
     bodyLS[ibody].file_id = gridfile_to_id[onemol->grid_file];
@@ -664,8 +664,6 @@ void FixRigidSmallLSDEM::process_levelsets()
   std::vector <std::set <int>> node_bins;
   std::vector <std::set <int>> node_buffer_bins;
   if (storage_mode == WATERSHED) {
-    printf("zeroing up to %d\n", atom->nmax);
-
     for (i = 0; i < atom->nmax; i++)
       node_index[i] = -1;
 
@@ -984,8 +982,6 @@ void FixRigidSmallLSDEM::process_levelsets()
     }
   }
 
-  // Copy atom_grid_style from BodyLS for communication
-
   for (int i = 0; i < nlocal; i++) {
     atom_grid_style[i] = -1;
     if (!(mask[i] & groupbit)) continue;
@@ -993,6 +989,11 @@ void FixRigidSmallLSDEM::process_levelsets()
     if (ibody >= 0)
       atom_grid_style[i] = bodyLS[ibody].style;
   }
+
+  // Push to existing ghosts, will later update with border calls
+  commflag_ls = PROCESS_GS;
+  comm->forward_comm(this, 1);
+  commflag_ls = PARENT;
 
   // resize buffers as necessary
   comm->init();
@@ -1199,10 +1200,10 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
 {
   FixRigidSmall::grow_arrays(nmax);
   memory->grow(bodyownLS, nmax, "rigid/small/ls/dem:bodyownLS");
+  memory->grow(atom_grid_style, nmax, "rigid/small/ls/dem:atom_grid_style");
 
   if (storage_mode == WATERSHED) {
     memory->grow(node_index, nmax, "rigid/small/ls/dem:node_index");
-    memory->grow(atom_grid_style, nmax, "rigid/small/ls/dem:atom_grid_style");
     if (distributed_flag) {
       dist_ws_tables.resize(nmax);
       dist_ws_buffers.resize(nmax);
@@ -1525,7 +1526,7 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
     j = list[i];
 
     buf[m++] = ubuf(node_index[j]).d;
-    buf[m++] = (double) (atom_grid_style[j]);
+    buf[m++] = ubuf(atom_grid_style[j]).d;
 
     if (atom_grid_style[j] == DISTRIBUTED) {
 
@@ -1562,7 +1563,6 @@ int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
 
     node_index[i] = (int) ubuf(buf[m++]).i;
     atom_grid_style[i] = (int) ubuf(buf[m++]).i;
-
     if (atom_grid_style[i] == DISTRIBUTED) {
       std::size_t n_table = (std::size_t) buf[m++];
       dist_ws_tables[i].clear();
@@ -1710,6 +1710,12 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
       buf[m++] = quatd2g[2];
       buf[m++] = quatd2g[3];
     }
+  } else if (commflag_ls == PROCESS_GS) {
+    m = 0;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = ubuf(atom_grid_style[j]).d;
+    }
   } else if (commflag_ls == PREFORCE_LS) {
     double **grain_com = atom->xcom;
     double **grain_quat = atom->quat;
@@ -1767,6 +1773,10 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
       quatd2g[1] = buf[m++];
       quatd2g[2] = buf[m++];
       quatd2g[3] = buf[m++];
+    }
+  } else if (commflag_ls == PROCESS_GS) {
+    for (i = first; i < last; i++) {
+      atom_grid_style[i] = ubuf(buf[m++]).i;
     }
   } else if (commflag_ls == PREFORCE_LS) {
     double **grain_com = atom->xcom;
