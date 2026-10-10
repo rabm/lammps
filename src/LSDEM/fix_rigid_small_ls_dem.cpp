@@ -681,7 +681,7 @@ void FixRigidSmallLSDEM::process_levelsets()
       }
     }
 
-    MPI_Allreduce(&max_node_index, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
+    MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
 
     node_bins.resize(max_node_index + 1);
     node_buffer_bins.resize(max_node_index + 1);
@@ -761,8 +761,8 @@ void FixRigidSmallLSDEM::process_levelsets()
       for (ibody = 0; ibody < nbody; ibody++) {
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
-        if (bodytag[body[ibody].ilocal] < target_body)
-          target_body = bodytag[body[ibody].ilocal];
+        if (tag[body[ibody].ilocal] < target_body)
+          target_body = tag[body[ibody].ilocal];
       }
       MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_LMP_TAGINT, MPI_MIN, world);
 
@@ -965,10 +965,10 @@ void FixRigidSmallLSDEM::process_levelsets()
   // pack_exchange/unpack_exchange always pack an own-body flag, and (for
   // atoms that own a rigid body) the BodyLS struct (1 + bodysizeLS doubles),
   // regardless of storage_mode or distributed_flag.
-  maxexchange = 1 + bodysizeLS;
+  maxexchange = 2 + bodysizeLS;
 
   if (storage_mode == WATERSHED) {
-    comm_border = 1; // node index
+    comm_border = 2; // node index
     maxexchange += 1; // node index
     if (distributed_flag) {
       int max_nbins = 0;
@@ -981,6 +981,8 @@ void FixRigidSmallLSDEM::process_levelsets()
       comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
   }
+
+  // Copy atom_grid_style from BodyLS for communication
 
   for (int i = 0; i < nlocal; i++) {
     atom_grid_style[i] = -1;
