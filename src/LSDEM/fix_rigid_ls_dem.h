@@ -33,6 +33,7 @@ class FixRigidLSDEM : public FixRigid {
   int setmask() override;
   void post_constructor() override;
   void init() override;
+  void setup(int) override;
   void initial_integrate(int) override;
   void set_arrays(int) override;
   void write_restart_file(const char *) override;
@@ -60,6 +61,7 @@ class FixRigidLSDEM : public FixRigid {
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
   char *id_fix;
   int index_ls_dem_touch_id;
+  int read_quat;
 
   int nmax_distributed;
   double **dist_grid_values;

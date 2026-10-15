@@ -761,8 +761,7 @@ void FixRigidSmallLSDEM::process_levelsets()
       for (ibody = 0; ibody < nbody; ibody++) {
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
-        if (tag[body[ibody].ilocal] < target_body)
-          target_body = tag[body[ibody].ilocal];
+        target_body = MIN(target_body, tag[body[ibody].ilocal]);
       }
       MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_LMP_TAGINT, MPI_MIN, world);
 
