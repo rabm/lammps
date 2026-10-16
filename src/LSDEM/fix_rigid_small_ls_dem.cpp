@@ -717,7 +717,7 @@ void FixRigidSmallLSDEM::process_levelsets()
           // Unscaled values (and min) stored globally to avoid duplicating memory
           global_grids[index_global_grid][n] = temp_grid_values[n];
       } else {
-
+        int max_error = -1;
         for (i = 0; i < atom->nlocal; i++) {
           if (!(mask[i] & groupbit)) continue;
           ibody = atom2body[i];
@@ -726,22 +726,22 @@ void FixRigidSmallLSDEM::process_levelsets()
           if (pair.second.id != bodyLS[ibody].file_id)
             continue;
 
-          // Location of atom/node relative to CoM (not yet defined in body structure) + remap periodically
-          MathExtra::sub3(x[i], xcm_custom[ibody], dx);
+          MathExtra::sub3(x[i], body[ibody].xcm, dx);
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
 
           // Calculate local grid values and minima
           error_code = store_dist_array(i, dimension, bodyLS[ibody].grid_size, subgrid_size, bodyLS[ibody].grid_stride, bodyLS[ibody].grid_scale,
                                          rcell, dx, bodyLS[ibody].grid_min, quat_atom[i], temp_grid_values, grid_min_local[i], grid_values[i]);
-
+          max_error = MAX(max_error, error_code);
           if (error_code == -1)
             error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
-
-          MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-          if (error_code_global && comm->me == 0)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-              "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
         }
+
+        MPI_Allreduce(MPI_IN_PLACE, &max_error, 1, MPI_INT, MPI_MAX, world);
+        if (max_error && comm->me == 0)
+          error->warning(FLERR, "Level set of body file {} does not include a large enough buffer for the distributed grid cutoff\n "
+            "Local grid padded with BIG values\n", gridfile);
+
       }
     } else {
       // Calculate watershed and temporarily store peratom data
@@ -976,7 +976,7 @@ void FixRigidSmallLSDEM::process_levelsets()
           max_nbins = MAX(max_nbins, int(dist_ws_tables[i].size()) + int(dist_ws_buffers[i].size()));
       MPI_Allreduce(&max_nbins, &nmax_distributed, 1, MPI_INT, MPI_MAX, world);
 
-      maxexchange += 3 + 2 * nmax_distributed;  // +2 for # of owned & buffer bins, +1 for dist flag
+      maxexchange += 3 + 2 * nmax_distributed; // +2 for # of owned & buffer bins, +1 for dist flag
       comm_border += 3 + 2 * nmax_distributed; // +2 x # bins for bin, value pairs
     }
   }
