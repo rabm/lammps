@@ -339,7 +339,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     process_levelsets();
   }
 
-  // setup bodies after infile data read (e.g. xcm) and LS grid values calculated (e.g. itensor)
+  // call setup bodies again after infile data read (e.g. xcm) and LS grid values calculated (e.g. itensor)
   FixRigidSmall::setup_pre_neighbor();
 
   if (!ls_read_flag) {
@@ -539,8 +539,6 @@ void FixRigidSmallLSDEM::calculate_xcom()
 
 void FixRigidSmallLSDEM::process_levelsets()
 {
-  // Note, FixRigidSmall has not yet populated body structure, use custom fields
-
   int ibody, i, a;
   int dimension = domain->dimension;
 
@@ -705,10 +703,17 @@ void FixRigidSmallLSDEM::process_levelsets()
         continue;
       compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
     }
-
     int index_global_grid;
     if (gridfile_data[gridfile].style == GLOBAL)
       index_global_grid = gridfile_data[gridfile].grid_index;
+
+    // Manually calculate & communicate xcom before static_bodies called
+    //   Needed to map nodes to bins, may not be necessary for all combinations of options
+    calculate_xcom();
+    nghost_bodyLS = 0;
+    commflag_ls = FULL_BODY_LS;
+    comm->forward_comm(this, 1 + bodysizeLS);
+    commflag_ls = PARENT;
 
     if (storage_mode == ARRAY) {
       if (gridfile_data[gridfile].style == GLOBAL) {
@@ -745,16 +750,6 @@ void FixRigidSmallLSDEM::process_levelsets()
       }
     } else {
       // Calculate watershed and temporarily store peratom data
-
-      // First manually calculate xcom before static_bodies called
-      //   Needed to map nodes to bins
-      calculate_xcom();
-
-      // Second, forward properties computed for each grain
-      nghost_bodyLS = 0;
-      commflag_ls = FULL_BODY_LS;
-      comm->forward_comm(this, 1 + bodysizeLS);
-      commflag_ls = PARENT;
 
       // Among all bodies with the same file, pick the one with the smallest id
       tagint target_body = MAXTAGINT;
