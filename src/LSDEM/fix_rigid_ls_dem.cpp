@@ -359,9 +359,9 @@ void FixRigidLSDEM::init()
 
     // Start handling memory of LS grid
 
+    index_global = -1;
     if (global_flag) {
       // Check if this file used by a body with global memory
-      index_global = -1;
       for (const auto& jbody : pair.second) {
         if (grid_style[jbody] == GLOBAL) {
           index_global = grid_index[jbody];
@@ -408,12 +408,13 @@ void FixRigidLSDEM::init()
       // Calculate watershed and temporarily store peratom data
 
       // First, among all bodies with the same file, pick the one with the smallest id
-      int target_body = MAXTAGINT;
+      tagint target_body = MAXTAGINT;
       for (ibody = 0; ibody < nbody; ibody++) {
         if (pair.second.find(ibody) == pair.second.end())
           continue;
         target_body = MIN(target_body, ibody);
       }
+
 
       // Then, calculate the max node index needed for this gridfile and the # of bins
       int nx = grid_size[target_body][0];
@@ -441,6 +442,9 @@ void FixRigidLSDEM::init()
         memory->grow(global_node_bins, nmax_bins_all, "rigid/ls/dem:global_node_bins");
       }
 
+      for (int k = 0; k < max_node_index; k ++)
+        global_node_bins[k] = -1;
+
       // Next find the bins which contain nodes
       int currentbin, ix[3];
       double x_local[3], quat_conj[4];
@@ -456,7 +460,7 @@ void FixRigidLSDEM::init()
         ny = grid_size[ibody][1];
         nz = grid_size[ibody][2];
         MathExtra::sub3(x[i], xcm[ibody], dx);
-
+        domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
         MathExtra::qconjugate(quat_atom[i], quat_conj);
         MathExtra::quatrotvec(quat_conj, dx, x_local);
         MathExtra::sub3(x_local, grid_min[ibody], x_local);
@@ -472,7 +476,7 @@ void FixRigidLSDEM::init()
 
         global_node_bins[node_index[i]] = currentbin;
       }
-      MPI_Allreduce(MPI_IN_PLACE, global_node_bins, nbin, MPI_INT, MPI_MAX, world);
+      MPI_Allreduce(MPI_IN_PLACE, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
       MPI_Barrier(world);
 
       // Now, run watershed operation
@@ -581,7 +585,7 @@ void FixRigidLSDEM::init()
       }
 
       // Relocate bins to global per-grain/node-type storage
-      if (global_flag) {
+      if (index_global != -1) {
         global_ws_tables[index_global].resize(max_node_index);
         global_ws_buffers[index_global].resize(max_node_index);
 
@@ -598,8 +602,6 @@ void FixRigidLSDEM::init()
 
           ibody = body[i];
           if (pair.second.find(ibody) == pair.second.end())
-            continue;
-          if (ibody != target_body)
             continue;
 
           nt = node_index[i];
