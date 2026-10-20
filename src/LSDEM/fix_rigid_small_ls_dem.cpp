@@ -326,8 +326,12 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
     nghost_body = 0;
     commflag = FULL_BODY;
     comm->forward_comm(this);
-    reset_atom2body();
 
+    commflag_ls = FULL_BODY_LS;
+    comm->forward_comm(this, 1 + bodysizeLS);
+    commflag_ls = PARENT;
+
+    reset_atom2body();
     // Copy data saved from infile or molecule file to local body structures
     //   This is the file id and scale for both, but also xcom for molecules
     if (inpfile) {
@@ -1238,6 +1242,7 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
   atom_grid_style[j] = atom_grid_style[i];
 
   if (distributed_flag) {
+    if (atom2body[i] < 0) return;
     if (bodyLS[atom2body[i]].style != DISTRIBUTED)
       return;
 
