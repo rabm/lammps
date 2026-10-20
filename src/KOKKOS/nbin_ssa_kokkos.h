@@ -80,15 +80,19 @@ class NBinSSAKokkos : public NBinStandard {
   HAT::t_int_scalar h_lbinzhi;
 
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void binAtomsItem(const int &i) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void binIDAtomsItem(const int &i, int &update) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void binIDGhostsItem(const int &i, int &update) const;
 
+// NOLINTNEXTLINE
   static KOKKOS_INLINE_FUNCTION
   void sortBin(
       typename AT::t_int_1d gbincount,
@@ -98,6 +102,7 @@ class NBinSSAKokkos : public NBinStandard {
 /* ----------------------------------------------------------------------
    convert atom coords into the ssa active interaction region number
 ------------------------------------------------------------------------- */
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2ssaAIR(const double & x,const double & y,const double & z) const
   {
@@ -127,6 +132,7 @@ class NBinSSAKokkos : public NBinStandard {
     return -2;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2bin(const double & x,const double & y,const double & z, int* i) const
   {
@@ -174,9 +180,8 @@ struct NPairSSAKokkosBinAtomsFunctor {
 
   const NBinSSAKokkos<DeviceType> c;
 
-  NPairSSAKokkosBinAtomsFunctor(const NBinSSAKokkos<DeviceType> &_c):
-    c(_c) {};
-  ~NPairSSAKokkosBinAtomsFunctor() {}
+  NPairSSAKokkosBinAtomsFunctor(const NBinSSAKokkos<DeviceType> &_c): c(_c) {};
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.binAtomsItem(i);
@@ -190,20 +195,21 @@ struct NPairSSAKokkosBinIDAtomsFunctor {
 
   const NBinSSAKokkos<DeviceType> c;
 
-  NPairSSAKokkosBinIDAtomsFunctor(const NBinSSAKokkos<DeviceType> &_c):
-    c(_c) {};
-  ~NPairSSAKokkosBinIDAtomsFunctor() {}
+  NPairSSAKokkosBinIDAtomsFunctor(const NBinSSAKokkos<DeviceType> &_c): c(_c) {};
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i, value_type& update) const {
     c.binIDAtomsItem(i, update);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void join (value_type& dst,
              const value_type& src) const {
     if (dst < src) dst = src;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void init (value_type& dst) const {
     dst = INT_MIN;
@@ -217,20 +223,22 @@ struct NPairSSAKokkosBinIDGhostsFunctor {
 
   const NBinSSAKokkos<DeviceType> c;
 
-  NPairSSAKokkosBinIDGhostsFunctor(const NBinSSAKokkos<DeviceType> &_c):
-    c(_c) {};
-  ~NPairSSAKokkosBinIDGhostsFunctor() {}
+  NPairSSAKokkosBinIDGhostsFunctor(const NBinSSAKokkos<DeviceType> &_c): c(_c) {};
+
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i, value_type& update) const {
     c.binIDGhostsItem(i, update);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void join (value_type& dst,
              const value_type& src) const {
     if (dst < src) dst = src;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void init (value_type& dst) const {
     dst = INT_MIN;

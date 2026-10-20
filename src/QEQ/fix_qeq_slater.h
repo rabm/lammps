@@ -14,6 +14,7 @@
 #ifdef FIX_CLASS
 // clang-format off
 FixStyle(qeq/slater,FixQEqSlater);
+FixStyle(qeq/slater/xlmd,FixQEqSlater);
 // clang-format on
 #else
 
@@ -37,10 +38,13 @@ class FixQEqSlater : public FixQEq {
   void compute_H();
   double calculate_H(double, double, double, double, double &);
   double calculate_H_wolf(double, double, double, double, double &);
+  double calculate_H_dsf(double, double, double, double, double &);
   void extract_streitz();
 
   class PairCoulStreitz *streitz;
   double alpha;
+  double drtap;
+  int vtype;
 };
 }    // namespace LAMMPS_NS
 #endif

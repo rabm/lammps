@@ -15,6 +15,7 @@
 *.whl
 a.out
 __pycache__
+.ipynb_checkpoints
 
 Obj_*
 log.lammps
@@ -60,4 +61,14 @@ src/Makefile.package.settings-e
 /cmake/build/x64-Debug-Clang
 /install/x64-GUI-MSVC
 /install
+/NewTest
+/test
+/dev
 .Rhistory
+
+# Claude code generated/maintained files
+/CLAUDE.md
+/plans
+/CLAUDE.local.md
+/.claude/settings.local.json
+/.claude/scheduled_tasks.lock

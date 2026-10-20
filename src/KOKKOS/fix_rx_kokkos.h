@@ -47,9 +47,11 @@ struct s_CounterType
 {
   int nSteps, nIters, nFuncs, nFails;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_CounterType() : nSteps(0), nIters(0), nFuncs(0), nFails(0) {};
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_CounterType& operator+=(const s_CounterType &rhs)
   {
@@ -76,24 +78,32 @@ class FixRxKokkos : public FixRX {
   void setup_pre_force(int) override;
   void pre_force(int) override;
 
+  const DAT::tdual_int_1d & get_k_species_ind_to_atom_prop_ind() const;
+  const DAT::tdual_int_1d & get_k_species_ind_to_atom_prop_ind_old() const;
+
   // Define a value_type here for the reduction operator on CounterType.
   typedef CounterType value_type;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(Tag_FixRxKokkos_zeroCounterViews, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(Tag_FixRxKokkos_zeroTemperatureViews, const int&) const;
 
   template <int WT_FLAG, bool NEWTON_PAIR, int NEIGHFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(Tag_FixRxKokkos_firstPairOperator<WT_FLAG,NEWTON_PAIR,NEIGHFLAG>, const int&) const;
 
   template <int WT_FLAG, int LOCAL_TEMP_FLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(Tag_FixRxKokkos_2ndPairOperator<WT_FLAG,LOCAL_TEMP_FLAG>, const int&) const;
 
   template <bool ZERO_RATES>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(Tag_FixRxKokkos_solveSystems<ZERO_RATES>, const int&, CounterType&) const;
 
@@ -104,6 +114,11 @@ class FixRxKokkos : public FixRX {
   double boltz;
   double t_stop;
 
+  DAT::tdual_int_1d k_species_ind_to_atom_prop_ind,
+    k_species_ind_to_atom_prop_ind_old;
+
+  void allocate_species_ind_to_atom_prop_ind_array() override;
+
   template <typename T, int stride = 1>
   struct StridedArrayType
   {
@@ -112,14 +127,20 @@ class FixRxKokkos : public FixRX {
 
     value_type *m_data;
 
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     StridedArrayType() : m_data(nullptr) {}
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     StridedArrayType(value_type *ptr) : m_data(ptr) {}
 
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION       value_type& operator()(const int idx)       { return m_data[Stride*idx]; }
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION const value_type& operator()(const int idx) const { return m_data[Stride*idx]; }
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION       value_type& operator[](const int idx)       { return m_data[Stride*idx]; }
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION const value_type& operator[](const int idx) const { return m_data[Stride*idx]; }
   };
 
@@ -134,17 +155,22 @@ class FixRxKokkos : public FixRX {
 
   int rhs       (double, const double *, double *, void *) const;
   int rhs_dense (double, const double *, double *, void *) const;
+  // intentionally hides the non-virtual FixRX::rhs_sparse()
+  // NOLINTNEXTLINE(bugprone-derived-method-shadowing-base-method)
   int rhs_sparse(double, const double *, double *, void *) const;
 
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   int k_rhs       (double, const VectorType&, VectorType&, UserDataType& ) const;
 
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   int k_rhs_dense (double, const VectorType&, VectorType&, UserDataType& ) const;
 
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   int k_rhs_sparse(double, const VectorType&, VectorType&, UserDataType& ) const;
 
@@ -165,29 +191,33 @@ class FixRxKokkos : public FixRX {
 
   //!< Classic Runge-Kutta 4th-order stepper.
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   void k_rk4(const double t_stop, VectorType& y, VectorType& rwork, UserDataType& userData) const;
 
   //!< Runge-Kutta-Fehlberg ODE Solver.
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   void k_rkf45(const int neq, const double t_stop, VectorType& y, VectorType& rwork, UserDataType& userData, CounterType& counter) const;
 
   //!< Runge-Kutta-Fehlberg ODE stepper function.
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   void k_rkf45_step (const int neq, const double h, VectorType& y, VectorType& y_out,
                      VectorType& rwk, UserDataType& userData) const;
 
   //!< Initial step size estimation for the Runge-Kutta-Fehlberg ODE solver.
   template <typename VectorType, typename UserDataType>
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
   int k_rkf45_h0 (const int neq, const double t, const double t_stop,
                   const double hmin, const double hmax,
                   double& h0, VectorType& y, VectorType& rwk, UserDataType& userData) const;
 
   //!< ODE Solver diagnostics.
-  void odeDiagnostics();
+  void odeDiagnostics() override;
 
   //!< Special counters per-ode.
   int *diagnosticCounterPerODEnSteps;
@@ -245,14 +275,18 @@ class FixRxKokkos : public FixRX {
   typename AT::t_kkfloat_2d  d_dvector;
   typename AT::t_int_1d    d_mask;
 
+  typename AT::t_int_1d d_species_ind_to_atom_prop_ind;
+  typename AT::t_int_1d d_species_ind_to_atom_prop_ind_old;
+
   typename AT::t_kkfloat_1d d_scratchSpace;
   size_t scratchSpaceSize;
 
   // Error flag for any failures.
   DAT::tdual_int_scalar k_error_flag;
 
+  // a member template cannot override FixRX::computeLocalTemperature()
   template <int WT_FLAG, int LOCAL_TEMP_FLAG, bool NEWTON_PAIR, int NEIGHFLAG>
-  void computeLocalTemperature();
+  void computeLocalTemperatureKokkos();
 
   int pack_reverse_comm(int, int, double *) override;
   void unpack_reverse_comm(int, int *, double *) override;

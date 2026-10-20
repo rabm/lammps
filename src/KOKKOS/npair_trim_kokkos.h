@@ -43,6 +43,7 @@ class NPairTrimKokkos : public NPair {
   NPairTrimKokkos(class LAMMPS *);
   void build(class NeighList *) override;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagNPairTrim, const int&) const;
 
@@ -50,6 +51,8 @@ class NPairTrimKokkos : public NPair {
   double cutsq_custom;
 
   typename AT::t_kkfloat_1d_3_lr_randomread x;
+  typename AT::t_int_1d_randomread type;
+  typename AT::t_kkfloat_2d d_cutneighsq;
 
   typename AT::t_neighbors_2d_const d_neighbors_copy;
   typename AT::t_int_1d_const d_ilist_copy;

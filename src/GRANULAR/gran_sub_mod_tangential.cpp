@@ -121,7 +121,8 @@ void GranSubModTangentialLinearHistory::coeffs_to_local()
 void GranSubModTangentialLinearHistory::calculate_forces()
 {
   // Note: this is the same as the base Mindlin calculation except k isn't scaled by contact radius
-  double magfs, magfs_inv, rsht, shrmag, temp_array[3], vtr2[3];
+  double magfs, rsht, shrmag;
+  double hist_increment[3], fdamp[3], vtr2[3];
   int frame_update = 0;
 
   double *nx = gm->nx;
@@ -145,10 +146,10 @@ void GranSubModTangentialLinearHistory::calculate_forces()
 
     // update history, tangential force using velocities at half step
     // see e.g. eq. 18 of Thornton et al, Pow. Tech. 2013, v223,p30-46
-    scale3(dt, vtr, temp_array);
-    add3(history, temp_array, history);
+    scale3(dt, vtr, hist_increment);
+    add3(history, hist_increment, history);
 
-    if(gm->synchronized_verlet == 1) {
+    if (gm->synchronized_verlet == 1) {
       rsht = dot3(history, nx_unrotated);
       frame_update = (fabs(rsht) * k) > (EPSILON * Fscrit);
       //Second projection to nx (t+\Delta t)
@@ -165,23 +166,152 @@ void GranSubModTangentialLinearHistory::calculate_forces()
   } else {
     copy3(vtr, vtr2);
   }
-  scale3(damp, vtr2, temp_array);
-  sub3(fs, temp_array, fs);
+  scale3(-damp, vtr2, fdamp);
+  add3(fs, fdamp, fs);
 
   // rescale frictional displacements and forces if needed
   magfs = len3(fs);
   if (magfs > Fscrit) {
     shrmag = len3(history);
     if (shrmag != 0.0) {
-      magfs_inv = 1.0 / magfs;
-      scale3(Fscrit * magfs_inv, fs, history);
-      scale3(damp, vtr, temp_array);
-      add3(history, temp_array, history);
+      // Rescale shear force
+      scale3(Fscrit / magfs, fs);
+
+      // Set shear to elastic component of rescaled force
+      //  has extra factor of k that is then removed
+      sub3(fs, fdamp, history);
       scale3(-1.0 / k, history);
-      scale3(Fscrit * magfs_inv, fs);
     } else {
       zero3(fs);
     }
+  }
+}
+
+//**********************************************
+// Linear history w/ static friction
+//**********************************************
+
+GranSubModTangentialLinearHistoryStatic::GranSubModTangentialLinearHistoryStatic(GranularModel *gm,
+                                                                                 LAMMPS *lmp) :
+    GranSubModTangentialLinearHistory(gm, lmp)
+{
+  num_coeffs = 4;
+  size_history = 4;
+
+  nondefault_history_transfer = 1;
+  transfer_history_factor = new double[size_history];
+  for (int i = 0; i < size_history - 1; i++) transfer_history_factor[i] = -1.0;
+  transfer_history_factor[3] = +1;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void GranSubModTangentialLinearHistoryStatic::coeffs_to_local()
+{
+  k = coeffs[0];
+  xt = coeffs[1];
+  mu_static = coeffs[2];
+  mu_dynamic = coeffs[3];
+
+  if (mu_dynamic >= mu_static)
+    error->warning(FLERR,
+                   "Dynamic friction coefficient greater than or equal to static friction, static "
+                   "friction coefficient will have no effect.");
+  if (k < 0.0 || xt < 0.0 || mu_static < 0.0 || mu_dynamic < 0.0)
+    error->all(FLERR, "Illegal linear_history/static tangential model");
+}
+
+/* ---------------------------------------------------------------------- */
+
+void GranSubModTangentialLinearHistoryStatic::calculate_forces()
+{
+  // Note: this is the same as the base Mindlin calculation except k isn't scaled by contact_radius
+  double magfs, magfs_inv, rsht, shrmag, temp_array[3], vtr2[3];
+  int frame_update = 0;
+
+  double *nx = gm->nx;
+  double *nx_unrotated = gm->nx_unrotated;
+  double *vtr = gm->vtr;
+  double *fs = gm->fs;
+  double dt = gm->dt;
+  double *history = &gm->history[history_index];
+  int history_update = gm->history_update;
+
+  damp = xt * gm->damping_model->get_damp_prefactor();
+  double Fscrit;
+  int dynamic;
+  int skip_rescaling;
+
+  skip_rescaling = 0;
+  dynamic = (history[3] > EPSILON);
+
+  if (dynamic) {
+    Fscrit = gm->normal_model->get_fncrit() * mu_dynamic;
+  } else {
+    Fscrit = gm->normal_model->get_fncrit() * mu_static;
+  }
+
+  // rotate and update displacements / force.
+  // see e.g. eq. 17 of Luding, Gran. Matter 2008, v10,p235
+  if (history_update) {
+    rsht = dot3(history, nx);
+    frame_update = (fabs(rsht) * k) > (EPSILON * Fscrit);
+
+    if (frame_update) rotate_rescale_vec(history, nx);
+
+    // update history, tangential force
+    // see e.g. eq. 18 of Thornton et al, Pow. Tech. 2013, v223,p30-46
+    scale3(dt, vtr, temp_array);
+    add3(history, temp_array, history);
+
+    if (gm->synchronized_verlet == 1) {
+      rsht = dot3(history, nx_unrotated);
+      frame_update = (fabs(rsht) * k) > (EPSILON * Fscrit);
+      //Second projection to nx (t+\Delta t)
+      if (frame_update) rotate_rescale_vec(history, nx_unrotated);
+    }
+  }
+
+  // tangential forces = history + tangential velocity damping
+  scale3(-k, history, fs);
+  //Rotating vtr for damping term in nx direction
+  if (frame_update && gm->synchronized_verlet == 1) {
+    copy3(vtr, vtr2);
+    rotate_rescale_vec(vtr2, nx_unrotated);
+  } else {
+    copy3(vtr, vtr2);
+  }
+  scale3(damp, vtr, temp_array);
+  sub3(fs, temp_array, fs);
+
+  // rescale frictional displacements and forces if needed
+  magfs = len3(fs);
+  if (magfs > Fscrit && history_update) {
+    if (!dynamic) {    //Exceeded static critical force, switch to dynamic
+      history[3] = 1.0;
+      Fscrit = gm->normal_model->get_fncrit() * mu_dynamic;
+      if (mu_dynamic >= mu_static) {
+        //User probably should not input mu_dynamic >= mu_static,
+        //but if they do, don't rescale shear to dynamic Fscrit.
+        if (magfs <= Fscrit) skip_rescaling = 1;
+      }
+    }
+    shrmag = len3(history);
+    if (!skip_rescaling) {
+      if (shrmag != 0.0) {
+        magfs_inv = 1.0 / magfs;
+        scale3(Fscrit * magfs_inv, fs, history);
+        scale3(damp, vtr, temp_array);
+        add3(history, temp_array, history);
+        scale3(-1.0 / k, history);
+        scale3(Fscrit * magfs_inv, fs);
+      } else {
+        zero3(fs);
+      }
+    }
+  } else if (magfs <= Fscrit && dynamic && history_update) {
+    //fs dropped below dynamic critical force
+    history[3] = 0.0;
   }
 }
 
@@ -190,18 +320,18 @@ void GranSubModTangentialLinearHistory::calculate_forces()
 ------------------------------------------------------------------------- */
 
 GranSubModTangentialLinearHistoryClassic::GranSubModTangentialLinearHistoryClassic(
-    GranularModel *gm, LAMMPS *lmp) :
-    GranSubModTangentialLinearHistory(gm, lmp)
+    GranularModel *gm, LAMMPS *lmp) : GranSubModTangentialLinearHistory(gm, lmp)
 {
-  contact_radius_flag = 1;    // Sets gran/hooke/history behavior
+  // Whether contact radius scales normal force (as in Hertz)
+  contact_radius_flag = 0;
 }
 
 /* ---------------------------------------------------------------------- */
 
 void GranSubModTangentialLinearHistoryClassic::calculate_forces()
 {
-  double magfs, magfs_inv, rsht, shrmag;
-  double temp_array[3];
+  double magfs, rsht, shrmag;
+  double hist_increment[3], fdamp[3];
 
   double *nx = gm->nx;
   double *vtr = gm->vtr;
@@ -216,8 +346,8 @@ void GranSubModTangentialLinearHistoryClassic::calculate_forces()
 
   // update history
   if (history_update) {
-    scale3(dt, vtr, temp_array);
-    add3(history, temp_array, history);
+    scale3(dt, vtr, hist_increment);
+    add3(history, hist_increment, history);
   }
 
   shrmag = len3(history);
@@ -225,28 +355,40 @@ void GranSubModTangentialLinearHistoryClassic::calculate_forces()
   // rotate shear displacements
   if (history_update) {
     rsht = dot3(history, nx);
-    scale3(rsht, nx, temp_array);
-    sub3(history, temp_array, history);
+    scale3(rsht, nx, hist_increment);
+    sub3(history, hist_increment, history);
   }
 
   // tangential forces = history + tangential velocity damping
+  // classic model can only set contact_radius_flag through hertz
   if (contact_radius_flag)
     scale3(-k * contact_radius, history, fs);
   else
     scale3(-k, history, fs);
-  scale3(damp, vtr, temp_array);
-  sub3(fs, temp_array, fs);
+
+  // damping force, note that damp automatically has a factor
+  //   of contact radius with hertz (sets viscoelastic damping)
+  //   but not with hooke (sets mass_velocity damping)
+
+  scale3(-damp, vtr, fdamp);
+  add3(fs, fdamp, fs);
 
   // rescale frictional displacements and forces if needed
   magfs = len3(fs);
   if (magfs > Fscrit) {
     if (shrmag != 0.0) {
-      magfs_inv = 1.0 / magfs;
-      scale3(Fscrit * magfs_inv, fs, history);
-      scale3(damp, vtr, temp_array);
-      add3(history, temp_array, history);
-      scale3(-1.0 / k, history);
-      scale3(Fscrit * magfs_inv, fs);
+      // Rescale shear force
+      scale3(Fscrit / magfs, fs);
+
+      // Set shear to elastic component of rescaled force
+      //  has extra factor of kt (+ contact radius)
+      sub3(fs, fdamp, history);
+
+      // Remove extra prefactors from shear history
+      if (contact_radius_flag)
+        scale3(-1.0 / (k * contact_radius), history);
+      else
+        scale3(-1.0 / k, history);
     } else {
       zero3(fs);
     }
@@ -323,8 +465,8 @@ void GranSubModTangentialMindlin::mix_coeffs(double *icoeffs, double *jcoeffs)
 
 void GranSubModTangentialMindlin::calculate_forces()
 {
-  double k_scaled, magfs, magfs_inv, rsht, shrmag;
-  double temp_array[3], vtr2[3];
+  double k_scaled, magfs, rsht, shrmag;
+  double hist_increment[3], fdamp[3], vtr2[3];
   int frame_update = 0;
 
   double *nx = gm->nx;
@@ -361,11 +503,11 @@ void GranSubModTangentialMindlin::calculate_forces()
     if (mindlin_force) {
       // tangential force
       // see e.g. eq. 18 of Thornton et al, Pow. Tech. 2013, v223,p30-46
-      scale3(-k_scaled * dt, vtr, temp_array);
+      scale3(-k_scaled * dt, vtr, hist_increment);
     } else {
-      scale3(dt, vtr, temp_array);
+      scale3(dt, vtr, hist_increment);
     }
-    add3(history, temp_array, history);
+    add3(history, hist_increment, history);
 
     if (mindlin_rescale) history[3] = contact_radius;
 
@@ -382,6 +524,158 @@ void GranSubModTangentialMindlin::calculate_forces()
   }
 
   // tangential forces = history + tangential velocity damping
+
+  if (!mindlin_force) {
+    scale3(-k_scaled, history, fs);
+  } else {
+    copy3(history, fs);
+  }
+
+  // Rotating vtr for damping term in nx direction
+  if (frame_update && gm->synchronized_verlet) {
+    copy3(vtr, vtr2);
+    rotate_rescale_vec(vtr2, nx_unrotated);
+  } else {
+    copy3(vtr, vtr2);
+  }
+  scale3(-damp, vtr2, fdamp);
+  add3(fs, fdamp, fs);
+
+  // rescale frictional displacements and forces if needed
+  magfs = len3(fs);
+  if (magfs > Fscrit) {
+    shrmag = len3(history);
+    if (shrmag != 0.0) {
+      // Rescale shear force
+      scale3(Fscrit / magfs, fs);
+
+      // Set shear to elastic component of rescaled force
+      //  may have extra factor of k_scaled that is then removed
+      sub3(fs, fdamp, history);
+      if (!mindlin_force) scale3(-1.0 / k_scaled, history);
+    } else {
+      zero3(fs);
+    }
+  }
+}
+
+/*-----------------------------------------------------------------------
+ * Mindlin with static friction coefficient
+------------------------------------------------------------------------- */
+
+GranSubModTangentialMindlinStatic::GranSubModTangentialMindlinStatic(GranularModel *gm,
+                                                                     LAMMPS *lmp) :
+    GranSubModTangentialMindlin(gm, lmp)
+{
+  num_coeffs = 4;
+  size_history = 4;
+
+  nondefault_history_transfer = 1;
+  transfer_history_factor = new double[size_history];
+  for (int i = 0; i < size_history - 1; i++) transfer_history_factor[i] = -1.0;
+  transfer_history_factor[3] = +1;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void GranSubModTangentialMindlinStatic::coeffs_to_local()
+{
+  k = coeffs[0];
+  xt = coeffs[1];
+  mu_static = coeffs[2];
+  mu_dynamic = coeffs[3];
+
+  if (k == -1) {
+    if (!gm->normal_model->get_material_properties())
+      error->all(FLERR,
+                 "Must either specify tangential stiffness or material properties for normal model "
+                 "for the Mindlin tangential style");
+
+    double Emod = gm->normal_model->get_emod();
+    double poiss = gm->normal_model->get_poiss();
+
+    if (gm->contact_type == PAIR) {
+      k = 8.0 * mix_stiffnessG(Emod, Emod, poiss, poiss);
+    } else {
+      k = 8.0 * mix_stiffnessG_wall(Emod, poiss);
+    }
+  }
+
+  if (mu_dynamic >= mu_static)
+    error->warning(FLERR,
+                   "Dynamic friction coefficient greater than or equal to static friction, static "
+                   "friction coefficient will have no effect.");
+  if (k < 0.0 || xt < 0.0 || mu_static < 0.0 || mu_dynamic < 0.0)
+    error->all(FLERR, "Illegal Mindlin tangential model");
+}
+
+/* ---------------------------------------------------------------------- */
+
+void GranSubModTangentialMindlinStatic::mix_coeffs(double *icoeffs, double *jcoeffs)
+{
+  if (icoeffs[0] == -1 || jcoeffs[0] == -1)
+    coeffs[0] = -1;
+  else
+    coeffs[0] = mix_geom(icoeffs[0], jcoeffs[0]);
+  coeffs[1] = mix_geom(icoeffs[1], jcoeffs[1]);
+  coeffs[2] = mix_geom(icoeffs[2], jcoeffs[2]);
+  coeffs[3] = mix_geom(icoeffs[3], jcoeffs[3]);
+  coeffs_to_local();
+}
+
+/* ---------------------------------------------------------------------- */
+
+void GranSubModTangentialMindlinStatic::calculate_forces()
+{
+  double k_scaled, magfs, magfs_inv, rsht, shrmag;
+  double temp_array[3], vtr2[3];
+  int frame_update = 0;
+
+  double *nx = gm->nx;
+  double *nx_unrotated = gm->nx_unrotated;
+  double *vtr = gm->vtr;
+  double *fs = gm->fs;
+  double dt = gm->dt;
+  double *history = &gm->history[history_index];
+  int history_update = gm->history_update;
+
+  double Fscrit;
+  int dynamic;
+  int skip_rescaling;
+
+  damp = xt * gm->damping_model->get_damp_prefactor();
+
+  k_scaled = k * gm->contact_radius;
+
+  skip_rescaling = 0;
+  dynamic = (int)history[3];
+
+  if (dynamic) {
+    Fscrit = gm->normal_model->get_fncrit() * mu_dynamic;
+  } else {
+    Fscrit = gm->normal_model->get_fncrit() * mu_static;
+  }
+
+  // rotate and update displacements / force.
+  // see e.g. eq. 17 of Luding, Gran. Matter 2008, v10,p235
+  if (history_update) {
+    rsht = dot3(history, nx);
+    frame_update = (fabs(rsht) * k_scaled) > (EPSILON * Fscrit);
+
+    if (frame_update) rotate_rescale_vec(history, nx);
+
+    scale3(dt, vtr, temp_array);
+    add3(history, temp_array, history);
+
+    if (gm->synchronized_verlet == 1) {
+      // second projection to full step normal
+      rsht = dot3(history, nx_unrotated);
+      frame_update = (fabs(rsht) * k_scaled) > (EPSILON * Fscrit);
+      if (frame_update) rotate_rescale_vec(history, nx_unrotated);
+    }
+  }
+
+  // tangential forces = history + tangential velocity damping
   // Rotating vtr for damping term in nx direction
   if (frame_update && gm->synchronized_verlet) {
     copy3(vtr, vtr2);
@@ -391,29 +685,40 @@ void GranSubModTangentialMindlin::calculate_forces()
   }
   scale3(-damp, vtr2, fs);
 
-  if (!mindlin_force) {
-    scale3(k_scaled, history, temp_array);
-    sub3(fs, temp_array, fs);
-  } else {
-    add3(fs, history, fs);
-  }
+  scale3(k_scaled, history, temp_array);
+  sub3(fs, temp_array, fs);
 
   // rescale frictional displacements and forces if needed
   magfs = len3(fs);
-  if (magfs > Fscrit) {
-    shrmag = len3(history);
-    if (shrmag != 0.0) {
-      magfs_inv = 1.0 / magfs;
-      scale3(Fscrit * magfs_inv, fs, history);
-      scale3(damp, vtr, temp_array);
-      add3(history, temp_array, history);
-
-      if (!mindlin_force) scale3(-1.0 / k_scaled, history);
-
-      scale3(Fscrit * magfs_inv, fs);
-    } else {
-      zero3(fs);
+  if (magfs > Fscrit && history_update) {
+    if (!dynamic) {    //Exceeded static critical force, switch to dynamic
+      history[3] = 1.0;
+      Fscrit = gm->normal_model->get_fncrit() * mu_dynamic;
+      if (mu_dynamic >= mu_static) {
+        //User probably should not input mu_dynamic >= mu_static,
+        //but if they do, don't rescale shear to dynamic Fscrit.
+        if (magfs <= Fscrit) skip_rescaling = 1;
+      }
     }
+    shrmag = len3(history);
+    if (!skip_rescaling) {
+      if (shrmag != 0.0) {
+        magfs_inv = 1.0 / magfs;
+        scale3(Fscrit * magfs_inv, fs, history);
+        scale3(damp, vtr, temp_array);
+        add3(history, temp_array, history);
+        scale3(-1.0 / k_scaled, history);
+        scale3(Fscrit * magfs_inv, fs);
+      } else {
+        zero3(fs);
+      }
+    }
+    if (!dynamic) {
+      history[3] = 1;    // If force exceeded Fcrit_static, switch to dynamic case
+    }
+  } else if (magfs <= Fscrit && dynamic && history_update) {
+    //fs dropped below dynamic critical force
+    history[3] = 0.0;
   }
 }
 

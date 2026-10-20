@@ -17,7 +17,11 @@
                          Evan Weinberg (NVIDIA)
 ------------------------------------------------------------------------- */
 
+#ifndef LMP_SNA_KOKKOS_IMPL_H
+#define LMP_SNA_KOKKOS_IMPL_H
+
 #include "sna_kokkos.h"
+#include "math_const.h"
 #include "memory_kokkos.h"
 #include <cmath>
 #include <cstring>
@@ -25,9 +29,6 @@
 #include <type_traits>
 
 namespace LAMMPS_NS {
-
-static const double MY_PI  = 3.14159265358979323846; // pi
-static const double MY_PI2  = 1.57079632679489661923; // pi/2
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<class CopyClass>
@@ -76,10 +77,10 @@ SNAKokkos<DeviceType, real_type, accum_type, vector_length>::SNAKokkos(const Cop
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTBEGIN
 KOKKOS_INLINE_FUNCTION
-SNAKokkos<DeviceType, real_type, accum_type, vector_length>::~SNAKokkos()
-{
-}
+  SNAKokkos<DeviceType, real_type, accum_type, vector_length>::~SNAKokkos() {}
+// NOLINTEND
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 inline
@@ -349,6 +350,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::grow_rij(int n
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_cayley_klein(const int& iatom, const int& jnbor) const
 {
@@ -356,14 +358,14 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_cayley
   const real_type y = rij(iatom,jnbor,1);
   const real_type z = rij(iatom,jnbor,2);
   const real_type rsq = x * x + y * y + z * z;
-  const real_type r = sqrt(rsq);
+  const real_type r = Kokkos::sqrt(rsq);
   const real_type rcut = rcutij(iatom, jnbor);
   const real_type sinner = sinnerij(iatom, jnbor);
   const real_type dinner = dinnerij(iatom, jnbor);
-  const real_type rscale0 = rfac0 * static_cast<real_type>(MY_PI) / (rcut - rmin0);
+  const real_type rscale0 = rfac0 * static_cast<real_type>(MathConst::MY_PI) / (rcut - rmin0);
   const real_type theta0 = (r - rmin0) * rscale0;
-  const real_type sn = sin(theta0);
-  const real_type cs = cos(theta0);
+  const real_type sn = Kokkos::sin(theta0);
+  const real_type cs = Kokkos::cos(theta0);
   const real_type z0 = r * cs / sn;
   const real_type dz0dr = z0 / r - (r*rscale0) * (rsq + z0 * z0) / rsq;
 
@@ -378,7 +380,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_cayley
   const real_type uy = y * rinv;
   const real_type uz = z * rinv;
 
-  const real_type r0inv = static_cast<real_type>(1.0) / sqrt(r * r + z0 * z0);
+  const real_type r0inv = static_cast<real_type>(1.0) / Kokkos::sqrt(r * r + z0 * z0);
 
   const complex a = { z0 * r0inv, -z * r0inv };
   const complex b = { r0inv * y, -r0inv * x };
@@ -437,6 +439,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_cayley
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::pre_ui(const int& iatom, const int& j, const int& ielem) const
 {
@@ -470,6 +473,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::pre_ui(const i
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<bool chemsnap, int ui_batch>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_small(const typename Kokkos::TeamPolicy<DeviceType>::member_type& team,
   const int iatom_mod, const int j_bend, const int first_jnbor, const int ninside, const int iatom_div) const
@@ -523,6 +527,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_sma
 // and some amount of load imbalance, at the expense of reducing parallelism
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<bool chemsnap, int ui_batch>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_large(const typename Kokkos::TeamPolicy<DeviceType>::member_type& team,
   const int iatom_mod, const int first_jnbor, const int ninside, const int iatom_div) const
@@ -585,6 +590,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_lar
 // Core "evaluation" kernel that gets reused in `compute_ui_small` and `compute_ui_large`
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<bool chemsnap, int ui_batch>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_ui_jbend(
           const MultiWignerWrapper<real_type, vector_length, ui_batch>& ulist_wrapper,
@@ -741,6 +747,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_ui_jb
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <bool need_atomics> KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_cpu(const int& iatom, const int& jnbor) const
 {
@@ -754,16 +761,16 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_cpu
   const real_type y = rij(iatom,jnbor,1);
   const real_type z = rij(iatom,jnbor,2);
   const real_type rsq = x * x + y * y + z * z;
-  const real_type r = sqrt(rsq);
+  const real_type r = Kokkos::sqrt(rsq);
 
-  const real_type theta0 = (r - rmin0) * rfac0 * static_cast<real_type>(MY_PI) / (rcutij(iatom,jnbor) - rmin0);
+  const real_type theta0 = (r - rmin0) * rfac0 * static_cast<real_type>(MathConst::MY_PI) / (rcutij(iatom,jnbor) - rmin0);
   //    theta0 = (r - rmin0) * rscale0;
-  const real_type z0 = r / tan(theta0);
+  const real_type z0 = r / Kokkos::tan(theta0);
 
   // begin what was "compute_uarray_cpu"
 
   // compute Cayley-Klein parameters for unit quaternion
-  real_type r0inv = static_cast<real_type>(1.0) / sqrt(r * r + z0 * z0);
+  real_type r0inv = static_cast<real_type>(1.0) / Kokkos::sqrt(r * r + z0 * z0);
   complex a = { r0inv * z0, -r0inv * z };
   complex b = { r0inv * y, -r0inv * x };
 
@@ -865,6 +872,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ui_cpu
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::transform_ui(const int& iatom, const int& idxu) const
 {
@@ -897,6 +905,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::transform_ui(c
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <bool chemsnap, int yi_batch> KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_zi(const int& iatom, const int& jjz) const
 {
@@ -932,6 +941,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_zi(con
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <int yi_batch> KOKKOS_FORCEINLINE_FUNCTION
 auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_zi(const int& j1, const int& j2, const int& j,
         const int& ma1min, const int& ma2max, const int& mb1min, const int& mb2max, const int& na, const int& nb,
@@ -994,8 +1004,9 @@ auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_zi(co
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <bool chemsnap, int yi_batch> KOKKOS_INLINE_FUNCTION
-void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_bi(const int& iatom, const int& jjb) const
+void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_bi(const int& iatom, const int& jjb, const Kokkos::Array<int, yi_batch>& ielem) const
 {
   // for j1 = 0,...,twojmax
   //   for j2 = 0,twojmax
@@ -1018,7 +1029,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_bi(con
     for (int elem1 = 0; elem1 < nelements; elem1++) {
       for (int elem2 = 0; elem2 < nelements; elem2++) {
         for (int elem3 = 0; elem3 < nelements; elem3++) {
-          Kokkos::Array<real_type, yi_batch> bval = evaluate_bi<yi_batch>(j, jjz, jju, iatom, elem1, elem2, elem3);
+          Kokkos::Array<real_type, yi_batch> bval = evaluate_bi<yi_batch>(j, jjz, jju, iatom, elem1, elem2, elem3, ielem);
           register_loop<yi_batch>([&] (int n) -> void {
             blist(iatom + n * vector_length, itriple, jjb) = bval[n];
           });
@@ -1027,7 +1038,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_bi(con
       } // end loop over elem2
     } // end loop over elem1
   } else {
-    Kokkos::Array<real_type, yi_batch> bval = evaluate_bi<yi_batch>(j, jjz, jju, iatom, 0, 0, 0);
+    Kokkos::Array<real_type, yi_batch> bval = evaluate_bi<yi_batch>(j, jjz, jju, iatom, 0, 0, 0, ielem);
     register_loop<yi_batch>([&] (int n) -> void {
       blist(iatom + n * vector_length, 0, jjb) = bval[n];
     });
@@ -1040,8 +1051,9 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_bi(con
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <int yi_batch> KOKKOS_INLINE_FUNCTION
-auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_bi(const int& j, const int& jjz, const int& jju, const int& iatom, const int& elem1, const int& elem2, const int& elem3) const
+auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_bi(const int& j, const int& jjz, const int& jju, const int& iatom, const int& elem1, const int& elem2, const int& elem3, const Kokkos::Array<int, yi_batch>& ielem) const
 {
   // this computes the:
   //        b(j1,j2,j) = 0
@@ -1104,7 +1116,9 @@ auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_bi(co
     bval[n] *= static_cast<accum_type>(2.0);
     if (bzero_flag) {
       if (!wselfall_flag) {
-        if (elem1 == elem2 && elem1 == elem3) {
+        // SNA::compute_bi() shifts only the triple built from the element of the
+        // central atom, so all three indices must match it, not just each other
+        if (!chem_flag || ((elem1 == ielem[n]) && (elem2 == ielem[n]) && (elem3 == ielem[n]))) {
           bval[n] -= static_cast<accum_type>(bzero[j]);
         }
       } else {
@@ -1133,6 +1147,7 @@ auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_bi(co
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_beta_linear(const int& iatom, const int& idxb, const int& ielem) const
 {
@@ -1146,6 +1161,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_beta_l
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template <bool need_atomics>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_beta_quadratic(const int& iatom, const int& idxb, const int& ielem) const
 {
@@ -1208,6 +1224,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_beta_q
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template <bool chemsnap, bool need_atomics, int yi_batch>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_yi(const int& iatom, const int& jjz) const
 {
@@ -1268,6 +1285,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_yi(con
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template <bool chemsnap, bool need_atomics, int yi_batch>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_yi_with_zlist(const int& iatom, const int& jjz) const
 {
@@ -1331,6 +1349,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_yi_wit
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 template <bool chemsnap, int yi_batch> KOKKOS_FORCEINLINE_FUNCTION
 auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_beta_scaled(const int& j1, const int& j2, const int& j,
           const int& iatom, const int& elem1, const int& elem2, const int& elem3) const {
@@ -1395,6 +1414,7 @@ auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_beta_
 // Version of the code that exposes additional parallelism by threading over `j_bend` values
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<int start, int num_dims>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_fused_deidrj_small(const typename Kokkos::TeamPolicy<DeviceType>::member_type& team, const int iatom_mod, const int j_bend, const int jnbor, const int iatom_div) const
 {
@@ -1438,6 +1458,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_fused_
 // and some amount of load imbalance, at the expense of reducing parallelism
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<int start, int num_dims>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_fused_deidrj_large(const typename Kokkos::TeamPolicy<DeviceType>::member_type& team, const int iatom_mod, const int jnbor, const int iatom_div) const
 {
@@ -1492,6 +1513,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_fused_
 // `compute_fused_deidrj_large`
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
 template<int num_dims>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_duidrj_jbend(const WignerWrapper<real_type, vector_length>& ulist_wrapper,
   const complex& a, const complex& b, const real_type& sfac, const MultiWignerWrapper<real_type, vector_length, num_dims>& dulist_wrapper,
@@ -1657,6 +1679,7 @@ auto SNAKokkos<DeviceType, real_type, accum_type, vector_length>::evaluate_duidr
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_duidrj_cpu(const int& iatom, const int& jnbor) const
 {
@@ -1667,11 +1690,11 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_duidrj
   const real_type y = rij(iatom,jnbor,1);
   const real_type z = rij(iatom,jnbor,2);
   const real_type rsq = x * x + y * y + z * z;
-  const real_type r = sqrt(rsq);
-  const real_type rscale0 = rfac0 * static_cast<real_type>(MY_PI) / (rcutij(iatom,jnbor) - rmin0);
+  const real_type r = Kokkos::sqrt(rsq);
+  const real_type rscale0 = rfac0 * static_cast<real_type>(MathConst::MY_PI) / (rcutij(iatom,jnbor) - rmin0);
   const real_type theta0 = (r - rmin0) * rscale0;
-  const real_type sn = sin(theta0);
-  const real_type cs = cos(theta0);
+  const real_type sn = Kokkos::sin(theta0);
+  const real_type cs = Kokkos::cos(theta0);
   const real_type z0 = r * cs / sn;
   const real_type dz0dr = z0 / r - (r*rscale0) * (rsq + z0 * z0) / rsq;
 
@@ -1682,7 +1705,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_duidrj
   u[1] = y * rinv;
   u[2] = z * rinv;
 
-  real_type r0inv = static_cast<real_type>(1.0) / sqrt(r * r + z0 * z0);
+  real_type r0inv = static_cast<real_type>(1.0) / Kokkos::sqrt(r * r + z0 * z0);
   complex a = { z0 * r0inv, -z * r0inv };
   complex b = { y * r0inv, -x * r0inv };
 
@@ -1840,6 +1863,7 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_duidrj
 ------------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_deidrj_cpu(const int& iatom, const int& jnbor) const
 {
@@ -1887,12 +1911,6 @@ template<class DeviceType, typename real_type, typename accum_type, int vector_l
 inline
 double SNAKokkos<DeviceType, real_type, accum_type, vector_length>::factorial(int n)
 {
-  //if (n < 0 || n > nmaxfactorial) {
-  //  char str[128];
-  //  sprintf(str, "Invalid argument to factorial %d", n);
-  //  error->all(FLERR, str);
-  //}
-
   return nfac_table[n];
 }
 
@@ -2198,6 +2216,7 @@ int SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_ncoeff(
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_sfac(real_type r, real_type rcut, real_type sinner, real_type  dinner) const
 {
@@ -2206,23 +2225,23 @@ real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_s
   constexpr real_type zero = static_cast<real_type>(0.0);
   constexpr real_type onehalf = static_cast<real_type>(0.5);
   if (switch_flag == 0) sfac_outer = one;
-  if (switch_flag == 1) {
+  else if (switch_flag == 1) {
     if (r <= rmin0) sfac_outer = one;
     else if (r > rcut) return zero;
     else {
-      real_type rcutfac = static_cast<real_type>(MY_PI) / (rcut - rmin0);
-      sfac_outer = onehalf * (cos((r - rmin0) * rcutfac) + one);
+      real_type rcutfac = static_cast<real_type>(MathConst::MY_PI) / (rcut - rmin0);
+      sfac_outer = onehalf * (Kokkos::cos((r - rmin0) * rcutfac) + one);
     }
-  }
+  } else sfac_outer = zero; // switch_flag is always 0 or 1
 
   if (switch_inner_flag == 0) return sfac_outer;
   if (switch_inner_flag == 1) {
     if (r >= sinner + dinner)
         return sfac_outer;
     else if (r > sinner - dinner) {
-      real_type rcutfac = static_cast<real_type>(MY_PI2) / dinner;
+      real_type rcutfac = static_cast<real_type>(MathConst::MY_PI2) / dinner;
       return sfac_outer *
-        onehalf * (one - cos(static_cast<real_type>(MY_PI2) + (r - sinner) * rcutfac));
+        onehalf * (one - Kokkos::cos(static_cast<real_type>(MathConst::MY_PI2) + (r - sinner) * rcutfac));
     } else return zero;
   }
   return zero; // dummy return
@@ -2231,6 +2250,7 @@ real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_s
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_dsfac(real_type r, real_type rcut, real_type sinner, real_type dinner) const
 {
@@ -2239,14 +2259,14 @@ real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_d
   constexpr real_type zero = static_cast<real_type>(0.0);
   constexpr real_type onehalf = static_cast<real_type>(0.5);
   if (switch_flag == 0) dsfac_outer = zero;
-  if (switch_flag == 1) {
+  else if (switch_flag == 1) {
     if (r <= rmin0) dsfac_outer = zero;
     else if (r > rcut) return zero;
     else {
-      real_type rcutfac = static_cast<real_type>(MY_PI) / (rcut - rmin0);
-      dsfac_outer = -onehalf * sin((r - rmin0) * rcutfac) * rcutfac;
+      real_type rcutfac = static_cast<real_type>(MathConst::MY_PI) / (rcut - rmin0);
+      dsfac_outer = -onehalf * Kokkos::sin((r - rmin0) * rcutfac) * rcutfac;
     }
-  }
+  } else dsfac_outer = zero; // switch_flag is always 0 or 1
 
   if (switch_inner_flag == 0) return dsfac_outer;
   if (switch_inner_flag == 1) {
@@ -2257,20 +2277,20 @@ real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_d
       // calculate sfac_outer
 
       if (switch_flag == 0) sfac_outer = one;
-      if (switch_flag == 1) {
+      else if (switch_flag == 1) {
         if (r <= rmin0) sfac_outer = one;
         else if (r > rcut) sfac_outer = zero;
         else {
-          real_type rcutfac = static_cast<real_type>(MY_PI) / (rcut - rmin0);
-          sfac_outer = onehalf * (cos((r - rmin0) * rcutfac) + one);
+          real_type rcutfac = static_cast<real_type>(MathConst::MY_PI) / (rcut - rmin0);
+          sfac_outer = onehalf * (Kokkos::cos((r - rmin0) * rcutfac) + one);
         }
-      }
+      } else sfac_outer = zero; // switch_flag is always 0 or 1
 
       // calculate sfac_inner
 
-      real_type rcutfac = static_cast<real_type>(MY_PI2) / dinner;
-      sfac_inner = onehalf * (one - cos(static_cast<real_type>(MY_PI2) + (r - sinner) * rcutfac));
-      dsfac_inner = onehalf * rcutfac * sin(static_cast<real_type>(MY_PI2) + (r - sinner) * rcutfac);
+      real_type rcutfac = static_cast<real_type>(MathConst::MY_PI2) / dinner;
+      sfac_inner = onehalf * (one - Kokkos::cos(static_cast<real_type>(MathConst::MY_PI2) + (r - sinner) * rcutfac));
+      dsfac_inner = onehalf * rcutfac * Kokkos::sin(static_cast<real_type>(MathConst::MY_PI2) + (r - sinner) * rcutfac);
       return dsfac_outer * sfac_inner + sfac_outer * dsfac_inner;
 
     } else return zero;
@@ -2279,6 +2299,7 @@ real_type SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_d
 }
 
 template<class DeviceType, typename real_type, typename accum_type, int vector_length>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_s_dsfac(const real_type r, const real_type rcut, const real_type sinner, const real_type dinner, real_type& sfac, real_type& dsfac) const {
 
@@ -2292,10 +2313,10 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_s_dsfa
     if (r <= rmin0) { sfac_outer = one; dsfac_outer = zero; }
     else if (r > rcut) { sfac = zero; dsfac = zero; return; }
     else {
-      const real_type rcutfac = static_cast<real_type>(MY_PI) / (rcut - rmin0);
+      const real_type rcutfac = static_cast<real_type>(MathConst::MY_PI) / (rcut - rmin0);
       const real_type theta0 = (r - rmin0) * rcutfac;
-      const real_type sn = sin(theta0);
-      const real_type cs = cos(theta0);
+      const real_type sn = Kokkos::sin(theta0);
+      const real_type cs = Kokkos::cos(theta0);
       sfac_outer = onehalf * (cs + one);
       dsfac_outer = -onehalf * sn * rcutfac;
     }
@@ -2305,9 +2326,9 @@ void SNAKokkos<DeviceType, real_type, accum_type, vector_length>::compute_s_dsfa
   else if (switch_inner_flag == 1) {
     if (r >= sinner + dinner) { sfac = sfac_outer; dsfac = dsfac_outer; return; }
     else if (r > sinner - dinner) {
-      real_type rcutfac = static_cast<real_type>(MY_PI2) / dinner;
-      sfac_inner = onehalf * (one - cos(static_cast<real_type>(MY_PI2) + (r - sinner) * rcutfac));
-      dsfac_inner = onehalf * rcutfac * sin(static_cast<real_type>(MY_PI2) + (r - sinner) * rcutfac);
+      real_type rcutfac = static_cast<real_type>(MathConst::MY_PI2) / dinner;
+      sfac_inner = onehalf * (one - Kokkos::cos(static_cast<real_type>(MathConst::MY_PI2) + (r - sinner) * rcutfac));
+      dsfac_inner = onehalf * rcutfac * Kokkos::sin(static_cast<real_type>(MathConst::MY_PI2) + (r - sinner) * rcutfac);
       sfac = sfac_outer * sfac_inner;
       dsfac = dsfac_outer * sfac_inner + sfac_outer * dsfac_inner;
       return;
@@ -2338,16 +2359,16 @@ double SNAKokkos<DeviceType, real_type, accum_type, vector_length>::memory_usage
   bytes += MemKK::memory_usage(ylist_re);
   bytes += MemKK::memory_usage(ylist_im);
 
-  if constexpr (!host_flag) {
-    bytes += MemKK::memory_usage(a_gpu);
-    bytes += MemKK::memory_usage(b_gpu);
-    bytes += MemKK::memory_usage(da_gpu);
-    bytes += MemKK::memory_usage(db_gpu);
-    bytes += MemKK::memory_usage(sfac_gpu);
-  } else {
-    bytes += MemKK::memory_usage(ulist_cpu);
-    bytes += MemKK::memory_usage(dulist_cpu);
-  }
+  // grow_rij() allocates both sets of arrays, sizing the unused one to a single
+  // element, so both are counted here unconditionally
+
+  bytes += MemKK::memory_usage(a_gpu);
+  bytes += MemKK::memory_usage(b_gpu);
+  bytes += MemKK::memory_usage(da_gpu);
+  bytes += MemKK::memory_usage(db_gpu);
+  bytes += MemKK::memory_usage(sfac_gpu);
+  bytes += MemKK::memory_usage(ulist_cpu);
+  bytes += MemKK::memory_usage(dulist_cpu);
 
   bytes += MemKK::memory_usage(dedr);
 
@@ -2373,5 +2394,5 @@ double SNAKokkos<DeviceType, real_type, accum_type, vector_length>::memory_usage
 
   return bytes;
 }
-
 } // namespace LAMMPS_NS
+#endif

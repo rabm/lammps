@@ -86,11 +86,14 @@ void AngleHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     } else Kokkos::deep_copy(d_vatom,0.0);
   }
 
-  //atomKK->sync(execution_space,datamask_read);
   k_k.template sync<DeviceType>();
   k_theta0.template sync<DeviceType>();
-  //  if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
-  //  else atomKK->modified(execution_space,F_MASK);
+
+  // sync and claim here too: the MC fixes call this outside run_style verlet/kk
+
+  atomKK->sync(execution_space,datamask_read);
+  if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
+  else atomKK->modified(execution_space,F_MASK);
 
   x = atomKK->k_x.template view<DeviceType>();
   f = atomKK->k_f.template view<DeviceType>();
@@ -145,6 +148,7 @@ void AngleHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n, EV_FLOAT& ev) const {
 
@@ -163,7 +167,7 @@ void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_
   const KK_FLOAT delz1 = x(i1,2) - x(i2,2);
 
   const KK_FLOAT rsq1 = delx1*delx1 + dely1*dely1 + delz1*delz1;
-  const KK_FLOAT r1 = sqrt(rsq1);
+  const KK_FLOAT r1 = Kokkos::sqrt(rsq1);
 
   // 2nd bond
 
@@ -172,7 +176,7 @@ void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_
   const KK_FLOAT delz2 = x(i3,2) - x(i2,2);
 
   const KK_FLOAT rsq2 = delx2*delx2 + dely2*dely2 + delz2*delz2;
-  const KK_FLOAT r2 = sqrt(rsq2);
+  const KK_FLOAT r2 = Kokkos::sqrt(rsq2);
 
   // angle (cos and sin)
 
@@ -182,13 +186,13 @@ void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_
   if (c > static_cast<KK_FLOAT>(1.0)) c = static_cast<KK_FLOAT>(1.0);
   if (c < static_cast<KK_FLOAT>(-1.0)) c = static_cast<KK_FLOAT>(-1.0);
 
-  KK_FLOAT s = sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
+  KK_FLOAT s = Kokkos::sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
   if (s < static_cast<KK_FLOAT>(SMALL)) s = static_cast<KK_FLOAT>(SMALL);
   s = static_cast<KK_FLOAT>(1.0)/s;
 
   // force & energy
 
-  const KK_FLOAT dtheta = acos(c) - d_theta0[type];
+  const KK_FLOAT dtheta = Kokkos::acos(c) - d_theta0[type];
   const KK_FLOAT tk = d_k[type] * dtheta;
 
   KK_FLOAT eangle = 0;
@@ -233,6 +237,7 @@ void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleHarmonicKokkos<DeviceType>::operator()(TagAngleHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n) const {
   EV_FLOAT ev;
@@ -263,8 +268,10 @@ void AngleHarmonicKokkos<DeviceType>::coeff(int narg, char **arg)
 {
   AngleHarmonic::coeff(narg, arg);
 
-  int n = atom->nangletypes;
-  for (int i = 1; i <= n; i++) {
+  int ilo,ihi;
+  utils::bounds(FLERR,arg[0],1,atom->nangletypes,ilo,ihi,error);
+
+  for (int i = ilo; i <= ihi; i++) {
     k_k.view_host()[i] = static_cast<KK_FLOAT>(k[i]);
     k_theta0.view_host()[i] = static_cast<KK_FLOAT>(theta0[i]);
   }
@@ -299,6 +306,7 @@ void AngleHarmonicKokkos<DeviceType>::read_restart(FILE *fp)
 
 template<class DeviceType>
 //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleHarmonicKokkos<DeviceType>::ev_tally(EV_FLOAT &ev, const int i, const int j, const int k,
                      KK_FLOAT &eangle, KK_FLOAT *f1, KK_FLOAT *f3,

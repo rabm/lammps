@@ -11,8 +11,9 @@ compilers require a command-line flag to activate C++17 support).
 CMake build system
 ==================
 
-If you are building with CMake, you need at least CMake version 3.20 and
-a compatible build tool (e.g. GNU make or ninja-build on Linux).  The
+If you are building with CMake, you need at least CMake version 3.27 and
+a compatible build tool (e.g. GNU make or :ref:`Ninja <ninja_ccache>`,
+which is available for Linux, macOS, and Windows).  The
 CMake scripting includes tests for required software and will
 auto-detect and auto-enable available tools and libraries for optional
 features (of course those can be disabled, if desired).  If required
@@ -34,7 +35,7 @@ Compiler and OS compatibility
 
 The LAMMPS developers aim to keep LAMMPS very portable and usable -
 at least in parts - on most operating systems commonly used for
-running MD simulations.  Please see the :doc:`section on portablility
+running MD simulations.  Please see the :doc:`section on portability
 <Intro_portability>` for more details.
 
 .. admonition:: Warning: LLVM based Intel Compilers
@@ -52,10 +53,10 @@ running MD simulations.  Please see the :doc:`section on portablility
 
    Unfortunately there is no simple way to detect whether a binary is
    working correctly outside of running the unit and regression tests,
-   but those do not cover all of LAMMPS and and would be reliable only
-   for no or moderate optimization anyway.  For most of LAMMPS there is
-   not much of a benefit (if any) to use the Intel compilers over the
-   GCC or Clang compilers, except for the INTEL package (which *can* be
+   but those do not cover all of LAMMPS and would be reliable only for
+   no or moderate optimization anyway.  For most of LAMMPS there is not
+   much of a benefit (if any) to use the Intel compilers over the GCC or
+   Clang compilers, except for the INTEL package (which *can* be
    compiled with other compilers, but most vectorization directives are
    inactive for those) or KOKKOS with SYCL.
 

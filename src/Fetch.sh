@@ -11,24 +11,41 @@ fetch_potentials() {
         echo "Need 'curl' or 'wget' to fetch external potential files"
         return
     fi
+    type sha256sum > /dev/null 2>&1 && have_sha256=1 || have_sha256=0
+    if [ $have_sha256 -ne 1 ]
+    then \
+        echo "Need 'sha256sum' to check downloaded potential files for integrity"
+        return
+    fi
 
     while [ $# -gt 1 ]
     do \
         file=$1; sum=$2
         shift; shift
 
-        echo ${sum} ${pdir}/${file} | md5sum -c - > /dev/null 2>&1 \
+        echo ${sum} ${pdir}/${file} | sha256sum -c - > /dev/null 2>&1 \
             && need_fetch=0 || need_fetch=1
         if [ ${need_fetch} -eq 1 ]
         then \
             url="https://download.lammps.org/potentials/${file}.${sum}"
             echo "Fetching external potential file ${file} from ${url}"
-            if [ ${have_curl} ]
+            # download to a temporary file and only keep it if its checksum is correct
+            tmpfile="${pdir}/${file}.download"
+            if [ ${have_curl} -eq 1 ]
             then \
-                curl -L -o ${pdir}/${file} ${url}
-            elif [ ${have_wget} ]
+                curl -L -o ${tmpfile} ${url}
+            elif [ ${have_wget} -eq 1 ]
             then \
-                wget -O ${pdir}/${file} ${url}
+                wget -O ${tmpfile} ${url}
+            fi
+            echo ${sum} ${tmpfile} | sha256sum -c - > /dev/null 2>&1 \
+                && fetch_ok=1 || fetch_ok=0
+            if [ ${fetch_ok} -eq 1 ]
+            then \
+                mv -f ${tmpfile} ${pdir}/${file}
+            else \
+                echo "Download of ${file} failed or its checksum does not match. Skipping."
+                rm -f ${tmpfile}
             fi
         fi
    done

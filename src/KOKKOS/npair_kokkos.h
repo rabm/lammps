@@ -157,6 +157,7 @@ class NPairKokkos : public NPair {
   // data from Neighbor class
 
   DAT::ttransform_kkfloat_2d k_cutneighsq;
+  DAT::ttransform_kkfloat_2d k_cutneighghostsq;
 
   // exclusion data from Neighbor class
 
@@ -194,6 +195,7 @@ class NeighborKokkosExecute
   // data from Neighbor class
 
   const typename AT::t_kkfloat_2d_randomread cutneighsq;
+  const typename AT::t_kkfloat_2d_randomread cutneighghostsq;
 
   // exclusion data from Neighbor class
 
@@ -256,7 +258,7 @@ class NeighborKokkosExecute
   HAT::t_int_scalar h_new_maxneighs;
 
   const int xperiodic, yperiodic, zperiodic;
-  const int xprd_half, yprd_half, zprd_half;
+  const double xprd_half, yprd_half, zprd_half;
 
   // GRANULAR required member variables
   const double skin;
@@ -264,6 +266,7 @@ class NeighborKokkosExecute
   NeighborKokkosExecute(
                         const NeighListKokkos<DeviceType> &_neigh_list,
                         const typename AT::t_kkfloat_2d_randomread &_cutneighsq,
+                        const typename AT::t_kkfloat_2d_randomread &_cutneighghostsq,
                         const typename AT::t_int_1d &_bincount,
                         const typename AT::t_int_2d &_bins,
                         const typename AT::t_int_1d &_atom2bin,
@@ -297,13 +300,14 @@ class NeighborKokkosExecute
                         const typename AT::t_int_1d_const & _ex_mol_intra,
                         const double *_bboxhi, const double* _bboxlo,
                         const int & _xperiodic, const int & _yperiodic, const int & _zperiodic,
-                        const int & _xprd_half, const int & _yprd_half, const int & _zprd_half,
+                        const double & _xprd_half, const double & _yprd_half, const double & _zprd_half,
                         const double _skin,
                         const typename AT::t_int_scalar _resize,
                         const HAT::t_int_scalar _h_resize,
                         const typename AT::t_int_scalar _new_maxneighs,
                         const HAT::t_int_scalar _h_new_maxneighs):
-    neigh_list(_neigh_list),delta(_delta),cutneighsq(_cutneighsq),exclude(_exclude),
+    neigh_list(_neigh_list),delta(_delta),cutneighsq(_cutneighsq),
+    cutneighghostsq(_cutneighghostsq),exclude(_exclude),
     nex_type(_nex_type),ex1_type(_ex1_type),ex2_type(_ex2_type),
     ex_type(_ex_type),nex_group(_nex_group),
     ex1_bit(_ex1_bit),ex2_bit(_ex2_bit),
@@ -366,6 +370,7 @@ class NeighborKokkosExecute
                          size_t sharedsize) const;
 #endif
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2bin(const double & x,const double & y,const double & z, int* i) const
   {
@@ -402,12 +407,15 @@ class NeighborKokkosExecute
     return (iz-mbinzlo)*mbiny*mbinx + (iy-mbinylo)*mbinx + (ix-mbinxlo);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int exclusion(const int &i,const int &j, const int &itype,const int &jtype) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int find_special(const int &i, const int &j) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int minimum_image_check(double dx, double dy, double dz) const {
     if (xperiodic && fabs(dx) > xprd_half) return 1;
@@ -429,6 +437,7 @@ struct NPairKokkosBuildFunctor {
                              size_t _sharedsize):c(_c),
                              sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_Item<HALF_NEIGH,NEWTON,TRI>(i);
@@ -453,6 +462,7 @@ struct NPairKokkosBuildFunctor<LMPHostType,HALF_NEIGH,NEWTON,TRI> {
                              size_t _sharedsize):c(_c),
                              sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_Item<HALF_NEIGH,NEWTON,TRI>(i);
@@ -472,6 +482,7 @@ struct NPairKokkosBuildFunctorGhost {
                              size_t _sharedsize):c(_c),
                              sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_ItemGhost<HALF_NEIGH>(i);
@@ -497,6 +508,7 @@ struct NPairKokkosBuildFunctorGhost<LMPHostType,HALF_NEIGH> {
                              size_t _sharedsize):c(_c),
                              sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_ItemGhost<HALF_NEIGH>(i);
@@ -515,6 +527,7 @@ struct NPairKokkosBuildFunctorSize {
   NPairKokkosBuildFunctorSize(const NeighborKokkosExecute<DeviceType> &_c,
                               size_t _sharedsize): c(_c), sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_ItemSize<HALF_NEIGH,NEWTON,TRI>(i);
@@ -539,6 +552,7 @@ struct NPairKokkosBuildFunctorSize<LMPHostType,HALF_NEIGH,NEWTON,TRI> {
   NPairKokkosBuildFunctorSize(const NeighborKokkosExecute<LMPHostType> &_c,
                               size_t _sharedsize): c(_c), sharedsize(_sharedsize) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.template build_ItemSize<HALF_NEIGH,NEWTON,TRI>(i);

@@ -77,7 +77,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
 
   molecular = atom->molecular;
   if (molecular == Atom::ATOMIC)
-    error->all(FLERR, "Cannot use fix {} with non-molecular system", style);
+    error->all(FLERR, Error::COMMAND, "Cannot use fix {} with non-molecular system", style);
 
   // do not store constraint forces by default
 
@@ -109,10 +109,10 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
   bool allow_typelabels = (atom->labelmapflag != 0);
   if (allow_typelabels) {
     for (int i = Atom::ATOM; i < Atom::DIHEDRAL; ++i) {
-      if ((atom->lmap->find("b", i) >= 0) ||
-          (atom->lmap->find("a", i) >= 0) ||
-          (atom->lmap->find("t", i) >= 0) ||
-          (atom->lmap->find("m", i) >= 0)) allow_typelabels = false;
+      if ((atom->lmap->find_type("b", i) >= 0) ||
+          (atom->lmap->find_type("a", i) >= 0) ||
+          (atom->lmap->find_type("t", i) >= 0) ||
+          (atom->lmap->find_type("m", i) >= 0)) allow_typelabels = false;
     }
     if (!allow_typelabels && (comm->me == 0))
       error->warning(FLERR, "At least one typelabel conflicts with a fix shake option: "
@@ -158,7 +158,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
       else i = utils::inumeric(FLERR, arg[next], false, lmp);
 
       if (i < 1 || i > atom->nbondtypes)
-        error->all(FLERR,"Invalid bond type {} index for {}", arg[next], mystyle);
+        error->all(FLERR, next, "Invalid bond type {} index for {}", arg[next], mystyle);
       bond_flag[i] = 1;
 
     } else if (mode == 'a') {
@@ -166,7 +166,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
       else i = utils::inumeric(FLERR, arg[next], false, lmp);
 
       if (i < 1 || i > atom->nangletypes)
-        error->all(FLERR,"Invalid angle type {} for {}", arg[next], mystyle);
+        error->all(FLERR, next, "Invalid angle type {} for {}", arg[next], mystyle);
       angle_flag[i] = 1;
 
     } else if (mode == 't') {
@@ -174,17 +174,18 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
       else i = utils::inumeric(FLERR, arg[next], false, lmp);
 
       if (i < 1 || i > atom->ntypes)
-        error->all(FLERR,"Invalid atom type {} for {}", arg[next], mystyle);
+        error->all(FLERR, next, "Invalid atom type {} for {}", arg[next], mystyle);
       type_flag[i] = 1;
 
     } else if (mode == 'm') {
       double massone = utils::numeric(FLERR, arg[next], false, lmp);
-      if (massone == 0.0) error->all(FLERR,"Invalid atom mass {} for {}", arg[next], mystyle);
+      if (massone == 0.0)
+        error->all(FLERR, next, "Invalid atom mass {} for {}", arg[next], mystyle);
       if (nmass == atom->ntypes)
-        error->all(FLERR,"Too many masses for {}", mystyle);
+        error->all(FLERR, "Too many masses for {}", mystyle);
       mass_list[nmass++] = massone;
 
-    } else error->all(FLERR,"Unknown {} command option: {}", mystyle, arg[next]);
+    } else error->all(FLERR, next, "Unknown {} command option: {}", mystyle, arg[next]);
     next++;
   }
 
@@ -199,7 +200,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+2 > narg) utils::missing_cmd_args(FLERR,mystyle+" mol",error);
       int imol = atom->find_molecule(arg[iarg+1]);
       if (imol == -1)
-        error->all(FLERR,"Molecule template ID {} for {} does not exist", mystyle, arg[iarg+1]);
+        error->all(FLERR, iarg+1, "Molecule template ID {} for {} does not exist", mystyle, arg[iarg+1]);
       if ((atom->molecules[imol]->nset > 1) && (comm->me == 0))
         error->warning(FLERR,"Molecule template for {} has multiple molecules", mystyle);
       onemols = &atom->molecules[imol];
@@ -208,7 +209,8 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
     } else if (strcmp(arg[iarg],"kbond") == 0) {
       if (iarg+2 > narg) utils::missing_cmd_args(FLERR,mystyle+" kbond",error);
       kbond = utils::numeric(FLERR, arg[iarg+1], false, lmp);
-      if (kbond < 0) error->all(FLERR,"Illegal {} kbond value {}. Must be >= 0.0", mystyle, kbond);
+      if (kbond < 0)
+        error->all(FLERR, iarg+1, "Illegal {} kbond value {}. Must be >= 0.0", mystyle, kbond);
       iarg += 2;
     } else if (strcmp(arg[iarg],"store") == 0) {
       if (iarg+2 > narg) utils::missing_cmd_args(FLERR,mystyle+" store",error);
@@ -223,7 +225,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
         peratom_freq = 0;
       }
       iarg += 2;
-    } else error->all(FLERR,"Unknown {} command option: {}", mystyle, arg[iarg]);
+    } else error->all(FLERR, iarg, "Unknown {} command option: {}", mystyle, arg[iarg]);
   }
 
   // error check for Molecule template
@@ -415,7 +417,7 @@ void FixShake::init()
   if (utils::strmatch(update->integrate_style,"^respa")) {
     if (update->whichflag > 0) {
       auto fixes = modify->get_fix_by_style("^RESPA");
-      if (fixes.size() > 0) fix_respa = dynamic_cast<FixRespa *>(fixes.front());
+      if (!fixes.empty()) fix_respa = dynamic_cast<FixRespa *>(fixes.front());
       else error->all(FLERR,"Run style respa did not create fix RESPA");
     }
     auto *respa_ptr = dynamic_cast<Respa *>(update->integrate);
@@ -523,7 +525,7 @@ void FixShake::setup(int vflag)
     if (!respa_ptr) error->all(FLERR, "Failure to access Respa style {}", update->integrate_style);
     if (update->whichflag > 0) {
       auto fixes = modify->get_fix_by_style("^RESPA");
-      if (fixes.size() > 0) fix_respa = dynamic_cast<FixRespa *>(fixes.front());
+      if (!fixes.empty()) fix_respa = dynamic_cast<FixRespa *>(fixes.front());
       else error->all(FLERR,"Run style respa did not create fix RESPA");
     }
     respa = 1;
@@ -778,15 +780,17 @@ void FixShake::min_post_force(int vflag)
   int nb = atom->nbondtypes + 1;
   int na = atom->nangletypes + 1;
 
-  for (int i = 0; i < nb; i++) {
-    b_count[i] = 0;
-    b_ave[i] = b_max[i] = 0.0;
-    b_min[i] = BIG;
-  }
-  for (int i = 0; i < na; i++) {
-    a_count[i] = 0;
-    a_ave[i] = a_max[i] = 0.0;
-    a_min[i] = BIG;
+  if (output_every) {
+    for (int i = 0; i < nb; i++) {
+      b_count[i] = 0;
+      b_ave[i] = b_max[i] = 0.0;
+      b_min[i] = BIG;
+    }
+    for (int i = 0; i < na; i++) {
+      a_count[i] = 0;
+      a_ave[i] = a_max[i] = 0.0;
+      a_min[i] = BIG;
+    }
   }
 
   // allocate storage for restraint forces if requested
@@ -817,16 +821,18 @@ void FixShake::min_post_force(int vflag)
         if (i <= atom1 && i <= atom2) {
           int m = shake_type[i][0];
           double r = bond_force(atom1, atom2, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom2 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom2 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
         }
       } else if (shake_flag[i] == 3) {
         atom1 = atom->map(shake_atom[i][0]);
@@ -842,28 +848,32 @@ void FixShake::min_post_force(int vflag)
         if (i <= atom1 && i <= atom2 && i <= atom3) {
           int m = shake_type[i][0];
           double r = bond_force(atom1, atom2, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom2 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom2 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
           m = shake_type[i][1];
           r = bond_force(atom1, atom3, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom3 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom3 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
         }
       } else if (shake_flag[i] == 4) {
         atom1 = atom->map(shake_atom[i][0]);
@@ -881,40 +891,46 @@ void FixShake::min_post_force(int vflag)
         if (i <= atom1 && i <= atom2 && i <= atom3 && i <= atom4) {
           int m = shake_type[i][0];
           double r = bond_force(atom1, atom2, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom2 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom2 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
           m = shake_type[i][1];
           r = bond_force(atom1, atom3, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom3 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom3 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
           m = shake_type[i][2];
           r = bond_force(atom1, atom4, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            if (atom4 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r;
+            }
+            b_max[m] = MAX(b_max[m], r);
+            b_min[m] = MIN(b_min[m], r);
           }
-          if (atom4 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r;
-          }
-          b_max[m] = MAX(b_max[m], r);
-          b_min[m] = MIN(b_min[m], r);
         }
       } else { // shake_flag[i] == 1
         atom1 = atom->map(shake_atom[i][0]);
@@ -930,42 +946,48 @@ void FixShake::min_post_force(int vflag)
         if (i <= atom1 && i <= atom2 && i <= atom3) {
           int m = shake_type[i][0];
           double r1 = bond_force(atom1, atom2, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r1;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r1;
+            }
+            if (atom2 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r1;
+            }
+            b_max[m] = MAX(b_max[m], r1);
+            b_min[m] = MIN(b_min[m], r1);
           }
-          if (atom2 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r1;
-          }
-          b_max[m] = MAX(b_max[m], r1);
-          b_min[m] = MIN(b_min[m], r1);
           m = shake_type[i][1];
           double r2 = bond_force(atom1, atom3, bond_distance[m]);
-          if (atom1 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r2;
+          if (output_every) {
+            if (atom1 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r2;
+            }
+            if (atom3 < nlocal) {
+              b_count[m]++;
+              b_ave[m] += r2;
+            }
+            b_max[m] = MAX(b_max[m], r2);
+            b_min[m] = MIN(b_min[m], r2);
           }
-          if (atom3 < nlocal) {
-            b_count[m]++;
-            b_ave[m] += r2;
-          }
-          b_max[m] = MAX(b_max[m], r2);
-          b_min[m] = MIN(b_min[m], r2);
           m = shake_type[i][2];
           double r3 = bond_force(atom2, atom3, angle_distance[m]);
           double angle = acos((r1*r1 + r2*r2 - r3*r3) / (2.0*r1*r2));
           angle *= 180.0/MY_PI;
-          if (atom2 < nlocal) {
-            a_count[m]++;
-            a_ave[m] += angle;
+          if (output_every) {
+            if (atom2 < nlocal) {
+              a_count[m]++;
+              a_ave[m] += angle;
+            }
+            if (atom3 < nlocal) {
+              a_count[m]++;
+              a_ave[m] += angle;
+            }
+            a_max[m] = MAX(a_max[m],angle);
+            a_min[m] = MIN(a_min[m],angle);
           }
-          if (atom3 < nlocal) {
-            a_count[m]++;
-            a_ave[m] += angle;
-          }
-          a_max[m] = MAX(a_max[m],angle);
-          a_min[m] = MIN(a_min[m],angle);
         }
       }
     }
@@ -2974,20 +2996,62 @@ void FixShake::stats()
   // print stats only for non-zero counts
 
   if (comm->me == 0) {
-    const int width = (int) log10((double)(MAX(MAX(1,nb),na))) + 2;
+    // when a labelmap is present, report each type by its symbolic label
+    // (matching label-based input), with a numeric fallback for unlabeled types
+    const bool uselabel = (atom->labelmapflag != 0);
+    auto blabel = [&](int i) -> std::string {
+      if (uselabel) {
+        const std::string &s = atom->lmap->find_label(i, Atom::BOND);
+        if (!s.empty()) return s;
+      }
+      return std::to_string(i);
+    };
+    auto alabel = [&](int i) -> std::string {
+      if (uselabel) {
+        const std::string &s = atom->lmap->find_label(i, Atom::ANGLE);
+        if (!s.empty()) return s;
+      }
+      return std::to_string(i);
+    };
+
+    // type-column width: longest label (or type number) actually printed,
+    // shared by the Bond: and Angle: rows so the columns stay aligned
+    int width;
+    if (uselabel) {
+      width = 1;
+      for (int i = 1; i < nb; i++)
+        if (b_count_all[i]) { const int w = (int) blabel(i).size(); if (w > width) width = w; }
+      for (int i = 1; i < na; i++)
+        if (a_count_all[i]) { const int w = (int) alabel(i).size(); if (w > width) width = w; }
+    } else {
+      width = (int) log10((double)(MAX(MAX(1,nb),na))) + 2;
+    }
+
     auto mesg = fmt::format("{} stats (type/ave/delta/count) on step {}\n",
                             utils::uppercase(style), update->ntimestep);
     for (int i = 1; i < nb; i++) {
       const auto bcnt = b_count_all[i];
-      if (bcnt)
-        mesg += fmt::format("Bond:  {:>{}d}   {:<9.6} {:<11.6} {:>8d}\n",i,width,
-                            b_ave_all[i]/bcnt,b_max_all[i]-b_min_all[i],bcnt);
+      if (bcnt) {
+        if (uselabel) {
+          mesg += fmt::format("Bond:  {:<{}}   {:<9.6} {:<11.6} {:>8d}\n", blabel(i), width,
+                              b_ave_all[i]/bcnt,b_max_all[i]-b_min_all[i],bcnt);
+        } else {
+          mesg += fmt::format("Bond:  {:>{}}   {:<9.6} {:<11.6} {:>8d}\n", i, width,
+                              b_ave_all[i]/bcnt,b_max_all[i]-b_min_all[i],bcnt);
+        }
+      }
     }
     for (int i = 1; i < na; i++) {
       const auto acnt = a_count_all[i];
-      if (acnt)
-        mesg += fmt::format("Angle: {:>{}d}   {:<9.6} {:<11.6} {:>8d}\n",i,width,
-                            a_ave_all[i]/acnt,a_max_all[i]-a_min_all[i],acnt/3);
+      if (acnt) {
+        if (uselabel) {
+          mesg += fmt::format("Angle: {:<{}}   {:<9.6} {:<11.6} {:>8d}\n",alabel(i),width,
+                              a_ave_all[i]/acnt,a_max_all[i]-a_min_all[i],acnt/3);
+        } else {
+          mesg += fmt::format("Angle: {:>{}}   {:<9.6} {:<11.6} {:>8d}\n",i,width,
+                              a_ave_all[i]/acnt,a_max_all[i]-a_min_all[i],acnt/3);
+        }
+      }
     }
     utils::logmesg(lmp,mesg);
   }

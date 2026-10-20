@@ -43,7 +43,7 @@ ImproperHarmonicKokkos<DeviceType>::ImproperHarmonicKokkos(LAMMPS *lmp) : Improp
   datamask_read = X_MASK | F_MASK | ENERGY_MASK | VIRIAL_MASK;
   datamask_modify = F_MASK | ENERGY_MASK | VIRIAL_MASK;
 
-  k_warning_flag = DAT::tdual_int_scalar("Dihedral:warning_flag");
+  k_warning_flag = DAT::tdual_int_scalar("Improper:warning_flag");
   d_warning_flag = k_warning_flag.template view<DeviceType>();
   h_warning_flag = k_warning_flag.view_host();
 
@@ -88,9 +88,12 @@ void ImproperHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     } else Kokkos::deep_copy(d_vatom,0.0);
   }
 
-  //atomKK->sync(execution_space,datamask_read);
   k_k.template sync<DeviceType>();
   k_chi.template sync<DeviceType>();
+
+  // sync and claim here too: the MC fixes call this outside run_style verlet/kk
+
+  atomKK->sync(execution_space,datamask_read);
   if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
   else atomKK->modified(execution_space,F_MASK);
 
@@ -131,7 +134,7 @@ void ImproperHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   k_warning_flag.template modify<DeviceType>();
   k_warning_flag.sync_host();
   if (h_warning_flag())
-    error->warning(FLERR,"Dihedral problem");
+    error->warning(FLERR,"ImproperHarmonic problem");
 
   if (eflag_global) energy += static_cast<double>(ev.evdwl);
   if (vflag_global) {
@@ -158,6 +161,7 @@ void ImproperHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n, EV_FLOAT& ev) const {
 
@@ -185,9 +189,9 @@ void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<N
   const KK_FLOAT ss2 = static_cast<KK_FLOAT>(1.0) / (vb2x*vb2x + vb2y*vb2y + vb2z*vb2z);
   const KK_FLOAT ss3 = static_cast<KK_FLOAT>(1.0) / (vb3x*vb3x + vb3y*vb3y + vb3z*vb3z);
 
-  const KK_FLOAT r1 = sqrt(ss1);
-  const KK_FLOAT r2 = sqrt(ss2);
-  const KK_FLOAT r3 = sqrt(ss3);
+  const KK_FLOAT r1 = Kokkos::sqrt(ss1);
+  const KK_FLOAT r2 = Kokkos::sqrt(ss2);
+  const KK_FLOAT r3 = Kokkos::sqrt(ss3);
 
   // sin and cos of improper
 
@@ -203,7 +207,7 @@ void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<N
   if (s2 < static_cast<KK_FLOAT>(SMALL)) s2 = static_cast<KK_FLOAT>(SMALL);
   s2 = static_cast<KK_FLOAT>(1.0) / s2;
 
-  KK_FLOAT s12 = sqrt(s1*s2);
+  KK_FLOAT s12 = Kokkos::sqrt(s1*s2);
   KK_FLOAT c = (c1*c2 + c0) * s12;
 
   // error check
@@ -214,12 +218,12 @@ void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<N
   if (c > static_cast<KK_FLOAT>(1.0)) c = static_cast<KK_FLOAT>(1.0);
   if (c < -static_cast<KK_FLOAT>(1.0)) c = -static_cast<KK_FLOAT>(1.0);
 
-  KK_FLOAT s = sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
+  KK_FLOAT s = Kokkos::sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
   if (s < static_cast<KK_FLOAT>(SMALL)) s = static_cast<KK_FLOAT>(SMALL);
 
   // force & energy
 
-  const KK_FLOAT domega = acos(c) - d_chi[type];
+  const KK_FLOAT domega = Kokkos::acos(c) - d_chi[type];
   KK_FLOAT a = d_k[type] * domega;
 
   KK_FLOAT eimproper = 0;
@@ -289,6 +293,7 @@ void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<N
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void ImproperHarmonicKokkos<DeviceType>::operator()(TagImproperHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n) const {
   EV_FLOAT ev;
@@ -319,8 +324,10 @@ void ImproperHarmonicKokkos<DeviceType>::coeff(int narg, char **arg)
 {
   ImproperHarmonic::coeff(narg, arg);
 
-  int n = atom->nimpropertypes;
-  for (int i = 1; i <= n; i++) {
+  int ilo,ihi;
+  utils::bounds(FLERR,arg[0],1,atom->nimpropertypes,ilo,ihi,error);
+
+  for (int i = ilo; i <= ihi; i++) {
     k_k.view_host()[i] = static_cast<KK_FLOAT>(k[i]);
     k_chi.view_host()[i] = static_cast<KK_FLOAT>(chi[i]);
   }
@@ -357,6 +364,7 @@ void ImproperHarmonicKokkos<DeviceType>::read_restart(FILE *fp)
 
 template<class DeviceType>
 //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void ImproperHarmonicKokkos<DeviceType>::ev_tally(EV_FLOAT &ev, const int i1, const int i2, const int i3, const int i4,
                         KK_FLOAT &eimproper, KK_FLOAT *f1, KK_FLOAT *f3, KK_FLOAT *f4,

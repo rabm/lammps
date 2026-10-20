@@ -41,6 +41,7 @@
 #include "pair.h"
 #include "random_park.h"
 #include "region.h"
+#include "suffix.h"
 #include "update.h"
 
 #include <cmath>
@@ -56,8 +57,9 @@ enum { EXCHATOM, EXCHMOL };    // exchmode
 /* ---------------------------------------------------------------------- */
 
 FixWidom::FixWidom(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), region(nullptr), idregion(nullptr), full_flag(false), molcoords(nullptr),
-    molq(nullptr), molimage(nullptr), random_equal(nullptr), c_pe(nullptr)
+    Fix(lmp, narg, arg), region(nullptr), idregion(nullptr), full_flag(false), sublo(nullptr),
+    subhi(nullptr), cutsq(nullptr), molcoords(nullptr), molq(nullptr), molimage(nullptr),
+    pair(nullptr), random_equal(nullptr), model_atom(nullptr), onemol(nullptr), c_pe(nullptr)
 {
   if (narg < 8) utils::missing_cmd_args(FLERR, "fix widom", error);
 
@@ -183,8 +185,6 @@ void FixWidom::options(int narg, char **arg)
   molecule_group = 0;
   molecule_group_bit = 0;
   molecule_group_inversebit = 0;
-  exclusion_group = 0;
-  exclusion_group_bit = 0;
   charge = 0.0;
   charge_flag = false;
   full_flag = false;
@@ -195,7 +195,7 @@ void FixWidom::options(int narg, char **arg)
     if (strcmp(arg[iarg],"mol") == 0) {
       if (iarg+2 > narg) utils::missing_cmd_args(FLERR, "fix widom mol", error);
       auto onemols = atom->get_molecule_by_id(arg[iarg+1]);
-      if (onemols.size() == 0)
+      if (onemols.empty())
         error->all(FLERR,"Molecule template ID {} for fix widom does not exist", arg[iarg+1]);
       if (onemols.size() > 1 && comm->me == 0)
         error->warning(FLERR,"Molecule template {} for fix widom has multiple molecules; "
@@ -236,21 +236,8 @@ FixWidom::~FixWidom()
   memory->destroy(molq);
   memory->destroy(molimage);
 
-  // delete exclusion group created in init()
   // delete molecule group created in init()
-  // unset neighbor exclusion settings made in init()
-  // not necessary if group and neighbor classes already destroyed
-  //   when LAMMPS exits
-
-  if (exclusion_group_bit && group) {
-    auto group_id = std::string("FixWidom:widom_exclusion_group:") + id;
-    try {
-      group->assign(group_id + " delete");
-    } catch (std::exception &e) {
-      if (comm->me == 0)
-        fprintf(stderr, "Error deleting group %s: %s\n", group_id.c_str(), e.what());
-    }
-  }
+  // not necessary if group class already destroyed when LAMMPS exits
 
   if (molecule_group_bit && group) {
     auto group_id = std::string("FixWidom:rotation_gas_atoms:") + id;
@@ -262,10 +249,6 @@ FixWidom::~FixWidom()
     }
   }
 
-  if (full_flag && group && neighbor) {
-    int igroupall = group->find("all");
-    neighbor->exclusion_group_group_delete(exclusion_group,igroupall);
-  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -281,6 +264,9 @@ int FixWidom::setmask()
 
 void FixWidom::init()
 {
+  if (force->pair && (force->pair->suffix_flag & Suffix::INTEL))
+    error->all(FLERR, Error::NOLASTLINE, "Fix {} is not compatible with /intel pair styles", style);
+
   if (!atom->mass) error->all(FLERR, Error::NOLASTLINE, "Fix widom requires per atom type masses");
   if (atom->rmass_flag && (comm->me == 0))
     error->warning(FLERR, "Fix widom will use per atom type masses for velocity initialization");
@@ -349,19 +335,6 @@ void FixWidom::init()
                  "Invalid atom type {} in fix widom command", nwidom_type);
   }
 
-  // if molecules are exchanged or moved, check for unset mol IDs
-  if (exchmode == EXCHMOL) {
-    tagint *molecule = atom->molecule;
-    int *mask = atom->mask;
-    int flag = 0;
-    for (int i = 0; i < atom->nlocal; i++)
-      if (mask[i] == groupbit)
-        if (molecule[i] == 0) flag = 1;
-    int flagall;
-    MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_SUM,world);
-    if (flagall)
-      error->all(FLERR, Error::NOLASTLINE, "All mol IDs should be set for fix widom group atoms");
-  }
 
   if (exchmode == EXCHMOL)
     if (atom->molecule_flag == 0 || !atom->tag_enable
@@ -371,27 +344,6 @@ void FixWidom::init()
 
   if (domain->dimension == 2)
     error->all(FLERR, Error::NOLASTLINE, "Cannot use fix widom in a 2d simulation");
-
-  // create a new group for interaction exclusions
-  // used for attempted atom or molecule deletions
-  // skip if already exists from previous init()
-
-  if (full_flag && !exclusion_group_bit) {
-
-    // create unique group name for atoms to be excluded
-
-    auto group_id = std::string("FixWidom:widom_exclusion_group:") + id;
-    group->assign(group_id + " subtract all all");
-    exclusion_group = group->find(group_id);
-    if (exclusion_group == -1)
-      error->all(FLERR, Error::NOLASTLINE, "Could not find fix widom exclusion group ID {}", group_id);
-    exclusion_group_bit = group->bitmask[exclusion_group];
-
-    // neighbor list exclusion setup
-    // turn off interactions between group all and the exclusion group
-
-    neighbor->modify_params(fmt::format("exclude group {} all",group_id));
-  }
 
   // create a new group for temporary use with selected molecules
 
@@ -427,23 +379,6 @@ void FixWidom::init()
 
   if (gas_mass <= 0.0) error->all(FLERR, Error::NOLASTLINE, "Illegal fix widom gas mass <= 0");
 
-  // check that no deletable atoms are in atom->firstgroup
-  // deleting such an atom would not leave firstgroup atoms first
-
-  if (atom->firstgroup >= 0) {
-    int *mask = atom->mask;
-    int firstgroupbit = group->bitmask[atom->firstgroup];
-
-    int flag = 0;
-    for (int i = 0; i < atom->nlocal; i++)
-      if ((mask[i] == groupbit) && (mask[i] && firstgroupbit)) flag = 1;
-
-    int flagall;
-    MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_SUM,world);
-
-    if (flagall)
-      error->all(FLERR, Error::NOLASTLINE, "Cannot use fix widom on atoms in atom_modify first group");
-  }
 
   // compute beta
   beta = 1.0/(force->boltz*insertion_temperature);
@@ -583,6 +518,9 @@ void FixWidom::attempt_atomic_insertion()
           lamda[2] >= sublo[2] && lamda[2] < subhi[2]) proc_flag = 1;
     }
 
+    // only the processor that owns the insertion point computes its energy
+
+    double insertion_energy = 0.0;
     if (proc_flag) {
       int ii = -1;
       if (charge_flag) {
@@ -590,11 +528,15 @@ void FixWidom::attempt_atomic_insertion()
         if (ii >= atom->nmax) atom->avec->grow(0);
         atom->q[ii] = charge;
       }
-      double insertion_energy = energy(ii,nwidom_type,-1,coord);
-      double inst_chem_pot = exp(-insertion_energy*beta);
-      double incr_chem_pot = (inst_chem_pot - ave_widom_chemical_potential);
-      ave_widom_chemical_potential += incr_chem_pot / (imove + 1);
+      insertion_energy = energy(ii,nwidom_type,-1,coord);
     }
+
+    double insertion_energy_sum = 0.0;
+    MPI_Allreduce(&insertion_energy,&insertion_energy_sum,1,MPI_DOUBLE,MPI_SUM,world);
+
+    double inst_chem_pot = exp(-insertion_energy_sum*beta);
+    double incr_chem_pot = (inst_chem_pot - ave_widom_chemical_potential);
+    ave_widom_chemical_potential += incr_chem_pot / (imove + 1);
   }
 }
 
@@ -795,9 +737,12 @@ void FixWidom::attempt_atomic_insertion_full()
     }
 
     atom->natoms++;
+    tagint newtag = 0;
     if (atom->tag_enable) {
       atom->tag_extend();
       if (atom->map_style != Atom::MAP_NONE) atom->map_init();
+      tagint mytag = proc_flag ? atom->tag[atom->nlocal-1] : 0;
+      MPI_Allreduce(&mytag,&newtag,1,MPI_LMP_TAGINT,MPI_MAX,world);
     }
     atom->nghost = 0;
     if (triclinic) domain->x2lamda(atom->nlocal);
@@ -812,7 +757,17 @@ void FixWidom::attempt_atomic_insertion_full()
     ave_widom_chemical_potential += incr_chem_pot / (imove + 1);
 
     atom->natoms--;
-    if (proc_flag) atom->nlocal--;
+
+    // energy_full() may have reordered the local atoms, so the
+    // inserted atom must be located by its atom ID, if available
+
+    if (newtag) {
+      int k = local_index(newtag);
+      if (k >= 0) {
+        atom->avec->copy(atom->nlocal-1,k,1);
+        atom->nlocal--;
+      }
+    } else if (proc_flag) atom->nlocal--;
     if (force->kspace) force->kspace->qsum_qsq();
     if (force->pair->tail_flag) force->pair->reinit();
   }
@@ -1051,8 +1006,10 @@ double FixWidom::energy_full()
   if (triclinic) domain->lamda2x(atom->nlocal+atom->nghost);
   if (modify->n_pre_neighbor) modify->pre_neighbor();
   neighbor->build(1);
-  int eflag = 1;
-  int vflag = 0;
+
+  // flag that we only need to compute the global energy
+  int eflag = ENERGY_GLOBAL | ENERGY_ONLY;
+  int vflag = VIRIAL_NONE;
 
   // clear forces so they don't accumulate over multiple
   // calls within fix widom timestep
@@ -1118,7 +1075,8 @@ void FixWidom::write_restart(FILE *fp)
   int n = 0;
   double list[3];
   list[n++] = random_equal->state();
-  list[n++] = next_reneighbor;
+  list[n++] = ubuf(next_reneighbor).d;
+  list[n++] = ubuf(update->ntimestep).d;
 
   if (comm->me == 0) {
     int size = n * sizeof(double);
@@ -1139,9 +1097,26 @@ void FixWidom::restart(char *buf)
   seed = static_cast<int> (list[n++]);
   random_equal->reset(seed);
 
-  seed = static_cast<int> (list[n++]);
+  next_reneighbor = (bigint) ubuf(list[n++]).i;
 
-  next_reneighbor = static_cast<int> (list[n++]);
+  bigint ntimestep_restart = (bigint) ubuf(list[n++]).i;
+  if (ntimestep_restart != update->ntimestep)
+    error->all(FLERR,"Must not reset timestep when restarting fix widom");
+}
+
+/* ----------------------------------------------------------------------
+   return local index of the owned atom with atom ID itag or -1 if not owned
+------------------------------------------------------------------------- */
+
+int FixWidom::local_index(tagint itag)
+{
+  if (atom->map_style != Atom::MAP_NONE) {
+    int i = atom->map(itag);
+    return (i < atom->nlocal) ? i : -1;
+  }
+  for (int i = 0; i < atom->nlocal; i++)
+    if (atom->tag[i] == itag) return i;
+  return -1;
 }
 
 void FixWidom::grow_molecule_arrays(int nmolatoms) {

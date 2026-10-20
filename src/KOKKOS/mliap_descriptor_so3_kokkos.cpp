@@ -141,6 +141,7 @@ void MLIAPDescriptorSO3Kokkos<DeviceType>::compute_forces(class MLIAPData *data_
 ------------------------------------------------------------------------- */
 template <class DeviceType>
 template <typename ViewType>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void MLIAPDescriptorSO3Kokkos<DeviceType>::v_tally(int vflag_either, int vflag_global, int vflag_atom, int i, int j, int ij,
     double *fij, ViewType rij, Kokkos::View<double[6],DeviceType> virial, ViewType vatom)
@@ -261,7 +262,8 @@ void MLIAPDescriptorSO3Kokkos<DeviceType>::init()
 template <class DeviceType>
 double MLIAPDescriptorSO3Kokkos<DeviceType>::memory_usage()
 {
-  double bytes = MLIAPDescriptor::memory_usage();
+  // the base constructor allocates so3ptr in the KOKKOS case too
+  double bytes = MLIAPDescriptorSO3::memory_usage();
   bytes += so3ptr_kokkos->memory_usage();
 
   return bytes;

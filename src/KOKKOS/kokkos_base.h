@@ -23,9 +23,7 @@ namespace LAMMPS_NS {
 
 class KokkosBase {
  public:
-  KokkosBase() {}
-
-  // Pair
+  // Forward for Pair, Fix, Compute
   virtual int pack_forward_comm_kokkos(int, DAT::tdual_int_1d,
                                        DAT::tdual_double_1d &,
                                        int, int *) {return 0;};
@@ -35,12 +33,7 @@ class KokkosBase {
   virtual void unpack_reverse_comm_kokkos(int, DAT::tdual_int_1d,
                                           DAT::tdual_double_1d &) {}
 
-  // Fix
-  virtual int pack_forward_comm_fix_kokkos(int, DAT::tdual_int_1d,
-                                           DAT::tdual_double_1d &,
-                                           int, int *) {return 0;};
-  virtual void unpack_forward_comm_fix_kokkos(int, int, DAT::tdual_double_1d &) {}
-
+  // Exchange
   virtual int pack_exchange_kokkos(const int & /*nsend*/, DAT::tdual_double_2d_lr & /*k_buf*/,
                                    DAT::tdual_int_1d /*k_sendlist*/,
                                    DAT::tdual_int_1d /*k_copylist*/,
@@ -57,6 +50,20 @@ class KokkosBase {
   using BinOp = BinOp3DLAMMPS<KeyViewType>;
   virtual void
     sort_kokkos(Kokkos::BinSort<KeyViewType, BinOp> & /*Sorter*/) {}
+
+  // The legacy sort permutes a fix's per-atom arrays through copy_arrays() on
+  // the host, where sort_kokkos() would have permuted them on the device.  A fix
+  // holding those arrays in dual views has to bring them to the host before the
+  // sort and claim the host side after it, or the device copies keep the old
+  // ordering and its atoms end up attached to the wrong body.
+  virtual void sync_host_for_sort() {}
+  virtual void modified_host_for_sort() {}
+
+ protected:
+  // non-virtual: derived KOKKOS styles are owned and deleted through their
+  // Fix/Pair/Compute/Region base, never through a KokkosBase pointer, and a
+  // virtual destructor here would force noexcept on every derived destructor
+  ~KokkosBase() = default;
 };
 
 }

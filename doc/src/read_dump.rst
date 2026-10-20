@@ -16,10 +16,11 @@ Syntax
 
   .. parsed-literal::
 
-     field = *x* or *y* or *z* or *vx* or *vy* or *vz* or *q* or *ix* or *iy* or *iz* or *fx* or *fy* or *fz* or *apip_lambda*
+     field = *x* or *y* or *z* or *vx* or *vy* or *vz* or *q* or *mol* or *ix* or *iy* or *iz* or *fx* or *fy* or *fz* or *apip_lambda*
        *x*,\ *y*,\ *z* = atom coordinates
        *vx*,\ *vy*,\ *vz* = velocity components
        *q* = charge
+       *mol* = molecule ID
        *ix*,\ *iy*,\ *iz* = image flags in each dimension
        *fx*,\ *fy*,\ *fz* = force components
        *apip_lambda* = switching parameter of an :doc:`adaptive-precision interatomic potential <Howto_apip>`
@@ -392,9 +393,9 @@ needed to generate absolute, unscaled coordinates.
 Restrictions
 """"""""""""
 
-To read gzipped dump files, you must compile LAMMPS with the
--DLAMMPS_GZIP option.  See the :doc:`Build settings <Build_settings>`
-doc page for details.
+To read compressed dump files, the corresponding compression program
+must be installed.  See the :ref:`Build settings <gzip>` page for
+details.
 
 The *molfile* dump file formats are part of the MOLFILE package.
 They are only enabled if LAMMPS was built with that packages.  See the

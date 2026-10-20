@@ -21,6 +21,7 @@
 #include "group.h"
 #include "modify.h"
 #include "update.h"
+#include "utils.h"
 
 #include <cstring>
 
@@ -33,7 +34,7 @@ static constexpr double INERTIA = 0.4;    // moment of inertia prefactor for sph
 /* ---------------------------------------------------------------------- */
 
 ComputeTempSphere::ComputeTempSphere(LAMMPS *lmp, int narg, char **arg) :
-    Compute(lmp, narg, arg), id_bias(nullptr)
+    Compute(lmp, narg, arg), id_bias(nullptr), tbias(nullptr)
 {
   if (narg < 3) utils::missing_cmd_args(FLERR, "compute temp/sphere", error);
 
@@ -51,6 +52,7 @@ ComputeTempSphere::ComputeTempSphere(LAMMPS *lmp, int narg, char **arg) :
     if (strcmp(arg[iarg], "bias") == 0) {
       if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "compute temp/sphere bias", error);
       tempbias = 1;
+      delete[] id_bias;
       id_bias = utils::strdup(arg[iarg + 1]);
       iarg += 2;
     } else if (strcmp(arg[iarg], "dof") == 0) {
@@ -85,6 +87,8 @@ ComputeTempSphere::ComputeTempSphere(LAMMPS *lmp, int narg, char **arg) :
 
 ComputeTempSphere::~ComputeTempSphere()
 {
+  if (copymode) return;
+
   delete[] id_bias;
   delete[] vector;
 }
@@ -100,7 +104,10 @@ void ComputeTempSphere::init()
     if (tbias->tempbias == 0) error->all(FLERR, "Bias compute does not calculate a velocity bias");
     if (tbias->igroup != igroup)
       error->all(FLERR, "Bias compute group does not match compute group");
-    if (strcmp(tbias->style, "temp/region") == 0)
+    // match the accelerated variants too: with -sf kk the bias compute is
+    // instantiated as temp/region/kk, which an exact strcmp would miss,
+    // leaving tempbias = 1 and sending dof_remove() an index of -1
+    if (utils::strmatch(tbias->style, "^temp/region"))
       tempbias = 2;
     else
       tempbias = 1;
@@ -126,7 +133,7 @@ void ComputeTempSphere::setup()
 
 void ComputeTempSphere::dof_compute()
 {
-  int count, count_all;
+  int count;
 
   adjust_dof_fix();
   natoms_temp = group->count(igroup);
@@ -168,7 +175,9 @@ void ComputeTempSphere::dof_compute()
       }
   }
 
-  MPI_Allreduce(&count, &count_all, 1, MPI_INT, MPI_SUM, world);
+  bigint count_single = count;
+  bigint count_all;
+  MPI_Allreduce(&count_single, &count_all, 1, MPI_LMP_BIGINT, MPI_SUM, world);
   dof = count_all;
 
   // additional adjustments to dof
@@ -210,7 +219,8 @@ void ComputeTempSphere::dof_compute()
         }
     }
 
-    MPI_Allreduce(&count, &count_all, 1, MPI_INT, MPI_SUM, world);
+    count_single = count;
+    MPI_Allreduce(&count_single, &count_all, 1, MPI_LMP_BIGINT, MPI_SUM, world);
     dof -= count_all;
   }
 

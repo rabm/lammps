@@ -30,12 +30,16 @@ action () {
 
 action compute_fep.cpp
 action compute_fep.h
+action compute_mbar.cpp
+action compute_mbar.h
 action compute_fep_ta.cpp
 action compute_fep_ta.h
 action fix_adapt_fep.cpp
 action fix_adapt_fep.h
 action pair_coul_cut_soft.cpp
 action pair_coul_cut_soft.h
+action pair_coul_cut_soft_gapsys.cpp
+action pair_coul_cut_soft_gapsys.h
 action pair_coul_long_soft.cpp            pppm.cpp
 action pair_coul_long_soft.h              pppm.cpp
 action pair_lj_charmm_coul_long_soft.cpp  pppm.cpp
@@ -46,6 +50,8 @@ action pair_lj_cut_coul_long_soft.cpp     pppm.cpp
 action pair_lj_cut_coul_long_soft.h       pppm.cpp
 action pair_lj_cut_soft.cpp
 action pair_lj_cut_soft.h
+action pair_lj_cut_soft_gapsys.cpp
+action pair_lj_cut_soft_gapsys.h
 action pair_lj_cut_tip4p_long_soft.cpp    pppm_tip4p.cpp
 action pair_lj_cut_tip4p_long_soft.h      pppm_tip4p.cpp
 action pair_morse_soft.cpp

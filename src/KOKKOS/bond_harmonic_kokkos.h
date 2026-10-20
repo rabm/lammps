@@ -45,15 +45,20 @@ class BondHarmonicKokkos : public BondHarmonic {
   void coeff(int, char **) override;
   void read_restart(FILE *) override;
 
+  class TuneKokkos* tuner;
+
   template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagBondHarmonicCompute<NEWTON_BOND,EVFLAG>, const int&, EV_FLOAT&) const;
 
   template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagBondHarmonicCompute<NEWTON_BOND,EVFLAG>, const int&) const;
 
   //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ev_tally(EV_FLOAT &ev, const int &i, const int &j,
       const KK_FLOAT &ebond, const KK_FLOAT &fbond, const KK_FLOAT &delx,
@@ -75,6 +80,9 @@ class BondHarmonicKokkos : public BondHarmonic {
 
   int nlocal,newton_bond;
   int eflag,vflag;
+
+  DAT::tdual_kkfloat_1d k_k;
+  DAT::tdual_kkfloat_1d k_r0;
 
   typename AT::t_kkfloat_1d d_k;
   typename AT::t_kkfloat_1d d_r0;

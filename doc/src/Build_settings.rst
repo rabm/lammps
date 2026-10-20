@@ -12,7 +12,6 @@ explains how to do this for building both with CMake and make.
 * `FFT library`_ for use with the :doc:`kspace_style pppm <kspace_style>` command
 * `Size of LAMMPS integer types and size limits`_
 * `Read or write compressed files`_
-* `Output of JPEG, PNG, and movie files`_ via the :doc:`dump image <dump_image>` or :doc:`dump movie <dump_image>` commands
 * `Support for downloading files from the input`_
 * `Prevent download of large potential files`_
 * `Memory allocation alignment`_
@@ -74,9 +73,9 @@ libraries and better pipelining for packing and communication.
                                    # default is FFTW3 if found, else KISS
          -D FFT_KOKKOS=value       # FFTW3 or MKL or NVPL or KISS or CUFFT
                                    # or HIPFFT or MKL_GPU, default is KISS
-         -D FFT_SINGLE=value       # yes or no (default), no = double precision
+         -D FFT_SINGLE=value       # on or off (default), off = double precision
          -D FFT_PACK=value         # array (default) or pointer or memcpy
-         -D FFT_USE_HEFFTE=value   # yes or no (default), yes links to heFFTe
+         -D FFT_USE_HEFFTE=value   # on or off (default), on links to heFFTe
 
       .. note::
 
@@ -255,8 +254,8 @@ use and parallel communication costs for transposing 3d FFT data.
 When using ``-DFFT_SINGLE`` with FFTW3, you may need to ensure that
 the FFTW3 installation includes support for single-precision.
 
-When compiler FFTW3 from source, you can do the following, which should
-produce the additional libraries ``libfftw3f.a`` and/or ``libfftw3f.so``\ .
+When compiling FFTW3 from source, you can do the following, which should
+produce the additional libraries ``libfftw3f.a`` and ``libfftw3f.so``\ .
 
 .. code-block:: bash
 
@@ -384,103 +383,33 @@ in whichever ``lib/gpu/Makefile`` is used must be the same as above.
 
 ----------
 
-.. _graphics:
-
-Output of JPEG, PNG, and movie files
-------------------------------------
-
-The :doc:`dump image <dump_image>` command has options to output JPEG or
-PNG image files.  Likewise, the :doc:`dump movie <dump_image>` command
-outputs movie files in a variety of movie formats.  Using these options
-requires the following settings:
-
-.. tabs::
-
-   .. tab:: CMake build
-
-      .. code-block:: bash
-
-         -D WITH_JPEG=value    # yes or no
-                               # default = yes if CMake finds JPEG development files, else no
-         -D WITH_PNG=value     # yes or no
-                               # default = yes if CMake finds PNG and ZLIB development files,
-                               # else no
-         -D WITH_FFMPEG=value  # yes or no
-                               # default = yes if CMake can find ffmpeg, else no
-
-      Usually these settings are all that is needed.  If CMake cannot
-      find the graphics header, library, executable files, you can set
-      these variables:
-
-      .. code-block:: bash
-
-         -D JPEG_INCLUDE_DIR=path    # path to jpeglib.h header file
-         -D JPEG_LIBRARY=path        # path to libjpeg.a (.so) file
-         -D PNG_INCLUDE_DIR=path     # path to png.h header file
-         -D PNG_LIBRARY=path         # path to libpng.a (.so) file
-         -D ZLIB_INCLUDE_DIR=path    # path to zlib.h header file
-         -D ZLIB_LIBRARY=path        # path to libz.a (.so) file
-         -D FFMPEG_EXECUTABLE=path   # path to ffmpeg executable
-
-   .. tab:: Traditional make
-
-      .. code-block:: make
-
-         LMP_INC = -DLAMMPS_JPEG -DLAMMPS_PNG -DLAMMPS_FFMPEG  <other LMP_INC settings>
-
-         JPG_INC = -I/usr/local/include   # path to jpeglib.h, png.h, zlib.h headers
-                                          # if make cannot find them
-         JPG_PATH = -L/usr/lib            # paths to libjpeg.a, libpng.a, libz.a (.so)
-                                          # files if make cannot find them
-         JPG_LIB = -ljpeg -lpng -lz       # library names
-
-      As with CMake, you do not need to set ``JPG_INC`` or ``JPG_PATH``,
-      if make can find the graphics header and library files in their
-      default system locations.  You must specify ``JPG_LIB`` with a
-      list of graphics libraries to include in the link.  You must make
-      certain that the ffmpeg executable (or ffmpeg.exe on Windows) is
-      in a directory where LAMMPS can find it at runtime; that is
-      usually a directory list in your ``PATH`` environment variable.
-
-Using ``ffmpeg`` to output movie files requires that your machine
-supports the "popen" function in the standard runtime library.
-
-.. note::
-
-   On some clusters with high-speed networks, using the fork()
-   library call (required by popen()) can interfere with the fast
-   communication library and lead to simulations using ffmpeg to hang or
-   crash.
-
-----------
-
 .. _gzip:
 
 Read or write compressed files
 -----------------------------------------
 
-If this option is enabled, large files can be read or written with
-compression by ``gzip`` or similar tools by several LAMMPS commands,
-including :doc:`read_data <read_data>`, :doc:`rerun <rerun>`, and
-:doc:`dump <dump>`.  Supported compression tools and algorithms are currently
-``gzip``, ``bzip2``, ``zstd``, ``xz``, ``lz4``, and ``lzma`` (via xz).
+.. versionchanged:: 11Feb2026
 
-.. tabs::
+   Added support for ``brotli`` and ``7-zip``
 
-   .. tab:: CMake build
+.. versionchanged:: TBD
 
-      .. code-block:: bash
+Support for compressed files no longer needs to be enabled at compile
+time; the CMake option ``WITH_GZIP`` and the define ``-DLAMMPS_GZIP``
+were removed.
 
-         -D WITH_GZIP=value  # yes or no
-                             # default is yes if CMake can find the gzip program
+Large files can be read or written with compression by ``gzip`` or
+similar tools by several LAMMPS commands, including :doc:`read_data
+<read_data>`, :doc:`write_data <write_data>`, :doc:`rerun <rerun>`,
+:doc:`dump <dump>`, and :doc:`write_dump <write_dump>`.  Supported
+compression tools and algorithms are currently ``gzip``, ``bzip2``,
+``zstd``, ``xz``, ``lz4``, ``lzma`` (via xz), ``brotli``, and ``7-zip
+(via 7z)``.  LAMMPS checks at runtime, which compression commands are
+available and adjusts the check for supported suffixes accordingly.  The
+list of available compression formats and suffixes is shown when running
+LAMMPS with the :doc:`-help or -h command_line flag <Run_options>`.
 
-   .. tab:: Traditional make
-
-      .. code-block:: make
-
-         LMP_INC = -DLAMMPS_GZIP   <other LMP_INC settings>
-
-This option requires that your operating system fully supports the
+This feature requires that your operating system fully supports the
 "popen()" function in the standard runtime library and that a ``gzip``
 or other executable can be found by LAMMPS in the standard search path
 during a run.
@@ -513,7 +442,7 @@ LAMMPS is compiled accordingly which needs the following settings:
 
       .. code-block:: bash
 
-         -D WITH_CURL=value      # yes or no
+         -D WITH_CURL=value      # on or off
                                  # default = yes if CMake finds CURL development files, else no
 
       Usually these settings are all that is needed.  If CMake cannot
@@ -619,7 +548,7 @@ those systems:
 
       .. code-block:: bash
 
-         -D LAMMPS_LONGLONG_TO_LONG=value     # yes or no (default)
+         -D LAMMPS_LONGLONG_TO_LONG=value     # on or off (default)
 
    .. tab:: Traditional make
 

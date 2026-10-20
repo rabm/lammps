@@ -31,6 +31,8 @@ FixStyle(shardlow/kk/host,FixShardlowKokkos<LMPHostType>);
 #endif
 #include "pair_dpd_fdt_energy_kokkos.h"
 
+#include <cfloat>
+
 namespace LAMMPS_NS {
 
 template<bool STACKPARAMS>
@@ -47,34 +49,38 @@ class FixShardlowKokkos : public FixShardlow {
   NeighListKokkos<DeviceType> *k_list; // The SSA specific neighbor list
 
   FixShardlowKokkos(class LAMMPS *, int, char **);
-  ~FixShardlowKokkos();
-  int setmask();
-  virtual void init();
-  virtual void init_list(int, class NeighList *);
-  virtual void initial_integrate(int);
-  void setup_pre_neighbor();
-  void pre_neighbor();
+  ~FixShardlowKokkos() override;
+  int setmask() override;
+  void init() override;
+  void init_list(int, class NeighList *) override;
+  void initial_integrate(int) override;
+  void setup_pre_neighbor() override;
+  void pre_neighbor() override;
 
-  double memory_usage();
+  double memory_usage() override;
 
-  int pack_reverse_comm(int, int, double *);
-  void unpack_reverse_comm(int, int *, double *);
-  int pack_forward_comm(int , int *, double *, int, int *);
-  void unpack_forward_comm(int , int , double *);
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
+  int pack_forward_comm(int , int *, double *, int, int *) override;
+  void unpack_forward_comm(int , int , double *) override;
 
   struct params_ssa {
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     params_ssa() {cutinv=FLT_MAX;halfsigma=0;kappa=0;alpha=0;};
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     params_ssa(int /*i*/) {cutinv=FLT_MAX;halfsigma=0;kappa=0;alpha=0;};
     KK_FLOAT cutinv,halfsigma,kappa,alpha;
   };
 
   template<bool STACKPARAMS>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShardlowSSAUpdateDPDE<STACKPARAMS>, const int&) const;
 
   template<bool STACKPARAMS>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShardlowSSAUpdateDPDEGhost<STACKPARAMS>, const int&) const;
 
@@ -139,10 +145,12 @@ class FixShardlowKokkos : public FixShardlow {
 
 #ifdef ENABLE_KOKKOS_DPD_CONSTANT_TEMPERATURE
   template<bool STACKPARAMS>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ssa_update_dpd(int, int, int) const;  // Constant Temperature
 #endif
   template<bool STACKPARAMS>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ssa_update_dpde(int, int, int) const; // Constant Energy
 

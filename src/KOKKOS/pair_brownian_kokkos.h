@@ -27,7 +27,11 @@ PairStyle(brownian/kk/host,PairBrownianKokkos<LMPHostType>);
 #include "pair_kokkos.h"
 #include "kokkos_type.h"
 #include "kokkos_base.h"
+#ifdef LMP_KOKKOS_DEBUG_RNG
+#include "rand_pool_wrap_kokkos.h"
+#else
 #include "Kokkos_Random.hpp"
+#endif
 #include "comm_kokkos.h"
 
 namespace LAMMPS_NS {
@@ -51,13 +55,16 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
   double init_one(int, int) override;
 
   template<int NEIGHFLAG, int NEWTON_PAIR, int VFLAG, int FLAGFLD>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairBrownianCompute<NEIGHFLAG,NEWTON_PAIR,VFLAG,FLAGFLD>, const int, EV_FLOAT &ev) const;
   template<int NEIGHFLAG, int NEWTON_PAIR, int VFLAG, int FLAGFLD>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairBrownianCompute<NEIGHFLAG,NEWTON_PAIR,VFLAG,FLAGFLD>, const int) const;
 
   template<int NEIGHFLAG, int NEWTON_PAIR>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ev_tally_xyz(EV_FLOAT &ev, int i, int j,
                     KK_FLOAT fx, KK_FLOAT fy, KK_FLOAT fz,
@@ -94,6 +101,7 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
 
   void allocate() override;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void set_3_orthogonal_vectors(const KK_FLOAT p1[3], KK_FLOAT * const p2, KK_FLOAT * const p3) const {
     KK_FLOAT norm;
@@ -101,7 +109,7 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
 
     // find the index of maximum magnitude and store it in iz
 
-    if (fabs(p1[0]) > fabs(p1[1])) {
+    if (Kokkos::fabs(p1[0]) > Kokkos::fabs(p1[1])) {
       iz = 0;
       ix = 1;
       iy = 2;
@@ -112,13 +120,13 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
     }
 
     if (iz == 0) {
-      if (fabs(p1[0]) < fabs(p1[2])) {
+      if (Kokkos::fabs(p1[0]) < Kokkos::fabs(p1[2])) {
         iz = 2;
         ix = 0;
         iy = 1;
       }
     } else {
-      if (fabs(p1[1]) < fabs(p1[2])) {
+      if (Kokkos::fabs(p1[1]) < Kokkos::fabs(p1[2])) {
         iz = 2;
         ix = 0;
         iy = 1;
@@ -133,7 +141,7 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
 
     // normalize p2
 
-    norm = sqrt(p2[0] * p2[0] + p2[1] * p2[1] + p2[2] * p2[2]);
+    norm = Kokkos::sqrt(p2[0] * p2[0] + p2[1] * p2[1] + p2[2] * p2[2]);
 
     p2[0] = p2[0] / norm;
     p2[1] = p2[1] / norm;
@@ -148,8 +156,13 @@ class PairBrownianKokkos : public PairBrownian, public KokkosBase {
 
   friend void pair_virial_fdotr_compute<PairBrownianKokkos>(PairBrownianKokkos*);
 
+#ifdef LMP_KOKKOS_DEBUG_RNG
+  RandPoolWrap rand_pool;
+  typedef RandWrap rand_type;
+#else
   Kokkos::Random_XorShift64_Pool<DeviceType> rand_pool;
   typedef typename Kokkos::Random_XorShift64_Pool<DeviceType>::generator_type rand_type;
+#endif
 };
 
 }

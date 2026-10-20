@@ -18,14 +18,18 @@
 #include "platform.h"
 
 #include "fmt/format.h"
+#include "safe_pointers.h"
 #include "text_file_reader.h"
 #include "utils.h"
 
 #include <cerrno>
+#include <chrono>
+#include <cstring>
 #include <deque>
 #include <exception>
 #include <filesystem>
 #include <mpi.h>
+#include <thread>
 #include <utility>
 
 ////////////////////////////////////////////////////////////////////////
@@ -53,11 +57,13 @@
 
 #include <dirent.h>
 #include <dlfcn.h>
+#include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -74,16 +80,12 @@
 
 ////////////////////////////////////////////////////////////////////////
 
-#include <chrono>
-#include <cstring>
-#include <thread>
-
 /* ------------------------------------------------------------------ */
 namespace {
 /// Struct for listing on-the-fly compression/decompression commands
 struct compress_info {
   /// identifier for the different compression algorithms
-  enum styles { NONE, GZIP, BZIP2, ZSTD, XZ, LZMA, LZ4 };
+  enum styles { NONE, GZIP, BZIP2, ZSTD, XZ, LZMA, LZ4, BROTLI, SEVENZIP };
   const std::string extension;          ///< filename extension for the current algorithm
   const std::string command;            ///< command to perform compression or decompression
   const std::string compressflags;      ///< flags to append to compress from stdin to stdout
@@ -100,6 +102,8 @@ const std::vector<compress_info> compress_styles = {
     {"xz",   "xz",    " > ",    " -cdf ",  compress_info::XZ},
     {"lzma", "xz", " --format=lzma > ", " --format=lzma -cdf ", compress_info::LZMA},
     {"lz4",  "lz4",   " > ",    " -cdf ",  compress_info::LZ4},
+    {"br",   "brotli", " > ",   " -cdf ",  compress_info::BROTLI},
+    {"7z",   "7z", " a -bb0 -si ",   " x -so ",  compress_info::SEVENZIP},
 };
 // clang-format on
 
@@ -122,7 +126,10 @@ const compress_info &find_compress_type(const std::string &file)
 // set reference time stamp during executable/library init.
 // should provide better resolution than using epoch, if the system clock supports it.
 auto initial_time = std::chrono::steady_clock::now();
-}
+
+// same for file time stamps where we use the current working directory as reference
+auto initial_file_time = std::filesystem::last_write_time(".");
+}    // namespace
 using namespace LAMMPS_NS;
 
 // get CPU time
@@ -260,6 +267,8 @@ std::string platform::os_info()
     buf = "Windows 11 25H2";
   } else if (build == "28000") {
     buf = "Windows 11 26H1";
+  } else if (build == "26300") {
+    buf = "Windows 11 26H2";
   } else {
     buf = "Windows Build " + build;
   }
@@ -515,7 +524,7 @@ std::string platform::compress_info()
   bool none_found = true;
   for (const auto &cmpi : compress_styles) {
     if (cmpi.style == ::compress_info::NONE) continue;
-    if (find_exe_path(cmpi.command).size()) {
+    if (!find_exe_path(cmpi.command).empty()) {
       none_found = false;
       buf += fmt::format("Extension: .{:6} Command: {}\n", cmpi.extension, cmpi.command);
     }
@@ -523,13 +532,37 @@ std::string platform::compress_info()
   if (none_found) buf += "None\n";
   return buf;
 }
+
+/* ----------------------------------------------------------------------
+   check if process has superuser (root) or administrator privileges
+------------------------------------------------------------------------- */
+
+bool platform::is_superuser()
+{
+#if defined(_WIN32)
+  // a process started with "Run as administrator" has an elevated access token
+  bool elevated = false;
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    TOKEN_ELEVATION elevation;
+    DWORD size = sizeof(elevation);
+    if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size))
+      elevated = (elevation.TokenIsElevated != 0);
+    CloseHandle(token);
+  }
+  return elevated;
+#else
+  return (geteuid() == 0);
+#endif
+}
+
 /* ----------------------------------------------------------------------
    set environment variable
 ------------------------------------------------------------------------- */
 
 int platform::putenv(const std::string &vardef)
 {
-  if (vardef.size() == 0) return -1;
+  if (vardef.empty()) return -1;
 
   auto found = vardef.find_first_of('=');
 #ifdef _WIN32
@@ -553,7 +586,7 @@ int platform::putenv(const std::string &vardef)
 
 int platform::unsetenv(const std::string &variable)
 {
-  if (variable.size() == 0) return -1;
+  if (variable.empty()) return -1;
 #ifdef _WIN32
   // emulate POSIX semantics by returning -1 on trying to unset non-existing variable
   const char *ptr = getenv(variable.c_str());
@@ -596,13 +629,11 @@ std::vector<std::string> platform::list_pathenv(const std::string &var)
 
 std::string platform::find_exe_path(const std::string &cmd)
 {
-  if (cmd.size() == 0) return "";
+  if (cmd.empty()) return "";
   auto pathdirs = list_pathenv("PATH");
 #ifdef _WIN32
   // windows always looks in "." and does it first
   pathdirs.insert(pathdirs.begin(), ".");
-#else
-  struct stat info;
 #endif
   for (const auto &dir : pathdirs) {
     std::string exe = path_join(dir, cmd);
@@ -610,12 +641,10 @@ std::string platform::find_exe_path(const std::string &cmd)
     const char *extensions[] = {".exe", ".com", ".bat", nullptr};
     for (auto ext = extensions; *ext != nullptr; ++ext) {
       auto exe_path = exe + *ext;
-      if (file_is_readable(exe_path)) return exe_path;
+      if (file_is_executable(exe_path)) return exe_path;
     }
 #else
-    memset(&info, 0, sizeof(info));
-    if (stat(exe.c_str(), &info) != 0) continue;
-    if ((info.st_mode & (S_IXOTH | S_IXGRP | S_IXUSR)) != 0) return exe;
+    if (file_is_executable(exe)) return exe;
 #endif
   }
   return "";
@@ -750,6 +779,26 @@ bool platform::is_console(FILE *fp)
   return (_isatty(_fileno(fp)) == 1);
 #else
   return (isatty(fileno(fp)) == 1);
+#endif
+}
+
+/* ----------------------------------------------------------------------
+   query the width (number of columns) of the terminal, if any
+------------------------------------------------------------------------- */
+
+int platform::terminal_width(FILE *fp)
+{
+  if (!is_console(fp)) return 0;
+#if defined(_WIN32)
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  HANDLE handle = (HANDLE) _get_osfhandle(_fileno(fp));
+  if ((handle != INVALID_HANDLE_VALUE) && GetConsoleScreenBufferInfo(handle, &csbi))
+    return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+  return 0;
+#else
+  struct winsize ws;
+  if ((ioctl(fileno(fp), TIOCGWINSZ, &ws) == 0) && (ws.ws_col > 0)) return ws.ws_col;
+  return 0;
 #endif
 }
 
@@ -930,9 +979,10 @@ std::string platform::path_dirname(const std::string &path)
 #if defined(WIN32)
   if ((dir == "") || utils::strmatch(dir, "^[a-zA-Z]:$")) return {"."};
 #else
-  if (dir == "") return {"."};
+  if (dir.empty()) return {"."};
 #endif
-  else return dir;
+  else
+    return dir;
 }
 
 /* ----------------------------------------------------------------------
@@ -968,11 +1018,8 @@ std::string platform::path_join(const std::string &a, const std::string &b)
 
 bool platform::file_is_readable(const std::string &path)
 {
-  FILE *fp = fopen(path.c_str(), "r");
-  if (fp) {
-    fclose(fp);
-    return true;
-  }
+  SafeFilePtr fp = fopen(path.c_str(), "r");
+  if (fp) return true;
   return false;
 }
 
@@ -984,21 +1031,66 @@ bool platform::file_is_writable(const std::string &path)
 {
   // if the file exists, try to append and don't delete
 
+  SafeFilePtr fp;
   if (file_is_readable(path)) {
-    FILE *fp = fopen(path.c_str(), "a");
-    if (fp) {
-      fclose(fp);
-      return true;
-    }
+    fp = fopen(path.c_str(), "a");
+    if (fp) return true;
   } else {
-    FILE *fp = fopen(path.c_str(), "w");
+    fp = fopen(path.c_str(), "w");
     if (fp) {
-      fclose(fp);
+      fp = nullptr;
       unlink(path);
       return true;
     }
   }
   return false;
+}
+
+/* ----------------------------------------------------------------------
+   check if path is a regular file that can be executed
+------------------------------------------------------------------------- */
+
+bool platform::file_is_executable(const std::string &path)
+{
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) return false;
+#if defined(_WIN32)
+  // Windows has no execute permission, so check for known file name extensions
+  const auto ext = utils::lowercase(std::filesystem::path(path).extension().string());
+  return (ext == ".exe") || (ext == ".com") || (ext == ".bat") || (ext == ".cmd");
+#else
+  return access(path.c_str(), X_OK) == 0;
+#endif
+}
+
+/* ----------------------------------------------------------------------
+   read first line of file to see if it is a redirect file of a git checkout
+   on a file system without symlinks
+------------------------------------------------------------------------- */
+
+std::string platform::file_redirect(const std::string &path)
+{
+#if defined(_WIN32)
+  // read the first (and only) line and see if it is a valid path
+  SafeFilePtr fp = fopen(path.c_str(), "r");
+  if (fp) {
+    char buffer[1024];
+    if (fgets(buffer, 1024, fp)) {
+      auto target = utils::trim(buffer);
+      if (platform::file_is_readable(target)) return target;
+    }
+  }
+#endif
+  return path;
+}
+
+/* ----------------------------------------------------------------------
+   get file modification time since initial time stamp
+------------------------------------------------------------------------- */
+double platform::file_write_time(const std::string &path)
+{
+  auto timediff = std::filesystem::last_write_time(path) - initial_file_time;
+  return std::chrono::duration<double>(timediff).count();
 }
 
 /* ----------------------------------------------------------------------
@@ -1013,7 +1105,7 @@ double platform::disk_free(const std::string &path)
     defined(__OpenBSD__) || defined(__NetBSD__)
   struct statvfs fs;
 
-  if (path.size()) {
+  if (!path.empty()) {
     int rv = statvfs(path.c_str(), &fs);
     if (rv == 0) {
 #if defined(__linux__)
@@ -1049,14 +1141,24 @@ FILE *platform::compressed_read(const std::string &file)
 {
   FILE *fp = nullptr;
 
-#if defined(LAMMPS_GZIP)
   const auto &compress = find_compress_type(file);
   if (compress.style == ::compress_info::NONE) return nullptr;
 
-  if (find_exe_path(compress.command).size())
+  // make certain the file exists and is readable
+
+  std::error_code ec;
+  if (!std::filesystem::exists(file, ec)) {
+    errno = ENOENT;
+    return nullptr;
+  }
+  if (!file_is_readable(file)) {
+    errno = EPERM;
+    return nullptr;
+  }
+
+  if (!find_exe_path(compress.command).empty())
     // put quotes around file name so that they may contain blanks
     fp = popen((compress.command + compress.uncompressflags + "\"" + file + "\""), "r");
-#endif
   return fp;
 }
 
@@ -1068,16 +1170,35 @@ FILE *platform::compressed_write(const std::string &file)
 {
   FILE *fp = nullptr;
 
-#if defined(LAMMPS_GZIP)
   const auto &compress = find_compress_type(file);
   if (compress.style == ::compress_info::NONE) return nullptr;
   if (!file_is_writable(file)) return nullptr;
 
-  if (find_exe_path(compress.command).size())
-    // put quotes around file name so that they may contain blanks
+  if (!find_exe_path(compress.command).empty()) {
+    // explicitly delete existing files for compatibility with commands that cannot write to stdout
+    // and thus we don't use redirection to a file, but provide the file name as argument directly.
+    // this can result in failure or inclusion of the same filename multiple times with out deleting
+    if (file_is_readable(file)) unlink(file);
+    // put quotes around file name for shell command so that they may contain blanks
     fp = popen((compress.command + compress.compressflags + "\"" + file + "\""), "w");
-#endif
+  }
   return fp;
+}
+
+/* ----------------------------------------------------------------------
+   explain why opening a pipe to a compressed file failed
+------------------------------------------------------------------------- */
+
+std::string platform::compressed_open_error(const std::string &file)
+{
+  // get system error first, since searching for the program may change errno
+  auto syserror = utils::getsyserror();
+  const auto &compress = find_compress_type(file);
+  if ((compress.style != ::compress_info::NONE) && find_exe_path(compress.command).empty())
+    return fmt::format("Program '{}' required for '.{}' files was not found in any folder listed "
+                       "in the PATH environment variable",
+                       compress.command, compress.extension);
+  return syserror;
 }
 
 /* ---------------------------------------------------------------------- */

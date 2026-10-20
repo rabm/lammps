@@ -104,6 +104,12 @@ void DihedralCharmmKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     //}
   }
 
+  // sync and claim here too: the MC fixes call this outside run_style verlet/kk
+
+  atomKK->sync(execution_space,datamask_read);
+  if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
+  else atomKK->modified(execution_space,F_MASK);
+
   x = atomKK->k_x.view<DeviceType>();
   f = atomKK->k_f.view<DeviceType>();
   q = atomKK->k_q.view<DeviceType>();
@@ -204,6 +210,7 @@ void DihedralCharmmKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void DihedralCharmmKokkos<DeviceType>::operator()(TagDihedralCharmmCompute<NEWTON_BOND,EVFLAG>, const int &n, EVM_FLOAT& evm) const {
 
@@ -248,14 +255,14 @@ void DihedralCharmmKokkos<DeviceType>::operator()(TagDihedralCharmmCompute<NEWTO
   const KK_FLOAT rasq = ax*ax + ay*ay + az*az;
   const KK_FLOAT rbsq = bx*bx + by*by + bz*bz;
   const KK_FLOAT rgsq = vb2xm*vb2xm + vb2ym*vb2ym + vb2zm*vb2zm;
-  const KK_FLOAT rg = sqrt(rgsq);
+  const KK_FLOAT rg = Kokkos::sqrt(rgsq);
 
   KK_FLOAT rginv,ra2inv,rb2inv;
   rginv = ra2inv = rb2inv = 0;
   if (rg > 0) rginv = static_cast<KK_FLOAT>(1.0)/rg;
   if (rasq > 0) ra2inv = static_cast<KK_FLOAT>(1.0)/rasq;
   if (rbsq > 0) rb2inv = static_cast<KK_FLOAT>(1.0)/rbsq;
-  const KK_FLOAT rabinv = sqrt(ra2inv*rb2inv);
+  const KK_FLOAT rabinv = Kokkos::sqrt(ra2inv*rb2inv);
 
   KK_FLOAT c = (ax*bx + ay*by + az*bz)*rabinv;
   KK_FLOAT s = rg*rabinv*(ax*vb3x + ay*vb3y + az*vb3z);
@@ -378,7 +385,7 @@ void DihedralCharmmKokkos<DeviceType>::operator()(TagDihedralCharmmCompute<NEWTO
 
     KK_FLOAT forcecoul;
     if (implicit) forcecoul = qqrd2e * q[i1]*q[i4]*r2inv;
-    else forcecoul = qqrd2e * q[i1]*q[i4]*sqrt(r2inv);
+    else forcecoul = qqrd2e * q[i1]*q[i4]*Kokkos::sqrt(r2inv);
     const KK_FLOAT forcelj = r6inv * (d_lj14_1(itype,jtype)*r6inv - d_lj14_2(itype,jtype));
     const KK_FLOAT fpair = d_weight[type] * (forcelj+forcecoul)*r2inv;
 
@@ -407,6 +414,7 @@ void DihedralCharmmKokkos<DeviceType>::operator()(TagDihedralCharmmCompute<NEWTO
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void DihedralCharmmKokkos<DeviceType>::operator()(TagDihedralCharmmCompute<NEWTON_BOND,EVFLAG>, const int &n) const {
   EVM_FLOAT evm;
@@ -419,6 +427,23 @@ template<class DeviceType>
 void DihedralCharmmKokkos<DeviceType>::allocate()
 {
   DihedralCharmm::allocate();
+
+  int nd = atom->ndihedraltypes;
+  k_k = DAT::tdual_kkfloat_1d("DihedralCharmm::k",nd+1);
+  k_multiplicity = DAT::tdual_int_1d("DihedralCharmm::multiplicity",nd+1);
+  k_shift = DAT::tdual_int_1d("DihedralCharmm::shift",nd+1);
+  k_cos_shift = DAT::tdual_kkfloat_1d("DihedralCharmm::cos_shift",nd+1);
+  k_sin_shift = DAT::tdual_kkfloat_1d("DihedralCharmm::sin_shift",nd+1);
+  k_weight = DAT::tdual_kkfloat_1d("DihedralCharmm::weight",nd+1);
+
+  d_k = k_k.template view<DeviceType>();
+  d_multiplicity = k_multiplicity.template view<DeviceType>();
+  d_shift = k_shift.template view<DeviceType>();
+  d_cos_shift = k_cos_shift.template view<DeviceType>();
+  d_sin_shift = k_sin_shift.template view<DeviceType>();
+  d_weight = k_weight.template view<DeviceType>();
+
+
 }
 
 /* ----------------------------------------------------------------------
@@ -430,23 +455,10 @@ void DihedralCharmmKokkos<DeviceType>::coeff(int narg, char **arg)
 {
   DihedralCharmm::coeff(narg, arg);
 
-  int nd = atom->ndihedraltypes;
-  DAT::tdual_kkfloat_1d k_k("DihedralCharmm::k",nd+1);
-  DAT::tdual_int_1d k_multiplicity("DihedralCharmm::multiplicity",nd+1);
-  DAT::tdual_int_1d k_shift("DihedralCharmm::shift",nd+1);
-  DAT::tdual_kkfloat_1d k_cos_shift("DihedralCharmm::cos_shift",nd+1);
-  DAT::tdual_kkfloat_1d k_sin_shift("DihedralCharmm::sin_shift",nd+1);
-  DAT::tdual_kkfloat_1d k_weight("DihedralCharmm::weight",nd+1);
+  int ilo,ihi;
+  utils::bounds(FLERR,arg[0],1,atom->ndihedraltypes,ilo,ihi,error);
 
-  d_k = k_k.template view<DeviceType>();
-  d_multiplicity = k_multiplicity.template view<DeviceType>();
-  d_shift = k_shift.template view<DeviceType>();
-  d_cos_shift = k_cos_shift.template view<DeviceType>();
-  d_sin_shift = k_sin_shift.template view<DeviceType>();
-  d_weight = k_weight.template view<DeviceType>();
-
-  int n = atom->ndihedraltypes;
-  for (int i = 1; i <= n; i++) {
+  for (int i = ilo; i <= ihi; i++) {
     k_k.view_host()[i] = static_cast<KK_FLOAT>(k[i]);
     k_multiplicity.view_host()[i] = multiplicity[i];
     k_shift.view_host()[i] = shift[i];
@@ -524,12 +536,12 @@ void DihedralCharmmKokkos<DeviceType>::read_restart(FILE *fp)
   DihedralCharmm::read_restart(fp);
 
   int nd = atom->ndihedraltypes;
-  DAT::tdual_kkfloat_1d k_k("DihedralCharmm::k",nd+1);
-  DAT::tdual_int_1d k_multiplicity("DihedralCharmm::multiplicity",nd+1);
-  DAT::tdual_int_1d k_shift("DihedralCharmm::shift",nd+1);
-  DAT::tdual_kkfloat_1d k_cos_shift("DihedralCharmm::cos_shift",nd+1);
-  DAT::tdual_kkfloat_1d k_sin_shift("DihedralCharmm::sin_shift",nd+1);
-  DAT::tdual_kkfloat_1d k_weight("DihedralCharmm::weight",nd+1);
+  k_k = DAT::tdual_kkfloat_1d("DihedralCharmm::k",nd+1);
+  k_multiplicity = DAT::tdual_int_1d("DihedralCharmm::multiplicity",nd+1);
+  k_shift = DAT::tdual_int_1d("DihedralCharmm::shift",nd+1);
+  k_cos_shift = DAT::tdual_kkfloat_1d("DihedralCharmm::cos_shift",nd+1);
+  k_sin_shift = DAT::tdual_kkfloat_1d("DihedralCharmm::sin_shift",nd+1);
+  k_weight = DAT::tdual_kkfloat_1d("DihedralCharmm::weight",nd+1);
 
   d_k = k_k.template view<DeviceType>();
   d_multiplicity = k_multiplicity.template view<DeviceType>();
@@ -572,6 +584,7 @@ void DihedralCharmmKokkos<DeviceType>::read_restart(FILE *fp)
 
 template<class DeviceType>
 //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void DihedralCharmmKokkos<DeviceType>::ev_tally(EVM_FLOAT &evm, const int i1, const int i2, const int i3, const int i4,
                         KK_FLOAT &edihedral, KK_FLOAT *f1, KK_FLOAT *f3, KK_FLOAT *f4,
@@ -659,6 +672,7 @@ void DihedralCharmmKokkos<DeviceType>::ev_tally(EVM_FLOAT &evm, const int i1, co
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void DihedralCharmmKokkos<DeviceType>::ev_tally(EVM_FLOAT &evm, const int i, const int j,
       const KK_FLOAT &evdwl, const KK_FLOAT &ecoul, const KK_FLOAT &fpair, const KK_FLOAT &delx,

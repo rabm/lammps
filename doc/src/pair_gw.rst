@@ -1,11 +1,17 @@
 .. index:: pair_style gw
+.. index:: pair_style gw/omp
 .. index:: pair_style gw/zbl
+.. index:: pair_style gw/zbl/omp
 
 pair_style gw command
 =====================
 
+Accelerator Variants: *gw/omp*
+
 pair_style gw/zbl command
 =========================
+
+Accelerator Variants: *gw/zbl/omp*
 
 Syntax
 """"""
@@ -55,8 +61,9 @@ See the :doc:`pair_coeff <pair_coeff>` page for alternate ways
 to specify the path for the potential file.
 
 As an example, imagine a file SiC.gw has Gao-Weber values for Si and C.
-If your LAMMPS simulation has 4 atoms types and you want the first 3 to
-be Si, and the fourth to be C, you would use the following pair_coeff command:
+If your LAMMPS simulation has 4 atom types and you want the first 3 to
+be Si, and the fourth to be C, you would use the following pair_coeff
+command:
 
 .. code-block:: LAMMPS
 
@@ -77,6 +84,11 @@ have a ".gz.zbl" suffix. The structure of the potential files
 is similar to other many-body potentials supported by LAMMPS.
 You have to refer to the comments in the files and the literature
 to learn more details.
+
+
+----------
+
+.. include:: accel_styles.rst
 
 ----------
 

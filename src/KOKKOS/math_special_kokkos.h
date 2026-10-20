@@ -18,20 +18,9 @@
 #include <cmath>
 #include "kokkos_type.h"
 
-namespace LAMMPS_NS {
 
-namespace MathSpecialKokkos {
 
-  /*! Fast tabulated factorial function
-   *
-   *  This function looks up pre-computed factorial values for arguments of n = 0
-   *  to a maximum of 167, which is the maximal value representable by a double
-   *  precision floating point number.  For other values of n a NaN value is returned.
-   *
-   *  \param   n  argument (valid: 0 <= n <= 167)
-   *  \return  value of n! as double precision number or NaN */
-
-  extern double factorial(const int n);
+namespace LAMMPS_NS::MathSpecialKokkos {
 
   /* optimizer friendly implementation of exp2(x).
    *
@@ -71,6 +60,7 @@ namespace MathSpecialKokkos {
    *  \param   x argument
    *  \return  value of 2^x as double precision number */
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static double exp2_x86(double x)
   {
@@ -123,12 +113,13 @@ namespace MathSpecialKokkos {
    *  \param   x argument
    *  \return  value of e^x as double precision number */
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static double fm_exp(double x)
   {
   #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
       if (x < -1022.0/FM_DOUBLE_LOG2OFE) return 0;
-      if (x > 1023.0/FM_DOUBLE_LOG2OFE) return INFINITY;
+      if (x > 1023.0/FM_DOUBLE_LOG2OFE) return static_cast<double>(INFINITY);
       return exp2_x86(FM_DOUBLE_LOG2OFE * x);
   #else
       return ::exp(x);
@@ -185,6 +176,7 @@ namespace MathSpecialKokkos {
    *  \param   x argument
    *  \return  x*x */
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T square(const T &x) { return x * x; }
 
@@ -193,6 +185,7 @@ namespace MathSpecialKokkos {
    *  \param   x argument
    *  \return  x*x */
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T cube(const T &x) { return x * x * x; }
 
@@ -201,6 +194,7 @@ namespace MathSpecialKokkos {
    *  \param   n argument (integer)
    *  \return  -1 if n is odd, 1.0 if n is even */
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static KK_FLOAT powsign(const int n) { return (n & 1) ? static_cast<KK_FLOAT>(-1.0) : static_cast<KK_FLOAT>(1.0); }
 
@@ -213,6 +207,7 @@ namespace MathSpecialKokkos {
    *  \return  value of x^n */
 
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T powint(const T &x, const int n)
   {
@@ -236,6 +231,7 @@ namespace MathSpecialKokkos {
    *  \return  value of (sin(x)/x)^n */
 
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T powsinxx(const T &x, int n)
   {
@@ -256,6 +252,7 @@ namespace MathSpecialKokkos {
   ------------------------------------------------------------------------- */
 
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static void sub3(const T *v1, const T *v2, T *ans)
   {
@@ -269,13 +266,28 @@ namespace MathSpecialKokkos {
   ------------------------------------------------------------------------- */
 
   template<typename T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T dot3(const T *v1, const T *v2)
   {
     return v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
   }
 
-}    // namespace MathSpecialKokkos
-}    // namespace LAMMPS_NS
+  /* ----------------------------------------------------------------------
+    ans = v1 cross v2
+  ------------------------------------------------------------------------- */
+
+  template<typename T>
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  static void cross3(const T *v1, const T *v2, T *ans)
+  {
+    ans[0] = v1[1] * v2[2] - v1[2] * v2[1];
+    ans[1] = v1[2] * v2[0] - v1[0] * v2[2];
+    ans[2] = v1[0] * v2[1] - v1[1] * v2[0];
+  }
+
+} // namespace LAMMPS_NS::MathSpecialKokkos
+
 
 #endif

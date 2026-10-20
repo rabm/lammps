@@ -172,7 +172,7 @@ class NPairSSAKokkosExecute
   HAT::t_int_scalar h_new_maxneighs;
 
   const int xperiodic, yperiodic, zperiodic;
-  const int xprd_half, yprd_half, zprd_half;
+  const double xprd_half, yprd_half, zprd_half;
 
   // SSA Work plan data structures
   int ssa_phaseCt;
@@ -234,7 +234,7 @@ class NPairSSAKokkosExecute
         const typename AT::t_int_1d_const & _ex_mol_intra,
         const double *_bboxhi, const double* _bboxlo,
         const int & _xperiodic, const int & _yperiodic, const int & _zperiodic,
-        const int & _xprd_half, const int & _yprd_half, const int & _zprd_half):
+        const double & _xprd_half, const double & _yprd_half, const double & _zprd_half):
     neigh_list(_neigh_list), cutneighsq(_cutneighsq),
     exclude(_exclude),nex_type(_nex_type),
     ex1_type(_ex1_type),ex2_type(_ex2_type),ex_type(_ex_type),
@@ -292,6 +292,7 @@ class NPairSSAKokkosExecute
   KOKKOS_FUNCTION
   void build_ghosts_onePhase(int workPhase) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2bin(const double & x,const double & y,const double & z, int* i) const
   {
@@ -328,12 +329,15 @@ class NPairSSAKokkosExecute
     return (iz-mbinzlo)*mbiny*mbinx + (iy-mbinylo)*mbinx + (ix-mbinxlo);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int exclusion(const int &i,const int &j, const int &itype,const int &jtype) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int find_special(const int &i, const int &j) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int minimum_image_check(double dx, double dy, double dz) const {
     if (xperiodic && fabs(dx) > xprd_half) return 1;

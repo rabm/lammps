@@ -28,7 +28,10 @@ constexpr int FULL = 1;
 constexpr int HALFTHREAD = 2;
 constexpr int HALF = 4;
 
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL) || defined(KOKKOS_ENABLE_OPENMPTARGET)
+// LMP_KOKKOS_GPU may also be set as a global compile definition by the build
+// system (see cmake/Modules/Packages/KOKKOS.cmake) so that non-KOKKOS sources,
+// which do not include this header, can detect a GPU-enabled Kokkos build.
+#if !defined(LMP_KOKKOS_GPU) && (defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL) || defined(KOKKOS_ENABLE_OPENMPTARGET))
 #define LMP_KOKKOS_GPU
 #endif
 
@@ -45,8 +48,11 @@ namespace LAMMPS_NS {
   union d_ubuf {
     double d;
     int64_t i;
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION d_ubuf(double arg) : d(arg) {}
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION d_ubuf(int64_t arg) : i(arg) {}
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION d_ubuf(int arg) : i(arg) {}
   };
 }
@@ -59,15 +65,18 @@ namespace Kokkos {
 
   struct lmp_float3 {
     float x,y,z;
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
-    lmp_float3():x(0.0f),y(0.0f),z(0.0f) {}
+    lmp_float3():x(0.0F),y(0.0F),z(0.0F) {}
 
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     void operator += (const lmp_float3& tmp) {
       x+=tmp.x;
       y+=tmp.y;
       z+=tmp.z;
     }
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     void operator = (const lmp_float3& tmp) {
       x=tmp.x;
@@ -78,15 +87,18 @@ namespace Kokkos {
 
   struct lmp_double3 {
     double x,y,z;
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     lmp_double3():x(0.0),y(0.0),z(0.0) {}
 
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     void operator += (const lmp_double3& tmp) {
       x+=tmp.x;
       y+=tmp.y;
       z+=tmp.z;
     }
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     void operator = (const lmp_double3& tmp) {
       x=tmp.x;
@@ -99,27 +111,32 @@ template<class Scalar>
 struct t_scalar3 {
   Scalar x,y,z;
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION
   t_scalar3() {
     x = 0; y = 0; z = 0;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION
   t_scalar3(const t_scalar3& rhs) {
     x = rhs.x; y = rhs.y; z = rhs.z;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION
   t_scalar3(const Scalar& x_, const Scalar& y_, const Scalar& z_ ) {
     x = x_; y = y_; z = z_;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION
   t_scalar3 operator= (const t_scalar3& rhs) {
     x = rhs.x; y = rhs.y; z = rhs.z;
     return *this;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION
   t_scalar3 operator+= (const t_scalar3& rhs) {
     x += rhs.x; y += rhs.y; z += rhs.z;
@@ -128,6 +145,7 @@ struct t_scalar3 {
 };
 
 template<class Scalar>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION
 t_scalar3<Scalar> operator +
   (const t_scalar3<Scalar>& a, const t_scalar3<Scalar>& b) {
@@ -135,6 +153,7 @@ t_scalar3<Scalar> operator +
 }
 
 template<class Scalar>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION
 t_scalar3<Scalar> operator *
   (const t_scalar3<Scalar>& a, const Scalar& b) {
@@ -142,6 +161,7 @@ t_scalar3<Scalar> operator *
 }
 
 template<class Scalar>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION
 t_scalar3<Scalar> operator *
   (const Scalar& b, const t_scalar3<Scalar>& a) {
@@ -170,7 +190,7 @@ typedef LMPDeviceType::array_layout LMPDeviceLayout;
 template<class DeviceType>
 class KKDevice {
  public:
-#if ((defined(KOKKOS_ENABLE_CUDA) && defined(KOKKOS_ENABLE_CUDA_UVM)) || \
+#if ((defined(KOKKOS_ENABLE_CUDA) && defined(KOKKOS_ENABLE_IMPL_CUDA_UNIFIED_MEMORY)) || \
      (defined(KOKKOS_ENABLE_HIP) && defined(KOKKOS_ARCH_AMD_GFX942_APU)))
   typedef Kokkos::Device<DeviceType,LMPDeviceType::memory_space> value;
 #else
@@ -348,6 +368,7 @@ class ScatterViewHelper {};
 template<typename T1, typename T2>
 class ScatterViewHelper<Kokkos::Experimental::ScatterDuplicated,T1,T2> {
 public:
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T1 get(const T1 &dup, const T2 & /*nondup*/) {
     return dup;
@@ -357,6 +378,7 @@ public:
 template<typename T1, typename T2>
 class ScatterViewHelper<Kokkos::Experimental::ScatterNonDuplicated,T1,T2> {
 public:
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static T2 get(const T1 & /*dup*/, const T2 &nondup) {
     return nondup;
@@ -390,6 +412,7 @@ struct s_EV_FLOAT {
   KK_ACC_FLOAT evdwl;
   KK_ACC_FLOAT ecoul;
   KK_ACC_FLOAT v[6];
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_EV_FLOAT() {
     evdwl = 0;
@@ -398,6 +421,7 @@ struct s_EV_FLOAT {
       v[i] = 0;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator+=(const s_EV_FLOAT &rhs) {
     evdwl += rhs.evdwl;
@@ -413,6 +437,7 @@ struct s_EV_FLOAT_REAX {
   KK_ACC_FLOAT ecoul;
   KK_ACC_FLOAT v[6];
   KK_ACC_FLOAT ereax[9];
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_EV_FLOAT_REAX() {
     evdwl = 0;
@@ -423,6 +448,7 @@ struct s_EV_FLOAT_REAX {
       ereax[i] = 0;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator+=(const s_EV_FLOAT_REAX &rhs) {
     evdwl += rhs.evdwl;
@@ -440,6 +466,7 @@ struct s_FEV_FLOAT {
   KK_ACC_FLOAT evdwl;
   KK_ACC_FLOAT ecoul;
   KK_ACC_FLOAT v[6];
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_FEV_FLOAT() {
     evdwl = 0;
@@ -450,6 +477,7 @@ struct s_FEV_FLOAT {
       f[i] = 0;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator+=(const s_FEV_FLOAT &rhs) {
     evdwl += rhs.evdwl;
@@ -465,11 +493,19 @@ typedef struct s_FEV_FLOAT FEV_FLOAT;
 struct alignas(2*sizeof(double)) s_KK_double2 {
   double v[2];
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_KK_double2() {
     v[0] = v[1] = 0.0;
   }
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  s_KK_double2(const double &x, const double &y) {
+    v[0] = x;
+    v[1] = y;
+  }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator+=(const s_KK_double2 &rhs) {
     v[0] += rhs.v[0];
@@ -481,11 +517,20 @@ typedef struct s_KK_double2 KK_double2;
 struct alignas(2*sizeof(KK_FLOAT)) s_KK_FLOAT2 {
   KK_FLOAT v[2];
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   s_KK_FLOAT2() {
     v[0] = v[1] = 0;
   }
 
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  s_KK_FLOAT2(const KK_FLOAT &x, const KK_FLOAT &y) {
+    v[0] = x;
+    v[1] = y;
+  }
+
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator+=(const s_KK_FLOAT2 &rhs) {
     v[0] += rhs.v[0];
@@ -519,10 +564,11 @@ struct BinOp3DLAMMPS {
   }
 
   template <class ViewType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION int bin(ViewType& keys, const int& i) const {
-    int ix = static_cast<int> ((keys(i, 0) - min_[0]) * mul_[0]);
-    int iy = static_cast<int> ((keys(i, 1) - min_[1]) * mul_[1]);
-    int iz = static_cast<int> ((keys(i, 2) - min_[2]) * mul_[2]);
+    int ix = static_cast<int> ((static_cast<double>(keys(i, 0)) - min_[0]) * mul_[0]);
+    int iy = static_cast<int> ((static_cast<double>(keys(i, 1)) - min_[1]) * mul_[1]);
+    int iz = static_cast<int> ((static_cast<double>(keys(i, 2)) - min_[2]) * mul_[2]);
     ix = MAX(ix,0);
     iy = MAX(iy,0);
     iz = MAX(iz,0);
@@ -533,10 +579,12 @@ struct BinOp3DLAMMPS {
     return ibin;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int max_bins() const { return max_bins_[0] * max_bins_[1] * max_bins_[2]; }
 
   template <class ViewType, typename iType1, typename iType2>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION bool operator()(ViewType& keys, iType1& i1,
                                          iType2& i2) const {
     if (keys(i1, 2) > keys(i2, 2))
@@ -559,7 +607,7 @@ typedef int T_INT;
 // LAMMPS types
 
 typedef Kokkos::UnorderedMap<LAMMPS_NS::tagint,int,LMPDeviceType> hash_type;
-typedef hash_type::HostMirror host_hash_type;
+typedef hash_type::host_mirror_type host_hash_type;
 
 struct dual_hash_type {
 
@@ -590,10 +638,12 @@ struct dual_hash_type {
   std::enable_if_t<!(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),host_hash_type&> view() {return h_view;}
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   std::enable_if_t<(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),const hash_type&> const_view() const {return d_view;}
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   std::enable_if_t<!(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),const host_hash_type&> const_view() const {return h_view;}
 
@@ -627,15 +677,26 @@ struct dual_hash_type {
     }
   }
 
+  // release both sides without copying.  needed where the whole hash is about to be
+  // overwritten, so neither side's contents matter and a pending flag on the other
+  // side would otherwise make the next modify_*() abort.  mirrors DualView.
+  void clear_sync_state()
+  {
+    modified_device = false;
+    modified_host = false;
+  }
+
   template<class DeviceType>
   std::enable_if_t<(std::is_same<DeviceType,LMPDeviceType>::value || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),void> sync() {sync_device();}
 
   template<class DeviceType>
   std::enable_if_t<!(std::is_same<DeviceType,LMPDeviceType>::value || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),void> sync() {sync_host();}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   host_hash_type& view_host() { return h_view; }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   hash_type& view_device() { return d_view; }
 
@@ -1029,6 +1090,7 @@ struct TransformView {
   //  instead
 
   template <typename iType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION constexpr std::enable_if_t<std::is_integral_v<iType>,
                                                     size_t>
   extent(const iType& r) const {
@@ -1036,6 +1098,7 @@ struct TransformView {
   }
 
   template <typename iType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION constexpr std::enable_if_t<std::is_integral_v<iType>,
                                                     int>
   extent_int(const iType& r) const {
@@ -1049,9 +1112,11 @@ struct TransformView {
   std::enable_if_t<!(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),typename kk_view::t_host&> view() {return h_viewkk;}
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION std::enable_if_t<(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),const typename kk_view::t_dev&> view() const {return d_view;}
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION std::enable_if_t<!(std::is_same_v<DeviceType,LMPDeviceType> || Kokkos::SpaceAccessibility<LMPDeviceType::memory_space,LMPHostType::memory_space>::accessible),const typename kk_view::t_host&> view() const {return h_viewkk;}
 
   template<class DeviceType>
@@ -1078,7 +1143,12 @@ struct TransformView {
 
   bool need_sync_device()
   {
-    return (k_view.need_sync_device() || modified_legacy_device);
+    // Under SINGLE_DEVICE the DualView edge is inert and modify_host() records
+    // legacy->device staleness on the HostKK<->Host edge (modified_legacy_hostkk),
+    // so it must be consulted here to stay consistent with need_sync_host() and
+    // with sync_device()'s own SINGLE_DEVICE delegation to sync_hostkk().
+    return (k_view.need_sync_device() || modified_legacy_device ||
+            (SINGLE_DEVICE && modified_legacy_hostkk));
   }
 
   bool need_sync_host()
@@ -1096,12 +1166,15 @@ struct TransformView {
     return k_view.need_sync_host();
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   const legacy_view& view_host() const { return h_view; }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   const typename kk_view::t_host& view_hostkk() const { return h_viewkk; }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   const typename kk_view::t_dev& view_device() const { return d_view; }
 
@@ -1127,9 +1200,6 @@ typedef typename tdual_##SUFFIX::t_host_um t_##SUFFIX##_um; \
 typedef typename tdual_##SUFFIX::t_host_const_um t_##SUFFIX##_const_um; \
 typedef typename tdual_##SUFFIX::t_host_const_randomread t_##SUFFIX##_randomread;
 
-using LAMMPS_NS::bigint;
-using LAMMPS_NS::tagint;
-using LAMMPS_NS::imageint;
 
 template <class DeviceType>
 struct ArrayTypes;
@@ -1140,18 +1210,18 @@ struct ArrayTypes<LMPDeviceType> {
 // scalar types
 
 KOKKOS_DEVICE_DUALVIEW(int, Kokkos::LayoutRight, int_scalar)
-KOKKOS_DEVICE_DUALVIEW(bigint, Kokkos::LayoutRight, bigint_scalar)
-KOKKOS_DEVICE_DUALVIEW(tagint, Kokkos::LayoutRight, tagint_scalar)
-KOKKOS_DEVICE_DUALVIEW(imageint, Kokkos::LayoutRight, imageint_scalar)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::bigint, Kokkos::LayoutRight, bigint_scalar)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::tagint, Kokkos::LayoutRight, tagint_scalar)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::imageint, Kokkos::LayoutRight, imageint_scalar)
 KOKKOS_DEVICE_DUALVIEW(double, Kokkos::LayoutRight, double_scalar)
 KOKKOS_DEVICE_DUALVIEW(KK_FLOAT, Kokkos::LayoutRight, kkfloat_scalar)
 
 // 1D view types
 
 KOKKOS_DEVICE_DUALVIEW(int*, Kokkos::LayoutRight, int_1d)
-KOKKOS_DEVICE_DUALVIEW(bigint*, Kokkos::LayoutRight, bigint_1d)
-KOKKOS_DEVICE_DUALVIEW(tagint*, Kokkos::LayoutRight, tagint_1d)
-KOKKOS_DEVICE_DUALVIEW(imageint*, Kokkos::LayoutRight, imageint_1d)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::bigint*, Kokkos::LayoutRight, bigint_1d)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::tagint*, Kokkos::LayoutRight, tagint_1d)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::imageint*, Kokkos::LayoutRight, imageint_1d)
 KOKKOS_DEVICE_DUALVIEW(double*, Kokkos::LayoutRight, double_1d)
 KOKKOS_DEVICE_DUALVIEW(KK_FLOAT*, Kokkos::LayoutRight, kkfloat_1d)
 KOKKOS_DEVICE_DUALVIEW(KK_ACC_FLOAT*, Kokkos::LayoutRight, kkacc_1d)
@@ -1164,7 +1234,7 @@ KOKKOS_DEVICE_DUALVIEW(int**, LMPDeviceLayout, int_2d)
 KOKKOS_DEVICE_DUALVIEW(int**, Kokkos::LayoutRight, int_2d_lr)
 KOKKOS_DEVICE_DUALVIEW(int**, LMPDeviceType::array_layout, int_2d_dl)
 KOKKOS_DEVICE_DUALVIEW(int*[3], LMPDeviceLayout, int_1d_3)
-KOKKOS_DEVICE_DUALVIEW(tagint**, LMPDeviceLayout, tagint_2d)
+KOKKOS_DEVICE_DUALVIEW(LAMMPS_NS::tagint**, LMPDeviceLayout, tagint_2d)
 KOKKOS_DEVICE_DUALVIEW(double**, Kokkos::LayoutRight, double_2d_lr)
 KOKKOS_DEVICE_DUALVIEW(double**, LMPDeviceLayout, double_2d)
 KOKKOS_DEVICE_DUALVIEW(double*[2], Kokkos::LayoutRight, double_1d_2_lr)
@@ -1238,18 +1308,18 @@ struct ArrayTypes<LMPHostType> {
 // scalar types
 
 KOKKOS_HOST_DUALVIEW(int, Kokkos::LayoutRight, int_scalar)
-KOKKOS_HOST_DUALVIEW(bigint, Kokkos::LayoutRight, bigint_scalar)
-KOKKOS_HOST_DUALVIEW(tagint, Kokkos::LayoutRight, tagint_scalar)
-KOKKOS_HOST_DUALVIEW(imageint, Kokkos::LayoutRight, imageint_scalar)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::bigint, Kokkos::LayoutRight, bigint_scalar)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::tagint, Kokkos::LayoutRight, tagint_scalar)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::imageint, Kokkos::LayoutRight, imageint_scalar)
 KOKKOS_HOST_DUALVIEW(double, Kokkos::LayoutRight, double_scalar)
 KOKKOS_HOST_DUALVIEW(KK_FLOAT, Kokkos::LayoutRight, kkfloat_scalar)
 
 // 1D view types
 
 KOKKOS_HOST_DUALVIEW(int*, Kokkos::LayoutRight, int_1d)
-KOKKOS_HOST_DUALVIEW(bigint*, Kokkos::LayoutRight, bigint_1d)
-KOKKOS_HOST_DUALVIEW(tagint*, Kokkos::LayoutRight, tagint_1d)
-KOKKOS_HOST_DUALVIEW(imageint*, Kokkos::LayoutRight, imageint_1d)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::bigint*, Kokkos::LayoutRight, bigint_1d)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::tagint*, Kokkos::LayoutRight, tagint_1d)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::imageint*, Kokkos::LayoutRight, imageint_1d)
 KOKKOS_HOST_DUALVIEW(double*, Kokkos::LayoutRight, double_1d)
 KOKKOS_HOST_DUALVIEW(KK_FLOAT*, Kokkos::LayoutRight, kkfloat_1d)
 KOKKOS_HOST_DUALVIEW(KK_ACC_FLOAT*, Kokkos::LayoutRight, kkacc_1d)
@@ -1260,7 +1330,7 @@ KOKKOS_HOST_DUALVIEW(int**, LMPDeviceLayout, int_2d)
 KOKKOS_HOST_DUALVIEW(int**, Kokkos::LayoutRight, int_2d_lr)
 KOKKOS_HOST_DUALVIEW(int**, LMPDeviceType::array_layout, int_2d_dl)
 KOKKOS_HOST_DUALVIEW(int*[3], LMPDeviceLayout, int_1d_3)
-KOKKOS_HOST_DUALVIEW(tagint**, LMPDeviceLayout, tagint_2d)
+KOKKOS_HOST_DUALVIEW(LAMMPS_NS::tagint**, LMPDeviceLayout, tagint_2d)
 KOKKOS_HOST_DUALVIEW(double**, Kokkos::LayoutRight, double_2d_lr)
 KOKKOS_HOST_DUALVIEW(double**, LMPDeviceLayout, double_2d)
 KOKKOS_HOST_DUALVIEW(double*[2], Kokkos::LayoutRight, double_1d_2_lr)
@@ -1313,6 +1383,29 @@ typedef tdual_neighbors_2d_lr::t_host_const_randomread t_neighbors_2d_lr_randomr
 typedef struct ArrayTypes<LMPDeviceType> DAT;
 typedef struct ArrayTypes<LMPHostType> HAT;
 
+// View-of-views pattern (used by fix property/atom for the per-atom custom
+// iarray/darray arrays, which are "ragged" -- each property has its own column
+// count, so they cannot be packed into a single rectangular view).  Each struct
+// wraps one inner DualView, and an outer DualView<struct*, ...> holds a
+// dynamically-sized list of them that is accessible on the device.  The custom
+// ivector/dvector are width-1 and instead use a single contiguous 2D view.
+
+namespace LAMMPS_NS {
+
+  struct struct_tdual_int_2d {
+    DAT::tdual_int_2d_lr k_view;
+  };
+  typedef Kokkos::DualView<struct_tdual_int_2d*, Kokkos::LayoutRight, LMPDeviceType>
+    tdual_struct_tdual_int_2d_1d;
+
+  struct struct_tdual_double_2d {
+    DAT::tdual_double_2d_lr k_view;
+  };
+  typedef Kokkos::DualView<struct_tdual_double_2d*, Kokkos::LayoutRight, LMPDeviceType>
+    tdual_struct_tdual_double_2d_1d;
+
+}
+
 
 template<class DeviceType, class BufferView, class DualView>
 void buffer_view(BufferView &buf, DualView &view,
@@ -1325,6 +1418,7 @@ template<class DeviceType>
 struct MemsetZeroFunctor {
   typedef DeviceType  execution_space ;
   void* ptr;
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION void operator()(const int i) const {
     ((int*)ptr)[i] = 0;
   }
@@ -1339,8 +1433,10 @@ void memset_kokkos (ViewType &view) {
 }
 
 struct params_lj_coul {
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   params_lj_coul() {cut_ljsq=0;cut_coulsq=0;lj1=0;lj2=0;lj3=0;lj4=0;offset=0;};
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   params_lj_coul(int /*i*/) {cut_ljsq=0;cut_coulsq=0;lj1=0;lj2=0;lj3=0;lj4=0;offset=0;};
   KK_FLOAT cut_ljsq,cut_coulsq,lj1,lj2,lj3,lj4,offset;
@@ -1380,67 +1476,84 @@ struct alignas(2*sizeof(real_type_)) SNAComplex
   using complex = SNAComplex<real_type>;
   real_type re,im;
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex()
    : re(static_cast<real_type>(0.)), im(static_cast<real_type>(0.)) { ; }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex(real_type re)
    : re(re), im(static_cast<real_type>(0.)) { ; }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex(real_type re, real_type im)
    : re(re), im(im) { ; }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex(const SNAComplex& other)
    : re(other.re), im(other.im) { ; }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex& operator=(const SNAComplex& other) {
     re = other.re; im = other.im;
     return *this;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex(SNAComplex&& other)
    : re(other.re), im(other.im) { ; }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex& operator=(SNAComplex&& other) {
     re = other.re; im = other.im;
     return *this;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex operator+(SNAComplex const& other) {
     return SNAComplex(re + other.re, im + other.im);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_FORCEINLINE_FUNCTION SNAComplex& operator+=(SNAComplex const& other) {
     re += other.re; im += other.im;
     return *this;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static constexpr complex zero() { return complex(static_cast<real_type>(0.), static_cast<real_type>(0.)); }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static constexpr complex one() { return complex(static_cast<real_type>(1.), static_cast<real_type>(0.)); }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   const complex conj() const { return complex(re, -im); }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
-  const real_type real_part_product(const complex &cm2) { return re * cm2.re - im * cm2.im; }
+  const real_type real_part_product(const complex &cm2) const { return re * cm2.re - im * cm2.im; }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   const real_type real_part_product(const real_type &r) const { return re * r; }
 };
 
 template <typename real_type>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION SNAComplex<real_type> operator*(const real_type& r, const SNAComplex<real_type>& self) {
   return SNAComplex<real_type>(r*self.re, r*self.im);
 }
 
 template <typename real_type>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION SNAComplex<real_type> operator*(const SNAComplex<real_type>& self, const real_type& r) {
   return SNAComplex<real_type>(r*self.re, r*self.im);
 }
 
 template <typename real_type>
+// NOLINTNEXTLINE
 KOKKOS_FORCEINLINE_FUNCTION SNAComplex<real_type> operator*(const SNAComplex<real_type>& self, const SNAComplex<real_type>& cm2) {
   return SNAComplex<real_type>(self.re*cm2.re - self.im*cm2.im, self.re*cm2.im + self.im*cm2.re);
 }

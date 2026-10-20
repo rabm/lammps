@@ -1,8 +1,11 @@
 .. index:: pair_style nb3b/harmonic
+.. index:: pair_style nb3b/harmonic/omp
 .. index:: pair_style nb3b/screened
 
 pair_style nb3b/harmonic command
 ================================
+
+Accelerator Variants: *nb3b/harmonic/omp*
 
 pair_style nb3b/screened command
 ================================
@@ -65,10 +68,10 @@ number of LAMMPS atom types:
 See the :doc:`pair_coeff <pair_coeff>` page for alternate ways
 to specify the path for the potential file.
 
-As an example, imagine a file SiC.nb3b.harmonic has potential values
-for Si and C.  If your LAMMPS simulation has 4 atoms types and you
-want the first 3 to be Si, and the fourth to be C, you would use the
-following pair_coeff command:
+As an example, imagine a file SiC.nb3b.harmonic has potential values for
+Si and C.  If your LAMMPS simulation has 4 atom types and you want the
+first 3 to be Si, and the fourth to be C, you would use the following
+pair_coeff command:
 
 .. code-block:: LAMMPS
 
@@ -113,6 +116,10 @@ If certain combinations are not parameterized the corresponding
 parameters should be set to zero. The potential file can also
 contain entries for additional elements which are not used in
 a particular simulation; LAMMPS ignores those entries.
+
+----------
+
+.. include:: accel_styles.rst
 
 ----------
 

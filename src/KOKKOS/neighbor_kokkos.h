@@ -39,14 +39,17 @@ class NeighborKokkos : public Neighbor {
   void build_topology() override;
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagNeighborCheckDistance<DeviceType>, const int&, int&) const;
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagNeighborXhold<DeviceType>, const int&) const;
 
   DAT::ttransform_kkfloat_2d k_cutneighsq;
+  DAT::ttransform_kkfloat_2d k_cutneighghostsq;
 
   DAT::tdual_int_1d k_ex1_type,k_ex2_type;
   DAT::ttransform_int_2d k_ex_type;
@@ -65,6 +68,9 @@ class NeighborKokkos : public Neighbor {
 
   int device_flag;
 
+  int check_distance() override;
+  void build(int) override;
+
  private:
 
   DAT::ttransform_kkfloat_1d_3_lr x;
@@ -73,16 +79,14 @@ class NeighborKokkos : public Neighbor {
   double deltasq;
 
   void init_cutneighsq_kokkos(int) override;
+  void init_cutneighghostsq_kokkos(int) override;
   void create_kokkos_list(int) override;
   void init_ex_type_kokkos(int) override;
   void init_ex_bit_kokkos() override;
   void init_ex_mol_bit_kokkos() override;
   void grow_ex_mol_intra_kokkos() override;
-  int check_distance() override;
   template<class DeviceType> int check_distance_kokkos();
-  void build(int) override;
   template<class DeviceType> void build_kokkos(int);
-  void setup_bins_kokkos(int);
   void modify_ex_type_grow_kokkos();
   void modify_ex_group_grow_kokkos();
   void modify_mol_group_grow_kokkos();

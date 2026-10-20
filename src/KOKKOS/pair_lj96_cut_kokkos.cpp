@@ -131,12 +131,13 @@ void PairLJ96CutKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<bool STACKPARAMS, class Specialisation>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 KK_FLOAT PairLJ96CutKokkos<DeviceType>::
 compute_fpair(const KK_FLOAT &rsq, const int &, const int &, const int &itype, const int &jtype) const {
   const KK_FLOAT r2inv = static_cast<KK_FLOAT>(1.0) / rsq;
   const KK_FLOAT r6inv = r2inv*r2inv*r2inv;
-  const KK_FLOAT r3inv = sqrt(r6inv);
+  const KK_FLOAT r3inv = Kokkos::sqrt(r6inv);
 
   const KK_FLOAT forcelj = r6inv *
     ((STACKPARAMS?m_params[itype][jtype].lj1:params(itype,jtype).lj1)*r3inv -
@@ -147,12 +148,13 @@ compute_fpair(const KK_FLOAT &rsq, const int &, const int &, const int &itype, c
 
 template<class DeviceType>
 template<bool STACKPARAMS, class Specialisation>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 KK_FLOAT PairLJ96CutKokkos<DeviceType>::
 compute_evdwl(const KK_FLOAT &rsq, const int &, const int &, const int &itype, const int &jtype) const {
   const KK_FLOAT r2inv = static_cast<KK_FLOAT>(1.0) / rsq;
   const KK_FLOAT r6inv = r2inv*r2inv*r2inv;
-  const KK_FLOAT r3inv = sqrt(r6inv);
+  const KK_FLOAT r3inv = Kokkos::sqrt(r6inv);
 
   return r6inv*((STACKPARAMS?m_params[itype][jtype].lj3:params(itype,jtype).lj3)*r3inv -
                 (STACKPARAMS?m_params[itype][jtype].lj4:params(itype,jtype).lj4)) -

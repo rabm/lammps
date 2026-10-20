@@ -102,6 +102,7 @@ struct PairComputeFunctor  {
   // Set copymode = 1 so parent allocations aren't destructed by copies of the style
   ~PairComputeFunctor() {c.copymode = 1; list.copymode = 1;};
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION int sbmask(const int& j) const {
     return j >> SBBITS & 3;
   }
@@ -160,7 +161,7 @@ struct PairComputeFunctor  {
       const int jtype = c.type(j);
       const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-      if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+      if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
         const KK_FLOAT fpair = factor_lj*c.template compute_fpair<STACKPARAMS,Specialisation>(rsq,i,j,itype,jtype);
 
@@ -237,7 +238,7 @@ struct PairComputeFunctor  {
       const int jtype = c.type(j);
       const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-      if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+      if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
         KK_FLOAT fpair = KK_FLOAT();
 
@@ -330,7 +331,7 @@ struct PairComputeFunctor  {
         const int jtype = c.type(j);
         const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-        if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+        if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
           const KK_FLOAT fpair = factor_lj*c.template compute_fpair<STACKPARAMS,Specialisation>(rsq,i,j,itype,jtype);
 
@@ -408,7 +409,7 @@ struct PairComputeFunctor  {
         const int jtype = c.type(j);
         const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-        if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+        if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
           KK_FLOAT fpair = KK_FLOAT();
 
@@ -493,7 +494,7 @@ struct PairComputeFunctor  {
         const int jtype = c.type(j);
         const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-        if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+        if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
           const KK_FLOAT fpair = factor_lj*c.template compute_fpair<STACKPARAMS,Specialisation>(rsq,i,j,itype,jtype);
 
@@ -637,7 +638,7 @@ struct PairComputeFunctor  {
         const int jtype = c.type(j);
         const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
 
-        if (rsq < (STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
+        if (rsq < static_cast<KK_FLOAT>(STACKPARAMS?c.m_cutsq[itype][jtype]:c.d_cutsq(itype,jtype))) {
 
           KK_FLOAT fpair = KK_FLOAT();
 
@@ -743,6 +744,7 @@ struct PairComputeFunctor  {
     return ev;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
     void ev_tally(EV_FLOAT &ev, const int &i, const int &j,
       const KK_FLOAT &epair, const KK_FLOAT &fpair, const KK_FLOAT &delx,
@@ -814,12 +816,14 @@ struct PairComputeFunctor  {
   }
 
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int i) const {
     if (c.newton_pair) compute_item<0,1>(i,list,typename DoCoul<PairStyle::COUL_FLAG>::type());
     else compute_item<0,0>(i,list,typename DoCoul<PairStyle::COUL_FLAG>::type());
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int i, value_type &energy_virial) const {
     if (c.newton_pair)
@@ -828,11 +832,13 @@ struct PairComputeFunctor  {
       energy_virial += compute_item<1,0>(i,list,typename DoCoul<PairStyle::COUL_FLAG>::type());
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const typename Kokkos::TeamPolicy<device_type>::member_type& team) const {
     compute_item_team(team,list,typename DoCoul<PairStyle::COUL_FLAG>::type());
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const typename Kokkos::TeamPolicy<device_type>::member_type& team, value_type &energy_virial) const {
     energy_virial += compute_item_team_ev(team,list,typename DoCoul<PairStyle::COUL_FLAG>::type());
@@ -1007,6 +1013,7 @@ struct PairVirialFDotRCompute {
   typename AT::t_kkacc_1d_3_const_um f_,
   const int offset_):x(x_),f(f_),offset(offset_) {}
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int j, value_type &energy_virial) const {
     const int i = j + offset;

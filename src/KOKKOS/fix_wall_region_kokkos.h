@@ -40,11 +40,13 @@ class FixWallRegionKokkos : public FixWallRegion {
 
   FixWallRegionKokkos(class LAMMPS *, int, char **);
   ~FixWallRegionKokkos() override;
+  void init() override;
   void post_force(int) override;
 
   template<class T>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
-  void wall_particle(T, const int, value_type) const;
+  void wall_particle(const T &, const int, value_type) const;
 
  private:
 
@@ -56,27 +58,33 @@ class FixWallRegionKokkos : public FixWallRegion {
   DAT::ttransform_kkacc_1d_6 k_vatom;
   typename AT::t_kkacc_1d_6 d_vatom;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT lj93(KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT lj126(KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT lj1043(KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT morse(KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT colloid(KK_FLOAT, KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT harmonic(KK_FLOAT, KK_FLOAT&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void v_tally(value_type, int, KK_FLOAT*) const;
-
 };
 
 template <class DeviceType, class T>
@@ -86,16 +94,21 @@ struct FixWallRegionKokkosFunctor {
   typedef double value_type[];
   const int value_count;
   FixWallRegionKokkos<DeviceType> c;
-  T *regionKK;
 
-  FixWallRegionKokkosFunctor(FixWallRegionKokkos<DeviceType>* c_ptr, T *regionKK):
-    value_count(10), c(*c_ptr), regionKK(regionKK) {}
+  // held by value so device kernels can use it
 
+  T regionKK;
+
+  FixWallRegionKokkosFunctor(FixWallRegionKokkos<DeviceType>* c_ptr, T *region_ptr):
+    value_count(11), c(*c_ptr), regionKK(*region_ptr) {}
+
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void init(value_type result) const {
-    for (int i=0 ; i<10 ; i++ ) result[i] = 0.0;
+    for (int i=0 ; i<11 ; i++ ) result[i] = 0.0;
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int i, value_type result) const {
     c.wall_particle(regionKK,i,result);

@@ -78,10 +78,14 @@ satellite particle if desired.
 Since the core/shell model permits distances of r = 0.0 between the
 core and shell, a pair style with a "cs" suffix needs to be used to
 implement a valid long-range Coulombic correction.  Several such pair
-styles are provided in the CORESHELL package.  See :doc:`this page <pair_cs>` for details.  All of the core/shell enabled pair
-styles require the use of a long-range Coulombic solver, as specified
-by the :doc:`kspace_style <kspace_style>` command.  Either the PPPM or
-Ewald solvers can be used.
+styles are provided in the CORESHELL package.  See :doc:`this page
+<pair_cs>` for details.  The core/shell enabled pair styles with
+*coul/long* in their name require the use of a long-range Coulombic
+solver, as specified by the :doc:`kspace_style <kspace_style>` command.
+Either the PPPM or Ewald solvers can be used.  The pair styles
+*coul/wolf/cs*, *born/coul/wolf/cs*, and *born/coul/dsf/cs* use the
+Wolf or damped shifted force (DSF) methods instead and do not require a
+long-range solver.
 
 For the NaCL example problem, these pair style and bond style settings
 are used:
@@ -223,7 +227,7 @@ For example if core/shell pairs and other molecules are present:
    compute prop all property/atom i_CSID
    (...)
 
-The additional section in the date file would be formatted like this:
+The additional section in the data file would be formatted like this:
 
 .. parsed-literal::
 

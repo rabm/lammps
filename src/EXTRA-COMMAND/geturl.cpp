@@ -19,6 +19,7 @@
 
 #include "comm.h"
 #include "error.h"
+#include "safe_pointers.h"
 
 #include <cstring>
 
@@ -47,12 +48,10 @@ void GetURL::command(int narg, char **arg)
 
   // sanity check
 
-  if ((url.find(':') == std::string::npos) || (url.find('/') == std::string::npos))
+  if (url.find("://") == std::string::npos)
     error->all(FLERR, Error::ARGZERO, "URL '{}' is not a supported URL", url);
 
-  std::string output = url.substr(url.find_last_of('/') + 1);
-  if (output.empty()) error->all(FLERR, Error::ARGZERO, "URL '{}' must end in a file string", url);
-
+  std::string output;
   int iarg = 1;
   while (iarg < narg) {
     if (strcmp(arg[iarg], "output") == 0) {
@@ -82,6 +81,26 @@ void GetURL::command(int narg, char **arg)
     ++iarg;
   }
 
+  // try to determine output file name from URL if not explicitly given
+  if (output.empty()) {
+    // a trailing forward slash represents an index page
+    if (url.back() == '/') {
+      output = "index.html";
+    } else {
+      auto pos = url.find_last_of('/');
+      // no forward slash except for the '://' at the beginning is a bare domain URL
+      if (pos < 8) {
+        output = "index.html";
+      } else {
+        output = url.substr(pos + 1);
+      }
+    }
+  }
+
+  if (output.empty())
+    error->all(FLERR, Error::ARGZERO,
+               "Cannot determine output file name from URL '{}' and 'output' is not used", url);
+
   // only download files from rank 0
 
   if (comm->me != 0) return;
@@ -90,7 +109,7 @@ void GetURL::command(int narg, char **arg)
 
   // open output file for writing
 
-  FILE *out = fopen(output.c_str(), "wb");
+  SafeFilePtr out = fopen(output.c_str(), "wb");
   if (!out)
     error->one(FLERR, "Cannot open output file {} for writing: {}", output, utils::getsyserror());
 
@@ -125,6 +144,5 @@ void GetURL::command(int narg, char **arg)
     curl_easy_cleanup(curl);
   }
   curl_global_cleanup();
-  fclose(out);
 #endif
 }

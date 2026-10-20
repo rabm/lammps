@@ -55,10 +55,17 @@ class NBinKokkos : public NBinStandard {
   typename AT::t_int_scalar d_resize;
   HAT::t_int_scalar h_resize;
   typename AT::t_kkfloat_1d_3_lr_randomread x;
+  typename AT::t_int_1d mask;
 
+  int includegroup_bitmask;   // bit of the include group, 0 if there is none
+  int includegroup_nfirst;    // # of owned atoms in the include group
+  int includegroup_nlocal;    // # of owned atoms
+
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void binatomsItem(const int &i) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2bin(const double & x,const double & y,const double & z) const
   {
@@ -91,6 +98,7 @@ class NBinKokkos : public NBinStandard {
     return (iz-mbinzlo)*mbiny*mbinx + (iy-mbinylo)*mbinx + (ix-mbinxlo);
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int coord2bin(const double & x,const double & y,const double & z, int* i) const
   {
@@ -137,9 +145,8 @@ struct NPairKokkosBinAtomsFunctor {
 
   const NBinKokkos<DeviceType> c;
 
-  NPairKokkosBinAtomsFunctor(const NBinKokkos<DeviceType> &_c):
-    c(_c) {};
-  ~NPairKokkosBinAtomsFunctor() {}
+  NPairKokkosBinAtomsFunctor(const NBinKokkos<DeviceType> &_c): c(_c) {};
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (const int & i) const {
     c.binatomsItem(i);

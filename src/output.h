@@ -16,6 +16,8 @@
 
 #include "pointers.h"
 
+#include "creator_registry.h"
+
 #include <map>
 
 namespace LAMMPS_NS {
@@ -68,8 +70,9 @@ class Output : protected Pointers {
   class WriteRestart *restart;    // class for writing restart files
 
   using DumpCreator = Dump *(*) (LAMMPS *, int, char **);
-  using DumpCreatorMap = std::map<std::string, DumpCreator>;
-  DumpCreatorMap *dump_map;
+
+  // global registry of dump style factory functions
+  static CreatorRegistry<DumpCreator> &dump_styles();
 
   MPI_Datatype createParticleStructType();
 
@@ -87,8 +90,8 @@ class Output : protected Pointers {
   Dump *add_dump(int, char **);                       // add a Dump to Dump list
   void modify_dump(int, char **);                     // modify a Dump
   void delete_dump(const std::string &);              // delete a Dump from Dump list
-  Dump *get_dump_by_id(const std::string &) const;    // find a Dump by ID
-  Dump *get_dump_by_index(int idx) const              // find a Dump by index in Dump list
+  [[nodiscard]] Dump *get_dump_by_id(const std::string &) const;    // find a Dump by ID
+  [[nodiscard]] Dump *get_dump_by_index(int idx) const              // find a Dump by index in Dump list
   {
     return ((idx >= 0) && (idx < ndump)) ? dump[idx] : nullptr;
   }
@@ -96,7 +99,7 @@ class Output : protected Pointers {
   const std::vector<Dump *> &get_dump_list();    // get vector with all dumps
   int check_time_dumps(bigint);                  // check if any time dump is output now
 
-  void set_thermo(int, char **);        // set thermo output freqquency
+  void set_thermo(int, char **);        // set thermo output frequency
   void create_thermo(int, char **);     // create a thermo style
   void create_restart(int, char **);    // create Restart and restart files
 

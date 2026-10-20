@@ -39,6 +39,7 @@ class ComputeChunkAtom : public Compute {
   void init() override;
   void setup() override;
   void compute_peratom() override;
+  int compute_image(int *&, double **&) override;
   double compute_scalar() override;
   void set_arrays(int) override;
   double memory_usage() override;
@@ -48,11 +49,19 @@ class ComputeChunkAtom : public Compute {
   int setup_chunks();
   void compute_ichunk();
 
+  [[nodiscard]] int get_limit() const { return limit; }
+  [[nodiscard]] int get_discard() const { return discard; }
+  [[nodiscard]] int get_which() const { return which; }
+  [[nodiscard]] int get_reducedflag() const { return reducedflag; }
+  int *get_dim() { return dim; }
+  double *get_delta() { return delta; }
+  int *get_nlayers() { return nlayers; }
+
  private:
   int which, binflag;
   int regionflag, nchunksetflag, nchunkflag, discard;
   int limit, limitstyle, limitfirst;
-  int scaleflag, pbcflag;
+  int scaleflag, reducedflag, pbcflag;
   double xscale, yscale, zscale;
   int argindex;
   char *cfvid;
@@ -107,6 +116,9 @@ class ComputeChunkAtom : public Compute {
   int molcheck;                  // one-time check if all molecule atoms in chunk
   int *exclude;                  // 1 if atom is not assigned to any chunk
   std::map<tagint, int> hash;    // store original chunks IDs before compression
+  int numobjs;
+  int *imgobjs;
+  double **imgparms;
 
   // callback function for ring communication
 

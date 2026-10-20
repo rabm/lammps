@@ -32,8 +32,8 @@ class ThirdOrderKokkos : public ThirdOrder {
   ThirdOrderKokkos(class LAMMPS *);
 
   void command(int, char **) override;
-  void setup();
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int &i) const
   {

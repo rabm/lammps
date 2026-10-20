@@ -25,7 +25,7 @@ namespace LAMMPS_NS {
 class AtomKokkos : public Atom {
  public:
   bool sort_legacy;
-  int nprop_atom;
+  int nprop_atom, hybrid_flag;
   class FixPropertyAtomKokkos **fix_prop_atom;
 
   DAT::tdual_tagint_1d k_tag;
@@ -44,6 +44,7 @@ class AtomKokkos : public Atom {
   DAT::ttransform_kkfloat_1d_3 k_omega;
   DAT::ttransform_kkfloat_1d_3 k_angmom;
   DAT::ttransform_kkacc_1d_3 k_torque;
+  DAT::tdual_int_1d k_ellipsoid;
   DAT::tdual_tagint_1d k_molecule;
   DAT::ttransform_int_2d k_nspecial;
   DAT::ttransform_tagint_2d k_special;
@@ -61,6 +62,9 @@ class AtomKokkos : public Atom {
   DAT::ttransform_tagint_2d k_improper_atom1, k_improper_atom2, k_improper_atom3, k_improper_atom4;
 
   DAT::ttransform_kkfloat_2d k_dvector;
+  DAT::tdual_int_2d_lr k_ivector;         // width-1: single contiguous 2D view
+  tdual_struct_tdual_int_2d_1d k_iarray;  // ragged cols: view-of-views
+  tdual_struct_tdual_double_2d_1d k_darray;
 
   // SPIN package
 
@@ -135,6 +139,7 @@ class AtomKokkos : public Atom {
   };
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static int map_kokkos(tagint global, int map_style, const DAT::tdual_int_1d &k_map_array, const dual_hash_type &k_map_hash)
   {
@@ -147,6 +152,7 @@ class AtomKokkos : public Atom {
   }
 
   template<class DeviceType>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   static int map_find_hash_kokkos(tagint global, const dual_hash_type &k_map_hash)
   {
@@ -158,11 +164,48 @@ class AtomKokkos : public Atom {
     return local;
   }
 
+  // find the periodic image of atom j closest to atom i by walking the
+  // sametag chain: device-callable analog of Domain::closest_image()
+  template<class XViewType, class SametagViewType>
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  static int closest_image_kokkos(const int i, int j, const XViewType &x,
+                                  const SametagViewType &sametag)
+  {
+    if (j < 0) return j;
+    const KK_FLOAT xi0 = x(i,0), xi1 = x(i,1), xi2 = x(i,2);
+    int closest = j;
+    KK_FLOAT delx = xi0 - x(j,0), dely = xi1 - x(j,1), delz = xi2 - x(j,2);
+    KK_FLOAT rsqmin = delx*delx + dely*dely + delz*delz;
+    while (sametag[j] >= 0) {
+      j = sametag[j];
+      delx = xi0 - x(j,0); dely = xi1 - x(j,1); delz = xi2 - x(j,2);
+      const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
+      if (rsq < rsqmin) { rsqmin = rsq; closest = j; }
+    }
+    return closest;
+  }
+
   void init() override;
   void update_property_atom();
   void allocate_type_arrays() override;
+
+  void sync_host_arrays(uint64_t mask) override { sync(Host, mask); }
+  void modified_host_arrays(uint64_t mask) override { modified(Host, mask); }
+
+  // the per-type masses are written through the plain host array, which leaves
+  // the device copy behind with nothing to say so.  Claim the write here, at
+  // the one place all four spellings of the mass command go through, rather
+  // than in each of the styles that read the masses on the device.
+
+  void set_mass(const char *, int, const char *, int, int, int *) override;
+  void set_mass(const char *, int, int, double) override;
+  void set_mass(const char *, int, int, char **) override;
+  void set_mass(double *) override;
+  void *extract(const char *) override;
   void sync(const ExecutionSpace space, uint64_t mask);
   void modified(const ExecutionSpace space, uint64_t mask);
+  void sync_mass(const ExecutionSpace space, uint64_t mask);
   void sync_pinned(const ExecutionSpace space, uint64_t mask, int async_flag = 0);
   void sort() override;
   int add_custom(const char *, int, int, int border = 0) override;
@@ -172,9 +215,28 @@ class AtomKokkos : public Atom {
   void map_set_device();
   void map_set_host();
 
+  class AtomVec *new_avec(const std::string &, int, int &) override;
+
+  // arrays sync() and modified() skip while host and device forces overlap
+
+  uint64_t datamask_exclude = 0;
+
+  // sets datamask_exclude; restores it at release() or in the destructor
+
+  class ExcludeMask {
+    AtomKokkos *atomKK;
+    uint64_t prev;
+   public:
+    ExcludeMask(AtomKokkos *a, uint64_t mask) : atomKK(a), prev(a->datamask_exclude)
+      { atomKK->datamask_exclude = mask; }
+    ~ExcludeMask() { release(); }
+    void release() { atomKK->datamask_exclude = prev; }
+    ExcludeMask(const ExcludeMask &) = delete;
+    ExcludeMask &operator=(const ExcludeMask &) = delete;
+  };
+
  private:
   void sort_device();
-  class AtomVec *new_avec(const std::string &, int, int &) override;
 };
 
 template<class ViewType, class IndexView>
@@ -195,6 +257,7 @@ struct SortFunctor {
   SortFunctor(ViewType src, std::enable_if_t<ViewType::dynamic_rank==4,IndexView> ind):source(src),index(ind) {
     dest = Kokkos::View<typename ViewType::non_const_data_type,typename ViewType::array_type,device_type>("",src.extent(0),src.extent(1),src.extent(2),src.extent(3));
   }
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const std::enable_if_t<ViewType::rank==1, int>& i) {
     dest(i) = source(index(i));

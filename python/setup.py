@@ -18,6 +18,11 @@ def get_lammps_version():
         start_pos = line.find('"')+1
         end_pos = line.find('"', start_pos)
         t = time.strptime("".join(line[start_pos:end_pos].split()), "%d%b%Y")
+        line = f.readline()
+        # increment the day like the numeric version in src/lammps.cpp. this may
+        # not be a valid date, so the version string must not be parsed as a date
+        if line.find("Development") >= 0 or line.find("Maintenance") >= 0:
+          return "{}.{}.{}".format(t.tm_year,t.tm_mon,t.tm_mday+1)
         return "{}.{}.{}".format(t.tm_year,t.tm_mon,t.tm_mday)
 
 class BinaryDistribution(Distribution):

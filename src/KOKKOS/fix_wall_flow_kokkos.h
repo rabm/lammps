@@ -26,7 +26,11 @@ FixStyle(wall/flow/kk/host,FixWallFlowKokkos<LMPHostType>);
 #include "fix_wall_flow.h"
 #include "kokkos_type.h"
 #include "kokkos_base.h"
+#ifdef LMP_KOKKOS_DEBUG_RNG
+#include "rand_pool_wrap_kokkos.h"
+#else
 #include "Kokkos_Random.hpp"
+#endif
 
 namespace LAMMPS_NS {
 
@@ -44,7 +48,7 @@ class FixWallFlowKokkos : public FixWallFlow, public KokkosBase {
   struct MassTag{};
   struct RMassTag{};
   FixWallFlowKokkos(class LAMMPS *, int, char **);
-  ~FixWallFlowKokkos();
+  ~FixWallFlowKokkos() override;
 
   void init() override;
   void end_of_step() override;
@@ -54,16 +58,20 @@ class FixWallFlowKokkos : public FixWallFlow, public KokkosBase {
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagFixWallFlowInit, const int&) const;
 
   template<class MTag>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixWallFlowEndOfStep<MTag>, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixWallFlowPackExchange, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixWallFlowUnpackExchange, const int&) const;
 
@@ -86,8 +94,13 @@ class FixWallFlowKokkos : public FixWallFlow, public KokkosBase {
   typename AT::t_kkfloat_1d d_rmass;
 
   typedef typename AT::t_kkfloat_1d d_walls_t;
+#ifndef LMP_KOKKOS_DEBUG_RNG
   typedef Kokkos::Random_XorShift64_Pool<DeviceType> rand_pool_t;
   typedef typename rand_pool_t::generator_type rand_type_t;
+#else
+  typedef RandPoolWrap rand_pool_t;
+  typedef RandWrap rand_type_t;
+#endif
 
   DAT::tdual_int_1d k_current_segment;
   typename AT::t_int_1d d_current_segment;
@@ -103,18 +116,22 @@ class FixWallFlowKokkos : public FixWallFlow, public KokkosBase {
   rand_pool_t rand_pool;
 
   template<class MTag>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void generate_velocity_kk(int atom_i) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int compute_current_segment_kk(KK_FLOAT pos) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT get_mass(MassTag, int atom_i) const
   {
     return d_mass(d_type(atom_i));
   }
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   KK_FLOAT get_mass(RMassTag, int atom_i) const
   {

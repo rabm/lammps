@@ -59,6 +59,7 @@ class PairComb : public Pair {
     double coulcut, lcut, lcutsq, hfocor;
     int ielement, jelement, kelement;
     int powermint;
+    int cuo_pending, cuo_reduced;    // status of the Cu-O cutoff reduction
   };
 
   double cutmax;    // max cutoff for all elements
@@ -83,6 +84,7 @@ class PairComb : public Pair {
   void allocate();
   virtual void read_file(char *);
   void setup_params();
+  void reduce_cuo_cutoff();
   virtual void repulsive(Param *, double, double &, int, double &, double, double);
   double zeta(Param *, double, double, double *, double *);
   void force_zeta(Param *, int, int, int, double, double, double, double, double &, double &,
@@ -137,12 +139,14 @@ class PairComb : public Pair {
   void qfo_field(Param *, double, double, double, double &, double &);
   void qsolve(double *);
   void Over_cor(Param *, double, int, double &, double &);
+
+  void Short_neigh();
+
+ public:
   int pack_reverse_comm(int, int, double *) override;
   void unpack_reverse_comm(int, int *, double *) override;
   int pack_forward_comm(int, int *, double *, int, int *) override;
   void unpack_forward_comm(int, int, double *) override;
-
-  void Short_neigh();
 };
 
 }    // namespace LAMMPS_NS

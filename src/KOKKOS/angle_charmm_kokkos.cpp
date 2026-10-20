@@ -86,6 +86,12 @@ void AngleCharmmKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     //}
   }
 
+  // sync and claim here too: the MC fixes call this outside run_style verlet/kk
+
+  atomKK->sync(execution_space,datamask_read);
+  if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
+  else atomKK->modified(execution_space,F_MASK);
+
   x = atomKK->k_x.view<DeviceType>();
   f = atomKK->k_f.view<DeviceType>();
   neighborKK->k_anglelist.template sync<DeviceType>();
@@ -139,6 +145,7 @@ void AngleCharmmKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND,EVFLAG>, const int &n, EV_FLOAT& ev) const {
 
@@ -154,7 +161,7 @@ void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND
   const KK_FLOAT delz1 = x(i1,2) - x(i2,2);
 
   const KK_FLOAT rsq1 = delx1*delx1 + dely1*dely1 + delz1*delz1;
-  const KK_FLOAT r1 = sqrt(rsq1);
+  const KK_FLOAT r1 = Kokkos::sqrt(rsq1);
 
   // 2nd bond
 
@@ -163,7 +170,7 @@ void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND
   const KK_FLOAT delz2 = x(i3,2) - x(i2,2);
 
   const KK_FLOAT rsq2 = delx2*delx2 + dely2*dely2 + delz2*delz2;
-  const KK_FLOAT r2 = sqrt(rsq2);
+  const KK_FLOAT r2 = Kokkos::sqrt(rsq2);
 
   // Urey-Bradley bond
 
@@ -172,7 +179,7 @@ void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND
   const KK_FLOAT delzUB = x(i3,2) - x(i1,2);
 
   const KK_FLOAT rsqUB = delxUB*delxUB + delyUB*delyUB + delzUB*delzUB;
-  const KK_FLOAT rUB = sqrt(rsqUB);
+  const KK_FLOAT rUB = Kokkos::sqrt(rsqUB);
 
   // Urey-Bradley force & energy
 
@@ -193,13 +200,13 @@ void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND
   if (c > static_cast<KK_FLOAT>(1.0)) c = static_cast<KK_FLOAT>(1.0);
   if (c < static_cast<KK_FLOAT>(-1.0)) c = static_cast<KK_FLOAT>(-1.0);
 
-  KK_FLOAT s = sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
+  KK_FLOAT s = Kokkos::sqrt(static_cast<KK_FLOAT>(1.0) - c*c);
   if (s < static_cast<KK_FLOAT>(SMALL)) s = static_cast<KK_FLOAT>(SMALL);
   s = static_cast<KK_FLOAT>(1.0) / s;
 
   // harmonic force & energy
 
-  const KK_FLOAT dtheta = acos(c) - d_theta0[type];
+  const KK_FLOAT dtheta = Kokkos::acos(c) - d_theta0[type];
   const KK_FLOAT tk = d_k[type] * dtheta;
 
   if (eflag) eangle += tk*dtheta;
@@ -244,6 +251,7 @@ void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND
 
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleCharmmKokkos<DeviceType>::operator()(TagAngleCharmmCompute<NEWTON_BOND,EVFLAG>, const int &n) const {
   EV_FLOAT ev;
@@ -256,6 +264,17 @@ template<class DeviceType>
 void AngleCharmmKokkos<DeviceType>::allocate()
 {
   AngleCharmm::allocate();
+
+  int n = atom->nangletypes;
+  k_k = DAT::tdual_kkfloat_1d("AngleCharmm::k",n+1);
+  k_theta0 = DAT::tdual_kkfloat_1d("AngleCharmm::theta0",n+1);
+  k_k_ub = DAT::tdual_kkfloat_1d("AngleCharmm::k_ub",n+1);
+  k_r_ub = DAT::tdual_kkfloat_1d("AngleCharmm::r_ub",n+1);
+
+  d_k = k_k.template view<DeviceType>();
+  d_theta0 = k_theta0.template view<DeviceType>();
+  d_k_ub = k_k_ub.template view<DeviceType>();
+  d_r_ub = k_r_ub.template view<DeviceType>();
 }
 
 /* ----------------------------------------------------------------------
@@ -267,18 +286,10 @@ void AngleCharmmKokkos<DeviceType>::coeff(int narg, char **arg)
 {
   AngleCharmm::coeff(narg, arg);
 
-  int n = atom->nangletypes;
-  DAT::tdual_kkfloat_1d k_k("AngleCharmm::k",n+1);
-  DAT::tdual_kkfloat_1d k_theta0("AngleCharmm::theta0",n+1);
-  DAT::tdual_kkfloat_1d k_k_ub("AngleCharmm::k_ub",n+1);
-  DAT::tdual_kkfloat_1d k_r_ub("AngleCharmm::r_ub",n+1);
+  int ilo,ihi;
+  utils::bounds(FLERR,arg[0],1,atom->nangletypes,ilo,ihi,error);
 
-  d_k = k_k.template view<DeviceType>();
-  d_theta0 = k_theta0.template view<DeviceType>();
-  d_k_ub = k_k_ub.template view<DeviceType>();
-  d_r_ub = k_r_ub.template view<DeviceType>();
-
-  for (int i = 1; i <= n; i++) {
+  for (int i = ilo; i <= ihi; i++) {
     k_k.view_host()[i] = static_cast<KK_FLOAT>(k[i]);
     k_theta0.view_host()[i] = static_cast<KK_FLOAT>(theta0[i]);
     k_k_ub.view_host()[i] = static_cast<KK_FLOAT>(k_ub[i]);
@@ -306,10 +317,10 @@ void AngleCharmmKokkos<DeviceType>::read_restart(FILE *fp)
   AngleCharmm::read_restart(fp);
 
   int n = atom->nangletypes;
-  DAT::tdual_kkfloat_1d k_k("AngleCharmm::k",n+1);
-  DAT::tdual_kkfloat_1d k_theta0("AngleCharmm::theta0",n+1);
-  DAT::tdual_kkfloat_1d k_k_ub("AngleCharmm::k_ub",n+1);
-  DAT::tdual_kkfloat_1d k_r_ub("AngleCharmm::r_ub",n+1);
+  k_k = DAT::tdual_kkfloat_1d("AngleCharmm::k",n+1);
+  k_theta0 = DAT::tdual_kkfloat_1d("AngleCharmm::theta0",n+1);
+  k_k_ub = DAT::tdual_kkfloat_1d("AngleCharmm::k_ub",n+1);
+  k_r_ub = DAT::tdual_kkfloat_1d("AngleCharmm::r_ub",n+1);
 
   d_k = k_k.template view<DeviceType>();
   d_theta0 = k_theta0.template view<DeviceType>();
@@ -341,6 +352,7 @@ void AngleCharmmKokkos<DeviceType>::read_restart(FILE *fp)
 
 template<class DeviceType>
 //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void AngleCharmmKokkos<DeviceType>::ev_tally(EV_FLOAT &ev, const int i, const int j, const int k,
                      KK_FLOAT &eangle, KK_FLOAT *f1, KK_FLOAT *f3,

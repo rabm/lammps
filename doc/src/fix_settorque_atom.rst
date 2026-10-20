@@ -1,7 +1,10 @@
 .. index:: fix settorque/atom
+.. index:: fix settorque/atom/kk
 
 fix settorque/atom command
 ==========================
+
+Accelerator Variants: *settorque/atom/kk*
 
 Syntax
 """"""
@@ -34,7 +37,7 @@ Examples
 Description
 """""""""""
 
-.. versionadded:: TBD
+.. versionadded:: 10Dec2025
 
 This fix is intended to set the peratom torque of individual finite-size
 atoms in the fix group to the specified values. Unlike :doc:`fix
@@ -80,10 +83,14 @@ to it.
    This fix is not (currently) designed to be used with rigid fixes.
    While it will set the torque of all of the atoms in a rigid body as
    described above, there is not always an easy mapping between these
-   peratom torques and the torque experienced by the body. The exception
-   may be when used in conjunction to :doc:`fix setforce <set_force>` to
-   simultaneously zero forces and torques to freeze a rigid body.
+   peratom torques and the torque experienced by the body.  The exception
+   may be when it is used in conjunction with
+   :doc:`fix setforce <fix_setforce>` to simultaneously zero forces and
+   torques to freeze a rigid body.
 
+----------
+
+.. include:: accel_styles.rst
 
 ----------
 

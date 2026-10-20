@@ -1,4 +1,3 @@
-// clang-format off
 /* ----------------------------------------------------------------------
    LAMMPS - Large-scale Atomic/Molecular Massively Parallel Simulator
    https://www.lammps.org/, Sandia National Laboratories
@@ -30,17 +29,23 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
-enum { ONE, RUNNING };
-enum { SCALAR, VECTOR, WINDOW };
+namespace {
+enum { ONE, RUNNING, WINDOW };
+const char *const ave_string[] = {"one", "running", "window"};
+enum { SCALAR, VECTOR };
+const char *const mode_string[] = {"scalar", "vector"};
 enum { DEFAULT, GLOBAL, PERATOM, LOCAL };
 enum { IGNORE, END, EXTRA };
 
-static constexpr double BIG = 1.0e20;
+constexpr double BIG = 1.0e20;
+}    // namespace
+
+// clang-format off
 /* ---------------------------------------------------------------------- */
 
 FixAveHisto::FixAveHisto(LAMMPS *lmp, int narg, char **arg) :
-    Fix(lmp, narg, arg), nvalues(0), fp(nullptr), stats_list(nullptr), bin(nullptr),
-    bin_total(nullptr), bin_all(nullptr), bin_list(nullptr), coord(nullptr), vector(nullptr)
+    Fix(lmp, narg, arg), nvalues(0), stats_list(nullptr), bin(nullptr), bin_total(nullptr),
+    bin_all(nullptr), bin_list(nullptr), coord(nullptr), vector(nullptr)
 {
   const auto mycmd = fmt::format("fix {}", style);
   if (narg < 10) utils::missing_cmd_args(FLERR, mycmd, error);
@@ -361,7 +366,8 @@ FixAveHisto::FixAveHisto(LAMMPS *lmp, int narg, char **arg) :
   if (fp && comm->me == 0) {
     clearerr(fp);
     if (title1) fprintf(fp,"%s\n",title1);
-    else fprintf(fp,"# Histogrammed data for fix %s\n",id);
+    else fprintf(fp,"# Histogrammed data for fix %s mode %s ave %s version %d\n",
+                 id,mode_string[mode],ave_string[ave],lmp->num_ver);
     if (title2) fprintf(fp,"%s\n",title2);
     else fprintf(fp,"# TimeStep Number-of-bins "
                  "Total-counts Missing-counts Min-value Max-value\n");
@@ -438,8 +444,6 @@ FixAveHisto::FixAveHisto(LAMMPS *lmp, int narg, char **arg) :
 
 FixAveHisto::~FixAveHisto()
 {
-  if (fp && comm->me == 0) fclose(fp);
-
   delete[] bin;
   delete[] bin_total;
   delete[] bin_all;

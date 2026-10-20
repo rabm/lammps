@@ -157,9 +157,9 @@ void FixTMD::init()
   // check that no integrator fix comes after a TMD fix
 
   int flag = 0;
-  for (int i = 0; i < modify->nfix; i++) {
-    if (strcmp(modify->fix[i]->style,"tmd") == 0) flag = 1;
-    if (flag && modify->fix[i]->time_integrate) flag = 2;
+  for (const auto &ifix : modify->get_fix_list()) {
+    if (strcmp(ifix->style,"tmd") == 0) flag = 1;
+    if (flag && ifix->time_integrate) flag = 2;
   }
   if (flag == 2) error->all(FLERR,"Fix tmd must come after integration fixes");
 
@@ -434,19 +434,19 @@ void FixTMD::readfile(char *file)
         try {
           ValueTokenizer values(bufptr);
 
-          if (utils::strmatch(bufptr,"^\\s*\\f+\\s+\\f+\\s+xlo\\s+xhi")) {
+          if (utils::strmatch(bufptr,R"(^\s*\f+\s+\f+\s+xlo\s+xhi)")) {
             auto lo = values.next_double();
             auto hi = values.next_double();
             xprd = hi - lo;
             bufptr = next + 1;
             continue;
-          } else if (utils::strmatch(bufptr,"^\\s*\\f+\\s+\\f+\\s+ylo\\s+yhi")) {
+          } else if (utils::strmatch(bufptr,R"(^\s*\f+\s+\f+\s+ylo\s+yhi)")) {
             auto lo = values.next_double();
             auto hi = values.next_double();
             yprd = hi - lo;
             bufptr = next + 1;
             continue;
-          } else if (utils::strmatch(bufptr,"^\\s*\\f+\\s+\\f+\\s+zlo\\s+zhi")) {
+          } else if (utils::strmatch(bufptr,R"(^\s*\f+\s+\f+\s+zlo\s+zhi)")) {
             auto lo = values.next_double();
             auto hi = values.next_double();
             zprd = hi - lo;
@@ -538,7 +538,9 @@ void FixTMD::open(const std::string &file)
   if (platform::has_compress_extension(file)) {
     compressed = 1;
     fp = platform::compressed_read(file);
-    if (!fp) error->one(FLERR,"Cannot open compressed file for reading");
+    if (!fp)
+      error->one(FLERR, "Cannot open compressed file {} for reading: {}", file,
+                 platform::compressed_open_error(file));
   } else {
     compressed = 0;
     fp = fopen(file.c_str(),"r");

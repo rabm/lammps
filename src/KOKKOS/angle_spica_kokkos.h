@@ -50,20 +50,24 @@ class AngleSPICAKokkos : public AngleSPICA {
   void read_restart(FILE *) override;
 
   template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagAngleSPICACompute<NEWTON_BOND,EVFLAG>, const int&, EV_FLOAT&) const;
 
   template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagAngleSPICACompute<NEWTON_BOND,EVFLAG>, const int&) const;
 
   //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ev_tally(EV_FLOAT &ev, const int i, const int j, const int k,
                      KK_FLOAT &eangle, KK_FLOAT *f1, KK_FLOAT *f3,
                      const KK_FLOAT &delx1, const KK_FLOAT &dely1, const KK_FLOAT &delz1,
                      const KK_FLOAT &delx2, const KK_FLOAT &dely2, const KK_FLOAT &delz2) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ev_tally13(EV_FLOAT &ev, const int i, const int j,
                      const KK_FLOAT &evdwl, const KK_FLOAT &fpair,
@@ -85,11 +89,10 @@ class AngleSPICAKokkos : public AngleSPICA {
   int nlocal,newton_bond;
   int eflag,vflag;
 
-  DAT::tdual_int_1d k_setflag;
-  typename AT::t_int_1d d_setflag, d_type;
+  typename AT::t_int_1d d_type;
 
-  DAT::tdual_kkfloat_1d k_k, k_theta0, k_repscale;
-  typename AT::t_kkfloat_1d d_k, d_theta0, d_repscale;
+  DAT::tdual_kkfloat_1d k_k, k_theta0;
+  typename AT::t_kkfloat_1d d_k, d_theta0;
 
   DAT::tdual_int_2d k_lj_type;
   typename AT::t_int_2d d_lj_type;

@@ -8,17 +8,17 @@
 pair_style lepton command
 =========================
 
-Accelerator Variant: *lepton/omp*
+Accelerator Variants: *lepton/omp*
 
 pair_style lepton/coul command
 ==============================
 
-Accelerator Variant: *lepton/coul/comp*
+Accelerator Variants: *lepton/coul/omp*
 
 pair_style lepton/sphere command
 ================================
 
-Accelerator Variant: *lepton/sphere/comp*
+Accelerator Variants: *lepton/sphere/omp*
 
 Syntax
 """"""
@@ -120,7 +120,7 @@ representation of the first derivative of this expression with respect
 to "r" and then uses that to compute the force between the pairs of
 particles within the given cutoff.
 
-The following coefficients must be defined for each pair of atoms types
+The following coefficients must be defined for each pair of atom types
 via the :doc:`pair_coeff <pair_coeff>` command as in the examples above,
 or in the data file or restart files read by the :doc:`read_data
 <read_data>` or :doc:`read_restart <read_restart>` commands:

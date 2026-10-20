@@ -55,7 +55,7 @@ atom/swap <fix_atom_swap>` command which swaps pairs of atoms anywhere
 in the simulation domain, the restriction of the MC swapping to
 neighbors enables a hybrid MD/kMC-like simulation.
 
-Neighboring atoms are defined by using a Voronoi tesselation performed
+Neighboring atoms are defined by using a Voronoi tessellation performed
 by the :doc:`compute voronoi/atom <compute_voronoi_atom>` command.
 Two atoms are neighbors if their Voronoi cells share a common face
 (3d) or edge (2d).
@@ -84,7 +84,7 @@ and the atomic hopping (kMC event) timescale.
 The algorithm implemented by this fix is as follows:
 
    - The MD simulation is paused every *N* steps
-   - A Voronoi tesselation is performed for the current atom configuration.
+   - A Voronoi tessellation is performed for the current atom configuration.
    - Then *X* atom swaps are attempted, one after the other.
    - For each swap, an atom *I* is selected randomly from the list of
      atom types specified by either the *types* or *diff* keywords.
@@ -96,6 +96,14 @@ The algorithm implemented by this fix is as follows:
    - The swap is accepted or rejected based on the Metropolis criterion
      using the energy change of the system and the specified temperature
      *T*.
+
+.. note::
+
+   To run an MC-only simulation (no MD), you should define no
+   time-integration fix, set the :doc:`thermo <thermo>` command to 1,
+   set *N* to 1, and set *X* small enough to see the MC evolution of
+   the system.  But if *X* is too small, the overhead at the start and
+   stop of MC moves each timestep will slow down the simulation.
 
 Here are a few comments on the computational cost of the swapping
 algorithm.
@@ -119,7 +127,7 @@ algorithm.
 
 Limitations are imposed on selection of *I,J* atom pairs to avoid
 swapping of atoms which are outside of a reasonable cutoff (e.g. due to
-a Voronoi tesselation near free surfaces) though the use of a
+a Voronoi tessellation near free surfaces) though the use of a
 distance-weighted probability scaling.
 
 ----------
@@ -188,15 +196,44 @@ The keyword *rates* can modify the swap rate based on the type of atom
 *J*.  Ntype values must be specified, where Ntype = the number of atom
 types in the system.  Each value is used to scale the probability
 weighting given by the equation above.  In the third example command
-above, a simulation has 3 atoms types.  Atom *I*s of type 1 are
-eligible for swapping.  Swaps may occur with atom *J*s of all 3 types.
-Assuming all *J* atoms are equidistant from an atom *I*, *J* atoms of
-type 1 will be 3x more likely to be selected as a swap partner than
-atoms of type 2.  And *J* atoms of type 3 will be 6.5x more likely to
-be selected than atoms of type 2.  If the *rates* keyword is not used,
-all atom types will be treated with the same probability during selection
-of swap attempts.
+above, a simulation has 3 atom types.  Atom *I*s of type 1 are eligible
+for swapping.  Swaps may occur with atom *J*s of all 3 types.  Assuming
+all *J* atoms are equidistant from an atom *I*, *J* atoms of type 1 will
+be 3x more likely to be selected as a swap partner than atoms of type 2.
+And *J* atoms of type 3 will be 6.5x more likely to be selected than
+atoms of type 2.  If the *rates* keyword is not used, all atom types
+will be treated with the same probability during selection of swap
+attempts.
 
+----------
+
+Dump image info
+"""""""""""""""
+
+.. versionadded:: 11Feb2026
+
+Fix *neighbor/swap* supports the *fix* keyword of :doc:`dump image
+<dump_image>`.  The fix will pass geometry information about atoms
+involved in a swap to *dump image* so that these atoms can be
+highlighted in the visualization as additional spheres.  For how
+long those additional spheres will be shown depends on the value of the
+*vizsteps* setting (default is 1000) which can be changed by using the
+:doc:`fix_modify command <fix_modify>`.  If an atom is involved in
+multiple swaps, the check on showing the additional graphics depends
+on the timestep of its last swap.
+
+The color of the additional spheres is by default that of the atom type
+*before* the swap when using color styles "type" or "element".  With
+color style "const" the default value of "white" can be changed using
+:doc:`dump_modify fcolor <dump_image>`.  The transparency is by default
+fully opaque and can be changed with *dump\_modify ftrans*\ .
+
+The *fflag1* setting of *dump image fix* has no effect.
+
+The *fflag2* setting allows you to set the radius of the added
+spheres, since the radius is set to zero internally.
+
+----------
 
 Restart, fix_modify, output, run start/stop, minimize info
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""

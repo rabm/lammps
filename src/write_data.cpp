@@ -170,13 +170,24 @@ void WriteData::write(const std::string &file)
   //if (neighbor->build_once) domain->reset_box();
 
   // natoms = sum of nlocal = value to write into data file
-  // if unequal and thermo lostflag is "error", don't write data file
+  // if inconsistent with atom->natoms, atoms have been lost: apply the
+  //   lost-atoms policy set by thermo_modify lost
+  //   "error"  -> abort and do not write the data file
+  //   "warn"   -> warn and reset atom->natoms so a consistent file is written
+  //   "ignore" -> silently reset atom->natoms so a consistent file is written
 
   bigint nblocal = atom->nlocal;
   bigint natoms;
   MPI_Allreduce(&nblocal,&natoms,1,MPI_LMP_BIGINT,MPI_SUM,world);
-  if (natoms != atom->natoms && output->thermo->lostflag == Thermo::ERROR)
-    error->all(FLERR,"Atom count is inconsistent, cannot write data file");
+  if (natoms != atom->natoms) {
+    if (output->thermo->lostflag == Thermo::ERROR)
+      error->all(FLERR,"Atom count is inconsistent, cannot write data file"
+                 + utils::errorurl(8));
+    if ((output->thermo->lostflag == Thermo::WARN) && (comm->me == 0))
+      error->warning(FLERR,"Lost atoms before write_data: original {} current {}"
+                     + utils::errorurl(8), atom->natoms, natoms);
+    atom->natoms = natoms;
+  }
 
   // sum up bond,angle,dihedral,improper counts
   // may be different than atom->nbonds,nangles, etc. if broken/turned-off
@@ -203,9 +214,16 @@ void WriteData::write(const std::string &file)
   // open data file
 
   if (comm->me == 0) {
-    fp = fopen(file.c_str(),"w");
+    if (platform::has_compress_extension(file)) {
+      fp.set_pclose();
+      fp = platform::compressed_write(file);
+    } else {
+      fp = fopen(file.c_str(), "w");
+    }
     if (fp == nullptr)
-      error->one(FLERR,"Cannot open data file {}: {}", file, utils::getsyserror());
+      error->one(FLERR, "Cannot open data file {}: {}", file,
+                 platform::has_compress_extension(file) ? platform::compressed_open_error(file)
+                                                        : utils::getsyserror());
   }
 
   // proc 0 writes header, ntype-length arrays, force fields
@@ -262,10 +280,6 @@ void WriteData::write(const std::string &file)
   // restore internal per-atom data that was rotated
 
   if (domain->triclinic_general) atom->avec->write_data_restore_restricted();
-
-  // close data file
-
-  if (comm->me == 0) fclose(fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -423,7 +437,8 @@ void WriteData::atoms()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   if (comm->me == 0) {
     MPI_Status status;
@@ -476,7 +491,8 @@ void WriteData::velocities()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   if (comm->me == 0) {
     MPI_Status status;
@@ -529,7 +545,8 @@ void WriteData::bonds()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   int index = 1;
   if (comm->me == 0) {
@@ -584,7 +601,8 @@ void WriteData::angles()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   int index = 1;
   if (comm->me == 0) {
@@ -639,7 +657,8 @@ void WriteData::dihedrals()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   int index = 1;
   if (comm->me == 0) {
@@ -694,7 +713,8 @@ void WriteData::impropers()
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   int index = 1;
   if (comm->me == 0) {
@@ -749,7 +769,7 @@ void WriteData::bonus(int flag)
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp;
+  int tmp = 0;
 
   if (comm->me == 0) {
     MPI_Status status;
@@ -805,7 +825,8 @@ void WriteData::fix(Fix *ifix, int mth)
   // proc 0 pings each proc, receives its chunk, writes to file
   // all other procs wait for ping, send their chunk to proc 0
 
-  int tmp,recvrow;
+  int tmp = 0;
+  int recvrow;
 
   int index = 1;
   if (comm->me == 0) {

@@ -51,17 +51,24 @@ class FixNeighHistoryKokkos : public FixNeighHistory, public KokkosBase {
   void sort_kokkos(Kokkos::BinSort<KeyViewType, BinOp> &Sorter) override;
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
+  int pack_restart(int, double *) override;
+  void unpack_restart(int, int) override;
+  int size_restart(int) override;
   double memory_usage() override;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixNeighHistoryPreExchange, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixNeighHistoryPostNeighbor, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixNeighHistoryPackExchange, const int&, int &, const bool &) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixNeighHistoryUnpackExchange, const int&) const;
 
@@ -78,7 +85,7 @@ class FixNeighHistoryKokkos : public FixNeighHistory, public KokkosBase {
   typename DAT::tdual_int_2d k_firstflag;
   typename DAT::tdual_kkfloat_2d k_firstvalue;
 
- private:
+ protected:
   int nrecv1,nextrarecv1;
   int nlocal,nsend,beyond_contact;
 
@@ -110,6 +117,7 @@ class FixNeighHistoryKokkos : public FixNeighHistory, public KokkosBase {
   void pre_exchange_no_newton() override;
 
   // Shift by HISTBITS and check the first bit
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int histmask(int j) const { return j >> HISTBITS & 1; }
 };

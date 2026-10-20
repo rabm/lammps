@@ -1,7 +1,10 @@
 .. index:: pair_style threebody/table
+.. index:: pair_style threebody/table/omp
 
 pair_style threebody/table command
 ==================================
+
+Accelerator Variants: *threebody/table/omp*
 
 Syntax
 """"""
@@ -68,7 +71,7 @@ See the :doc:`pair_coeff <pair_coeff>` page for alternate ways to
 specify the path for the potential file.
 
 As an example, imagine a file SiC.3b has three-body values for Si and C.
-If your LAMMPS simulation has 4 atoms types and you want the first 3 to
+If your LAMMPS simulation has 4 atom types and you want the first 3 to
 be Si, and the fourth to be C, you would use the following pair_coeff
 command:
 
@@ -240,6 +243,10 @@ https://gitlab.mpcdf.mpg.de/votca/votca/-/tree/master/csg-tutorials/ml
 
 ----------
 
+.. include:: accel_styles.rst
+
+----------
+
 Mixing, shift, table, tail correction, restart, rRESPA info
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
@@ -280,4 +287,3 @@ Related commands
 .. _Scherer2:
 
 **(Scherer2)** C. Scherer, R. Scheid, D. Andrienko, and T. Bereau, J. Chem. Theor. Comp. 16, 3194-3204 (2020).
-

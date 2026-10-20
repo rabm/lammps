@@ -2,7 +2,7 @@
 .. index:: pair_style smatb/single
 
 pair_style smatb command
-=========================
+========================
 
 pair_style smatb/single command
 ===============================
@@ -36,7 +36,7 @@ Description
 
 The *smatb* and *smatb/single* styles compute the Second Moment
 Approximation to the Tight Binding :ref:`(Cyrot) <Cyrot>`,
-:ref:`(Gupta) <Gupta>`, :ref:`(Rosato) <Rosato>`, given by
+:ref:`(Gupta2) <Gupta>`, :ref:`(Rosato) <Rosato>`, given by
 
 .. math::
       E_{i}  = \sum_{j,R_{ij}\leq R_{c}} \alpha(R_{ij}) - \sqrt{\sum_{j,R_{ij}\leq R_{c}}\Xi^2(R_{ij})}
@@ -72,10 +72,11 @@ The *smatb/single* style is an optimization when using only a single atom type.
 Coefficients
 """"""""""""
 
-The following coefficients must be defined for each pair of atoms types via the
-:doc:`pair_coeff <pair_coeff>` command as in the examples above, or in the data
-file or restart files read by the :doc:`read_data <read_data>` or
-:doc:`read_restart <read_restart>` commands, or by mixing as described below:
+The following coefficients must be defined for each pair of atom types
+via the :doc:`pair_coeff <pair_coeff>` command as in the examples above,
+or in the data file or restart files read by the :doc:`read_data
+<read_data>` or :doc:`read_restart <read_restart>` commands, or by
+mixing as described below:
 
 * :math:`R_{0}` (distance units)
 * :math:`p` (dimensionless)
@@ -126,7 +127,7 @@ none
 
 .. _Gupta:
 
-**(Gupta)** Gupta ,Phys Rev. B, 23, 6265-6270 (1981).
+**(Gupta2)** Gupta ,Phys Rev. B, 23, 6265-6270 (1981).
 
 .. _Rosato:
 

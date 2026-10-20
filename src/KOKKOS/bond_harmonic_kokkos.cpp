@@ -22,8 +22,10 @@
 #include "atom_masks.h"
 #include "comm.h"
 #include "force.h"
+#include "kokkos.h"
 #include "memory_kokkos.h"
 #include "neighbor_kokkos.h"
+#include "tune_kokkos.h"
 
 #include <cmath>
 
@@ -35,6 +37,7 @@ template<class DeviceType>
 BondHarmonicKokkos<DeviceType>::BondHarmonicKokkos(LAMMPS *lmp) : BondHarmonic(lmp)
 {
   kokkosable = 1;
+  tuner = nullptr;
 
   atomKK = (AtomKokkos *) atom;
   neighborKK = (NeighborKokkos *) neighbor;
@@ -51,6 +54,8 @@ BondHarmonicKokkos<DeviceType>::~BondHarmonicKokkos()
   if (!copymode) {
     memoryKK->destroy_kokkos(k_eatom,eatom);
     memoryKK->destroy_kokkos(k_vatom,vatom);
+
+    delete tuner;
   }
 }
 
@@ -81,6 +86,12 @@ void BondHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     } else Kokkos::deep_copy(d_vatom,0.0);
   }
 
+  // sync and claim here too: the MC fixes call this outside run_style verlet/kk
+
+  atomKK->sync(execution_space,datamask_read);
+  if (eflag || vflag) atomKK->modified(execution_space,datamask_modify);
+  else atomKK->modified(execution_space,F_MASK);
+
   x = atomKK->k_x.template view<DeviceType>();
   f = atomKK->k_f.template view<DeviceType>();
   neighborKK->k_bondlist.template sync<DeviceType>();
@@ -91,7 +102,13 @@ void BondHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
   copymode = 1;
 
-  // loop over neighbors of my atoms
+  // loop over the bond list
+
+  if (lmp->kokkos->autotuning && tuner) tuner->tuning_kernel_params();
+
+  int bond_chunk_size = 0;
+  if (lmp->kokkos->bond_chunk_size_set)
+    bond_chunk_size = lmp->kokkos->bond_chunk_size;
 
   EV_FLOAT ev;
 
@@ -103,9 +120,15 @@ void BondHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     }
   } else {
     if (newton_bond) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<1,0> >(0,nbondlist),*this);
+      if (bond_chunk_size)
+        Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<1,0> >(0,nbondlist,Kokkos::ChunkSize(bond_chunk_size)),*this);
+      else
+        Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<1,0> >(0,nbondlist),*this);
     } else {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<0,0> >(0,nbondlist),*this);
+      if (bond_chunk_size)
+        Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<0,0> >(0,nbondlist,Kokkos::ChunkSize(bond_chunk_size)),*this);
+      else
+        Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagBondHarmonicCompute<0,0> >(0,nbondlist),*this);
     }
   }
 
@@ -132,8 +155,11 @@ void BondHarmonicKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   copymode = 0;
 }
 
+/* ---------------------------------------------------------------------- */
+
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void BondHarmonicKokkos<DeviceType>::operator()(TagBondHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n, EV_FLOAT& ev) const {
 
@@ -146,7 +172,7 @@ void BondHarmonicKokkos<DeviceType>::operator()(TagBondHarmonicCompute<NEWTON_BO
   const KK_FLOAT delz = x(i1,2) - x(i2,2);
 
   const KK_FLOAT rsq = delx*delx + dely*dely + delz*delz;
-  const KK_FLOAT r = sqrt(rsq);
+  const KK_FLOAT r = Kokkos::sqrt(rsq);
   const KK_FLOAT dr = r - d_r0[type];
   const KK_FLOAT rk = d_k[type] * dr;
 
@@ -176,8 +202,11 @@ void BondHarmonicKokkos<DeviceType>::operator()(TagBondHarmonicCompute<NEWTON_BO
   if (EVFLAG) ev_tally(ev,i1,i2,ebond,fbond,delx,dely,delz);
 }
 
+/* ---------------------------------------------------------------------- */
+
 template<class DeviceType>
 template<int NEWTON_BOND, int EVFLAG>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void BondHarmonicKokkos<DeviceType>::operator()(TagBondHarmonicCompute<NEWTON_BOND,EVFLAG>, const int &n) const {
   EV_FLOAT ev;
@@ -190,6 +219,18 @@ template<class DeviceType>
 void BondHarmonicKokkos<DeviceType>::allocate()
 {
   BondHarmonic::allocate();
+
+  int n = atom->nbondtypes;
+  k_k = DAT::tdual_kkfloat_1d("BondHarmonic::k",n+1);
+  k_r0 = DAT::tdual_kkfloat_1d("BondHarmonic::r0",n+1);
+
+  d_k = k_k.template view<DeviceType>();
+  d_r0 = k_r0.template view<DeviceType>();
+
+  if (lmp->kokkos->autotuning > 0 && !tuner) {
+    tuner = new TuneKokkos(lmp, TuneKokkos::BOND, lmp->kokkos->autotuning,
+      1, "bond-harmonic");
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -201,14 +242,10 @@ void BondHarmonicKokkos<DeviceType>::coeff(int narg, char **arg)
 {
   BondHarmonic::coeff(narg, arg);
 
-  int n = atom->nbondtypes;
-  DAT::tdual_kkfloat_1d k_k("BondHarmonic::k",n+1);
-  DAT::tdual_kkfloat_1d k_r0("BondHarmonic::r0",n+1);
+  int ilo,ihi;
+  utils::bounds(FLERR,arg[0],1,atom->nbondtypes,ilo,ihi,error);
 
-  d_k = k_k.template view<DeviceType>();
-  d_r0 = k_r0.template view<DeviceType>();
-
-  for (int i = 1; i <= n; i++) {
+  for (int i = ilo; i <= ihi; i++) {
     k_k.view_host()[i] = static_cast<KK_FLOAT>(k[i]);
     k_r0.view_host()[i] = static_cast<KK_FLOAT>(r0[i]);
   }
@@ -229,8 +266,11 @@ void BondHarmonicKokkos<DeviceType>::read_restart(FILE *fp)
   BondHarmonic::read_restart(fp);
 
   int n = atom->nbondtypes;
-  DAT::tdual_kkfloat_1d k_k("BondHarmonic::k",n+1);
-  DAT::tdual_kkfloat_1d k_r0("BondHarmonic::r0",n+1);
+
+  // FIX: Removed "DAT::tdual_kkfloat_1d" to use the class members
+  // instead of creating local shadowed variables.
+  k_k = DAT::tdual_kkfloat_1d("BondHarmonic::k", n+1);
+  k_r0 = DAT::tdual_kkfloat_1d("BondHarmonic::r0", n+1);
 
   d_k = k_k.template view<DeviceType>();
   d_r0 = k_r0.template view<DeviceType>();
@@ -252,6 +292,7 @@ void BondHarmonicKokkos<DeviceType>::read_restart(FILE *fp)
 
 template<class DeviceType>
 //template<int NEWTON_BOND>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void BondHarmonicKokkos<DeviceType>::ev_tally(EV_FLOAT &ev, const int &i, const int &j,
       const KK_FLOAT &ebond, const KK_FLOAT &fbond, const KK_FLOAT &delx,

@@ -26,6 +26,14 @@ PairStyle(dpd/ext/kk/host,PairDPDExtKokkos<LMPHostType>);
 #include "pair_kokkos.h"
 #include "kokkos_type.h"
 
+// a build configured with -D KOKKOS_DEBUG_RNG=on draws the random numbers from
+// the host RanMars generator, so that the results can be compared bit for bit
+// with the plain style.  an explicit choice of generator still wins.
+
+#if defined(LMP_KOKKOS_DEBUG_RNG) && !defined(DPD_USE_Random_XorShift64) && !defined(Random_XorShift1024)
+#define DPD_USE_RAN_MARS
+#endif
+
 #if !defined(DPD_USE_RAN_MARS) && !defined(DPD_USE_Random_XorShift64) && !defined(Random_XorShift1024)
 #define DPD_USE_Random_XorShift64
 #endif
@@ -55,8 +63,10 @@ class PairDPDExtKokkos : public PairDPDExt {
   void compute(int, int) override;
 
   struct params_dpd {
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     params_dpd() {cut=ws=wsT=a0=gamma=sigma=gammaT=sigmaT=0;}
+// NOLINTNEXTLINE
     KOKKOS_INLINE_FUNCTION
     params_dpd(int /*i*/) {cut=ws=wsT=a0=gamma=sigma=gammaT=sigmaT=0;}
     KK_FLOAT cut,ws,wsT,a0,gamma,sigma,gammaT,sigmaT;
@@ -66,14 +76,17 @@ class PairDPDExtKokkos : public PairDPDExt {
   struct TagDPDExtKokkos{};
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator () (TagDPDExtKokkos<NEIGHFLAG,EVFLAG>, const int &i) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator () (TagDPDExtKokkos<NEIGHFLAG,EVFLAG>, const int &i, EV_FLOAT&) const;
 
   template<int NEIGHFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void ev_tally_xyz(EV_FLOAT &ev, const int &i, const int &j,
       const KK_FLOAT &epair,
@@ -133,6 +146,7 @@ class PairDPDExtKokkos : public PairDPDExt {
   typename AT::t_kkacc_1d d_eatom;
   typename AT::t_kkacc_1d_6 d_vatom;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int sbmask(const int& j) const;
   friend void pair_virial_fdotr_compute<PairDPDExtKokkos>(PairDPDExtKokkos*);

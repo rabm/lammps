@@ -33,6 +33,9 @@ namespace LAMMPS_NS {
 struct TagFixShakePreNeighbor{};
 
 template<int NEIGHFLAG, int EVFLAG>
+struct TagFixShakeMinPostForce{};
+
+template<int NEIGHFLAG, int EVFLAG>
 struct TagFixShakePostForce{};
 
 template<int PBC_FLAG>
@@ -52,10 +55,10 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
   FixShakeKokkos(class LAMMPS *, int, char **);
   ~FixShakeKokkos() override;
   void init() override;
-  void min_setup(int) override;
   void pre_neighbor() override;
-  void post_force(int) override;
+  void min_setup(int) override;
   void min_post_force(int) override;
+  void post_force(int) override;
 
   void grow_arrays(int) override;
   void copy_arrays(int, int, int) override;
@@ -79,27 +82,42 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
 
   void unconstrained_update() override;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakePreNeighbor, const int&) const;
 
   template<int NEIGHFLAG, int EVFLAG>
   KOKKOS_INLINE_FUNCTION
+  void operator()(TagFixShakeMinPostForce<NEIGHFLAG,EVFLAG>, const int&, EV_FLOAT&) const;
+
+  template<int NEIGHFLAG, int EVFLAG>
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagFixShakeMinPostForce<NEIGHFLAG,EVFLAG>, const int&) const;
+
+  template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakePostForce<NEIGHFLAG,EVFLAG>, const int&, EV_FLOAT&) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakePostForce<NEIGHFLAG,EVFLAG>, const int&) const;
 
   template<int PBC_FLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakePackForwardComm<PBC_FLAG>, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakeUnpackForwardComm, const int&) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void pack_exchange_item(const int&, int &, const bool &) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixShakeUnpackExchange, const int&) const;
 
@@ -167,18 +185,22 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
   void stats() override;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void shake(int, EV_FLOAT&) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void shake3(int, EV_FLOAT&) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void shake4(int, EV_FLOAT&) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void shake3angle(int, EV_FLOAT&) const;
 
@@ -208,8 +230,14 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
   HAT::t_int_scalar h_nlist;
 
   template<int NEIGHFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void v_tally(EV_FLOAT&, int, int *, KK_FLOAT, KK_FLOAT *) const;
+
+  template<int NEIGHFLAG>
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void ev_tally(EV_FLOAT&, int, int *, KK_FLOAT, KK_FLOAT, KK_FLOAT *) const;
 
   int first,nsend;
 
@@ -230,7 +258,7 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
     if constexpr (std::is_same_v<real_t, double>) {
       return 1e150;
     } else {
-      return 1e30f;
+      return 1e30F;
     }
   }
 
@@ -248,6 +276,7 @@ class FixShakeKokkos : public FixShake, public KokkosBase {
 
   // copied from Domain
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   int closest_image(const int, int) const;
 
@@ -265,6 +294,7 @@ struct FixShakeKokkosPackExchangeFunctor {
   typedef int value_type;
   FixShakeKokkos<DeviceType> c;
   FixShakeKokkosPackExchangeFunctor(FixShakeKokkos<DeviceType>* c_ptr):c(*c_ptr) {};
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(const int &i, int &offset, const bool &final) const {
     c.pack_exchange_item(i, offset, final);

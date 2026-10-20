@@ -21,6 +21,7 @@
 
 #include "accelerator_kokkos.h"
 #include "atom.h"
+#include "atom_masks.h"
 #include "atom_vec.h"
 #include "comm.h"
 #include "command.h"
@@ -70,9 +71,6 @@
 
 /// string buffer for error messages of global errors
 static std::string lammps_last_global_errormessage;
-
-/// maximum number of groups
-static constexpr int LMP_MAX_GROUP = 32;
 
 using namespace LAMMPS_NS;
 
@@ -165,7 +163,7 @@ fails a null pointer is returned.
    possible to provide the address of a pointer variable as final
    argument *ptr*\ .
 
-.. deprecated:: 18Sep2020
+.. versionremoved:: 18Sep2020
 
    The *ptr* argument will be removed in a future release of LAMMPS.
    It should be set to ``NULL`` instead.
@@ -240,7 +238,7 @@ fails a null pointer is returned.
    possible to provide the address of a pointer variable as final
    argument *ptr*\ .
 
-.. deprecated:: 18Sep2020
+.. versionremoved:: 18Sep2020
 
    The *ptr* argument will be removed in a future release of LAMMPS.
    It should be set to ``NULL`` instead.
@@ -596,24 +594,35 @@ char *lammps_expand(void *handle, const char *line)
     STORE_ERROR_MESSAGE(lmp, mesg);
     return nullptr;
   }
-  char *copy, *work;
+  char *copy = nullptr, *work = nullptr, *result = nullptr;
   int n, maxcopy, maxwork;
 
   if (!line) return nullptr;
 
+  // Input::substitute() may grow the buffers with Memory::srealloc(),
+  // so they must be allocated with Memory::smalloc() and not malloc()
+
   BEGIN_CAPTURE
   {
     n = strlen(line) + 1;
-    copy = (char *) malloc(n * sizeof(char));
-    work = (char *) malloc(n * sizeof(char));
+    copy = (char *) lmp->memory->smalloc(n * sizeof(char), "lammps_expand:copy");
+    work = (char *) lmp->memory->smalloc(n * sizeof(char), "lammps_expand:work");
     maxwork = maxcopy = n;
     memcpy(copy, line, maxcopy);
     lmp->input->substitute(copy, work, maxcopy, maxwork, 0);
-    free(work);
   }
   END_CAPTURE
 
-  return copy;
+  // return the expanded string in a buffer that can be freed with lammps_free()
+
+  if (copy) {
+    n = strlen(copy) + 1;
+    result = (char *) malloc(n * sizeof(char));
+    if (result) memcpy(result, copy, n);
+  }
+  lmp->memory->sfree(copy);
+  lmp->memory->sfree(work);
+  return result;
 }
 
 // ----------------------------------------------------------------------
@@ -803,9 +812,9 @@ void lammps_commands_string(void *handle, const char *str)
       else
         cmd = line;
 
-      if (utils::strmatch(line, "\"\"\".*\"\"\"")) {
+      if (utils::strmatch(line, R"(""".*""")")) {
         triple = false;
-      } else if (utils::strmatch(line, "\"\"\"")) {
+      } else if (utils::strmatch(line, R"(""")")) {
         triple = !triple;
       }
       if (triple) cmd += '\n';
@@ -838,7 +847,7 @@ void lammps_commands_string(void *handle, const char *str)
           }
         }
         // stop processing when quit command is found
-        if (words.size() && (words[0] == "quit")) {
+        if (!words.empty() && (words[0] == "quit")) {
           if (lmp->comm->me == 0)
             utils::logmesg(lmp, "Encountered a 'quit' command. Stopping ...\n");
           break;
@@ -1338,6 +1347,9 @@ be called without a valid LAMMPS object handle (it is ignored).
    * - imageint
      - size of the ``imageint`` integer type, 4 or 8 bytes.
        Set at :ref:`compile time <size>`.
+   * - MAX_GROUP
+     - size of the bitmask for groups in bits, should be 32.
+       Currently hard coded.
 
 .. _extract_image_masks:
 
@@ -1512,8 +1524,14 @@ internally by the :doc:`Fortran interface <Fortran>` and are not likely to be us
      - 1 if the atom style includes per-atom masses, 0 if there are per-type masses. See :doc:`atom_style`.
    * - radius_flag
      - 1 if the atom style includes a per-atom radius. See :doc:`atom_style`.
+   * - body_flag
+     - 1 if the atom style describes body particles. See :doc:`atom_style`.
    * - ellipsoid_flag
      - 1 if the atom style describes extended particles that may be ellipsoidal. See :doc:`atom_style`.
+   * - line_flag
+     - 1 if the atom style describes line particles. See :doc:`atom_style`.
+   * - tri_flag
+     - 1 if the atom style describes tri particles. See :doc:`atom_style`.
    * - omega_flag
      - 1 if the atom style can store per-atom rotational velocities. See :doc:`atom_style`.
    * - torque_flag
@@ -1551,6 +1569,8 @@ int lammps_extract_setting(void *handle, const char *keyword)
   if (strcmp(keyword,"bigint") == 0) return sizeof(bigint);
   if (strcmp(keyword,"tagint") == 0) return sizeof(tagint);
   if (strcmp(keyword,"imageint") == 0) return sizeof(imageint);
+
+  if (strcmp(keyword,"MAX_GROUP") == 0) return Group::MAX_GROUP;
 
   if (strcmp(keyword,"IMGMASK") == 0) return IMGMASK;
   if (strcmp(keyword,"IMGBITS") == 0) return IMGBITS;
@@ -1617,7 +1637,11 @@ int lammps_extract_setting(void *handle, const char *keyword)
   if (strcmp(keyword,"rmass_flag") == 0) return lmp->atom->rmass_flag;
   if (strcmp(keyword,"radius_flag") == 0) return lmp->atom->radius_flag;
 
+  if (strcmp(keyword,"body_flag") == 0) return lmp->atom->body_flag;
   if (strcmp(keyword,"ellipsoid_flag") == 0) return lmp->atom->ellipsoid_flag;
+  if (strcmp(keyword,"line_flag") == 0) return lmp->atom->line_flag;
+  if (strcmp(keyword,"tri_flag") == 0) return lmp->atom->tri_flag;
+
   if (strcmp(keyword,"omega_flag") == 0) return lmp->atom->omega_flag;
   if (strcmp(keyword,"torque_flag") == 0) return lmp->atom->torque_flag;
   if (strcmp(keyword,"angmom_flag") == 0) return lmp->atom->angmom_flag;
@@ -2573,6 +2597,22 @@ A table with supported keywords is included in the documentation of the
    since per-atom data may be re-distributed, re-allocated, and
    re-ordered at every re-neighboring operation.
 
+.. note::
+
+   When running with the KOKKOS package and per-atom data residing on an
+   accelerator device (e.g. a GPU), the requested data is synchronized from
+   the device to the host before the pointer is returned, so that the host
+   data accessed through it is current even when this function is called
+   between output steps (for example from the LAMMPS GUI or a Python script
+   while a run is in progress).
+
+.. versionchanged:: 4Jul2026
+
+When using the KOKKOS package with a device back end, per-atom data is now
+synchronized from the device to the host before the pointer is returned.
+Previously the host copy could be out-of-date for calls not aligned with an
+output or end-of-run step.
+
 \endverbatim
  *
  * \param  handle  pointer to a previously created LAMMPS instance
@@ -3236,7 +3276,7 @@ static int set_variable_deprecated_flag = 1;
 /** Set the value of a string-style variable.
 \verbatim embed:rst
 
-.. deprecated:: 7Feb2024
+.. versionremoved:: 7Feb2024
 
 This function assigns a new value from the string str to the
 string-style variable *name*.  This is a way to directly change the
@@ -3393,7 +3433,7 @@ int lammps_variable_info(void *handle, int idx, char *buffer, int buf_size) {
   }
   Info info(lmp);
 
-  if ((idx >= 0) && (idx < lmp->input->variable->nvar)) {
+  if ((idx >= 0) && (idx < lmp->input->variable->get_nvar())) {
     auto varinfo = info.get_variable_info(idx);
     strncpy(buffer, varinfo.c_str(), buf_size);
     return 1;
@@ -6185,6 +6225,15 @@ int lammps_create_atoms(void *handle, int n, const tagint *id, const int *type,
 
     Atom *atom = lmp->atom;
     Domain *domain = lmp->domain;
+
+    // the loop below creates atoms and writes their per-atom data through the
+    // plain pointers, so bring the host side up to date first and hand the
+    // writes over afterwards; without the KOKKOS package these do nothing.
+    // both are needed here: this function is typically called between runs,
+    // when the device holds the newer copy of the per-atom arrays
+
+    atom->sync_host_arrays(ALL_MASK);
+
     int nlocal = atom->nlocal;
 
     int nlocal_prev = nlocal;
@@ -6234,6 +6283,8 @@ int lammps_create_atoms(void *handle, int n, const tagint *id, const int *type,
     // init per-atom fix/compute/variable values for created atoms
 
     atom->data_fix_compute_variable(nlocal_prev,nlocal);
+
+    atom->modified_host_arrays(ALL_MASK);
 
     // if global map exists, reset it
     // invoke map_init() b/c atom count has grown
@@ -6435,28 +6486,32 @@ int lammps_find_compute_neighlist(void *handle, const char *id, int reqid) {
 
 // helper Command class for a single neighbor list build
 
-namespace LAMMPS_NS {
-  class NeighProxy : protected Command
-  {
+namespace {
+// NOLINTBEGIN
+class NeighProxy : protected Command {
  public:
   NeighProxy(class LAMMPS *lmp) : Command(lmp), neigh_idx(-1) {};
 
   void command(int, char **) override;
-  int get_index() const { return neigh_idx; }
+  [[nodiscard]] int get_index() const { return neigh_idx; }
+
  protected:
   int neigh_idx;
 };
-}
+// NOLINTEND
 
 void NeighProxy::command(int narg, char **arg)
 {
   neigh_idx = -1;
   if (narg != 3) return;
   auto *req = neighbor->add_request(this, arg[0]);
-  int flags = atoi(arg[1]);
-  double cutoff = atof(arg[2]);
+  int flags = utils::inumeric(FLERR, arg[1], false, lmp);
+  double cutoff = utils::numeric(FLERR, arg[2], false, lmp);
   req->apply_flags(flags);
-  if (cutoff > 0.0) req->set_cutoff(cutoff);
+  if (cutoff > 0.0) {
+    // library-requested cutoff applies to all types
+    req->set_cutoff_fixed(cutoff);
+  }
   lmp->init();
 
   // setup domain, communication and neighboring
@@ -6486,6 +6541,7 @@ void NeighProxy::command(int narg, char **arg)
     }
   }
 }
+}    // namespace
 
 /** Build a single neighbor list in between runs and return its index
  *
@@ -6604,7 +6660,9 @@ The :cpp:func:`lammps_version` function returns an integer representing
 the version of the LAMMPS code in the format YYYYMMDD.  This can be used
 to implement backward compatibility in software using the LAMMPS library
 interface.  The specific format guarantees, that this version number is
-growing with every new LAMMPS release.
+growing with every new LAMMPS release.  For a development or maintenance
+version of LAMMPS, the number is one larger than that of the release it
+is based on, so it is not always a valid date.
 
 \endverbatim
  *
@@ -6705,12 +6763,18 @@ int lammps_config_has_omp_support()
  * files via a pipe to gzip or similar compression programs
 
 \verbatim embed:rst
+
+.. versionchanged:: TBD
+
+This function now checks whether the ``gzip`` program is installed and
+executable instead of whether support for compressed files was enabled
+at compile time.
+
 Several LAMMPS commands (e.g., :doc:`read_data`, :doc:`write_data`,
 :doc:`dump styles atom, custom, and xyz <dump>`) support reading and
-writing compressed files via creating a pipe to the ``gzip`` program.
-This function checks whether this feature was :ref:`enabled at compile
-time <gzip>`. It does **not** check whether``gzip`` or any other
-supported compression programs themselves are installed and usable.
+writing compressed files via creating a pipe to the ``gzip`` program or
+:ref:`similar compression programs <gzip>`.  This function checks
+whether the ``gzip`` program can be found in the command search path.
 \endverbatim
  *
  * \return 1 if yes, otherwise 0
@@ -6761,11 +6825,16 @@ int lammps_config_has_jpeg_support() {
 /** Check if the LAMMPS library supports creating movie files via a pipe to ffmpeg
 
 \verbatim embed:rst
+
+.. versionchanged:: TBD
+
+This function now checks whether the ``ffmpeg`` program is installed and
+executable instead of whether support for it was enabled at compile time.
+
 The LAMMPS :doc:`dump style movie <dump_image>` supports generating movies
 from images on-the-fly via creating a pipe to the
-`ffmpeg <https://ffmpeg.org/>`_ program.
-This function checks whether this feature was :ref:`enabled at compile time <graphics>`.
-It does **not** check whether the ``ffmpeg`` itself is installed and usable.
+`ffmpeg <https://ffmpeg.org/>`_ program.  This function checks whether
+the ``ffmpeg`` program can be found in the command search path.
 \endverbatim
  *
  * \return 1 if yes, otherwise 0
@@ -6780,7 +6849,7 @@ int lammps_config_has_ffmpeg_support() {
 
 \verbatim embed:rst
 
-.. versionadded::29Aug2024
+.. versionadded:: 29Aug2024
 
 The LAMMPS :doc:`geturl command <geturl>` supports downloading files
 through using `the libcurl library <https://curl.se/libcurl/>`_.
@@ -6800,7 +6869,7 @@ int lammps_config_has_curl_support() {
  *
 \verbatim embed:rst
 
-.. deprecated:: 21Nov2023
+.. versionremoved:: 21Nov2023
 
    LAMMPS has now exceptions always enabled, so this function
    will now always return 1 and can be removed from applications
@@ -7158,7 +7227,7 @@ int lammps_id_count(void *handle, const char *category) {
   } else if (strcmp(category,"region") == 0) {
     return lmp->domain->get_region_list().size();
   } else if (strcmp(category,"variable") == 0) {
-    return lmp->input->variable->nvar;
+    return lmp->input->variable->get_nvar();
   }
   return 0;
 }
@@ -7217,7 +7286,7 @@ int lammps_id_name(void *handle, const char *category, int idx, char *buffer, in
     }
   } else if (strcmp(category,"group") == 0) {
     // the list of groups may have "holes". So the available range is always 0 to 32
-    if ((idx >= 0) && (idx < LMP_MAX_GROUP)) {
+    if ((idx >= 0) && (idx < Group::MAX_GROUP)) {
       if (lmp->group->names[idx]) {
         strncpy(buffer, lmp->group->names[idx], buf_size);
         return 1;
@@ -7238,8 +7307,9 @@ int lammps_id_name(void *handle, const char *category, int idx, char *buffer, in
       return 1;
     }
   } else if (strcmp(category,"variable") == 0) {
-    if ((idx >= 0) && (idx < lmp->input->variable->nvar)) {
-      strncpy(buffer, lmp->input->variable->names[idx], buf_size);
+    if ((idx >= 0) && (idx < lmp->input->variable->get_nvar()) &&
+        lmp->input->variable->get_name(idx)) {
+      strncpy(buffer, lmp->input->variable->get_name(idx), buf_size);
       return 1;
     }
   }
@@ -7441,7 +7511,7 @@ void lammps_set_fix_external_callback(void *handle, const char *id, FixExternalF
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal *>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !(utils::strmatch(fix->style, "^external")))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     fext->set_callback(callback, ptr);
@@ -7509,7 +7579,7 @@ double **lammps_fix_external_get_force(void *handle, const char *id)
     if (!fix)
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
-    if (strcmp("external",fix->style) != 0)
+    if (!utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     int tmp;
@@ -7564,7 +7634,7 @@ void lammps_fix_external_set_energy_global(void *handle, const char *id, double 
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "Fix {} is not of style external", FNERR, id);
 
     fext->set_energy_global(eng);
@@ -7619,7 +7689,7 @@ void lammps_fix_external_set_virial_global(void *handle, const char *id, double 
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     fext->set_virial_global(virial);
@@ -7674,7 +7744,7 @@ void lammps_fix_external_set_energy_peratom(void *handle, const char *id, double
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "Fix {} is not of style external", FNERR, id);
 
     fext->set_energy_peratom(eng);
@@ -7732,7 +7802,7 @@ void lammps_fix_external_set_virial_peratom(void *handle, const char *id, double
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     fext->set_virial_peratom(virial);
@@ -7783,7 +7853,7 @@ void lammps_fix_external_set_vector_length(void *handle, const char *id, int len
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     fext->set_vector_length(len);
@@ -7844,7 +7914,7 @@ void lammps_fix_external_set_vector(void *handle, const char *id, int idx, doubl
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} does not exist", FNERR, id);
 
     auto *fext = dynamic_cast<FixExternal*>(fix);
-    if (!fext || (strcmp("external",fix->style) != 0))
+    if (!fext || !utils::strmatch(fix->style,"^external"))
       lmp->error->all(FLERR, Error::NOLASTLINE, "{}(): Fix {} is not of style external", FNERR, id);
 
     fext->set_vector(idx, val);

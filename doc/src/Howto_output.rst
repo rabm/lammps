@@ -180,7 +180,7 @@ etc).  Three additional kinds of keywords can also be specified (c_ID,
 f_ID, v_name), where a :doc:`compute <compute>` or :doc:`fix <fix>` or
 :doc:`variable <variable>` provides the value to be output.  In each
 case, the compute, fix, or variable must generate global values for
-input to the :doc:`thermo_style custom <dump>` command.
+input to the :doc:`thermo_style custom <thermo_style>` command.
 
 Note that thermodynamic output values can be "extensive" or
 "intensive".  The former scale with the number of atoms in the system
@@ -385,10 +385,10 @@ Every :doc:`compute <compute>` in LAMMPS produces either global or
 per-atom or local or per-grid values.  The values can be scalars or
 vectors or arrays of data.  These values can be output using the other
 commands described in this section.  The page for each compute command
-describes what it produces.  Computes that produce per-atom or local
-or per-grid values have the word "atom" or "local" or "grid as the
-last word in their style name.  Computes without the word "atom" or
-"local" or "grid" produce global values.
+describes what it produces.  Computes that produce per-atom or local or
+per-grid values have the word "atom" or "local" or "grid" as the last
+word in their style name.  Computes without the word "atom" or "local"
+or "grid" produce global values.
 
 .. _fix:
 

@@ -25,6 +25,19 @@ using namespace LAMMPS_NS;
 
 enum { EPAIR, EVDWL, ECOUL };
 
+/* ----------------------------------------------------------------------
+   look up pair style with first suffix, second suffix, and without suffix
+------------------------------------------------------------------------- */
+
+static Pair *find_pair_style(LAMMPS *lmp, const std::string &name, int nsub)
+{
+  Pair *pair = nullptr;
+  if (lmp->suffix) pair = lmp->force->pair_match(name + "/" + lmp->suffix, 1, nsub);
+  if (!pair && lmp->suffix2) pair = lmp->force->pair_match(name + "/" + lmp->suffix2, 1, nsub);
+  if (!pair) pair = lmp->force->pair_match(name, 1, nsub);
+  return pair;
+}
+
 /* ---------------------------------------------------------------------- */
 
 ComputePair::ComputePair(LAMMPS *lmp, int narg, char **arg) :
@@ -37,11 +50,7 @@ ComputePair::ComputePair(LAMMPS *lmp, int narg, char **arg) :
   peflag = 1;
   timeflag = 1;
 
-  // copy with suffix so we can later chop it off, if needed
-  if (lmp->suffix)
-    pstyle = utils::strdup(fmt::format("{}/{}", arg[3], lmp->suffix));
-  else
-    pstyle = utils::strdup(arg[3]);
+  pstyle = utils::strdup(arg[3]);
 
   int iarg = 4;
   nsub = 0;
@@ -51,7 +60,7 @@ ComputePair::ComputePair(LAMMPS *lmp, int narg, char **arg) :
     if (isdigit(arg[iarg][0])) {
       nsub = utils::inumeric(FLERR, arg[iarg], false, lmp);
       ++iarg;
-      if (nsub <= 0) error->all(FLERR, "Illegal compute pair command");
+      if (nsub <= 0) error->all(FLERR, iarg, "Compute pair nsub must be > 0");
     }
   }
 
@@ -63,19 +72,15 @@ ComputePair::ComputePair(LAMMPS *lmp, int narg, char **arg) :
     else if (strcmp(arg[iarg], "ecoul") == 0)
       evalue = ECOUL;
     else
-      error->all(FLERR, "Unknown compute pair keyword {}", arg[iarg]);
+      error->all(FLERR, iarg, "Unknown compute pair keyword {}", arg[iarg]);
     ++iarg;
   }
 
-  // check if pair style with and without suffix exists
+  // check if pair style with or without suffix exists
 
-  pair = force->pair_match(pstyle, 1, nsub);
-  if (!pair && lmp->suffix) {
-    pstyle[strlen(pstyle) - strlen(lmp->suffix) - 1] = '\0';
-    pair = force->pair_match(pstyle, 1, nsub);
-  }
-
-  if (!pair) error->all(FLERR, "Unused pair style {} in compute pair command", pstyle);
+  pair = find_pair_style(lmp, pstyle, nsub);
+  if (!pair)
+    error->all(FLERR, Error::NOPOINTER, "Unused pair style {} in compute pair command", pstyle);
   npair = pair->nextra;
 
   if (npair) {
@@ -103,8 +108,10 @@ void ComputePair::init()
 {
   // recheck for pair style in case it has been deleted
 
-  pair = force->pair_match(pstyle, 1, nsub);
-  if (!pair) error->all(FLERR, "Unrecognized pair style {} in compute pair command", pstyle);
+  pair = find_pair_style(lmp, pstyle, nsub);
+  if (!pair)
+    error->all(FLERR, Error::NOLASTLINE, "Unrecognized pair style {} in compute pair command",
+               pstyle);
 }
 
 /* ---------------------------------------------------------------------- */

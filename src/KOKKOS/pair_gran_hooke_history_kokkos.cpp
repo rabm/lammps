@@ -68,7 +68,8 @@ void PairGranHookeHistoryKokkos<DeviceType>::init_style()
   // this is so its order in the fix list is preserved
 
   if (history && fix_history == nullptr) {
-    auto cmd = std::string("NEIGH_HISTORY_HH") + std::to_string(instance_me) + " all ";
+    this->set_history_id();
+    auto cmd = std::string(this->id_history) + " all ";
     if (execution_space == Device)
       cmd += "NEIGH_HISTORY/KK/DEVICE 3";
     else
@@ -235,10 +236,8 @@ void PairGranHookeHistoryKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     }
   }
 
-  if (eflag_atom) {
-    k_eatom.template modify<DeviceType>();
-    k_eatom.sync_host();
-  }
+  // granular styles have no pair energy: the per-atom energy view stays the
+  // zeros it was created with, so there is nothing to claim or copy back
 
   if (vflag_global) {
     virial[0] += static_cast<double>(ev.v[0]);
@@ -261,6 +260,7 @@ void PairGranHookeHistoryKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 template<class DeviceType>
 template<int NEIGHFLAG, int NEWTON_PAIR, int VFLAG, int SHEARUPDATE>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryCompute<NEIGHFLAG,NEWTON_PAIR,VFLAG,SHEARUPDATE>, const int ii, EV_FLOAT &ev) const {
 
@@ -319,7 +319,7 @@ void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryC
 
     d_firsttouch(i,jj) = 1;
 
-    const KK_FLOAT r = sqrt(rsq);
+    const KK_FLOAT r = Kokkos::sqrt(rsq);
     const KK_FLOAT rinv = static_cast<KK_FLOAT>(1.0)/r;
     const KK_FLOAT rsqinv = static_cast<KK_FLOAT>(1.0)/rsq;
 
@@ -373,7 +373,7 @@ void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryC
       shear2 += vtr2*dt_kk;
       shear3 += vtr3*dt_kk;
     }
-    KK_FLOAT shrmag = sqrt(shear1*shear1 + shear2*shear2 +
+    KK_FLOAT shrmag = Kokkos::sqrt(shear1*shear1 + shear2*shear2 +
                           shear3*shear3);
 
     if (SHEARUPDATE) {
@@ -395,8 +395,8 @@ void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryC
 
     // rescale frictional displacements and forces if needed
 
-    KK_FLOAT fs = sqrt(fs1*fs1 + fs2*fs2 + fs3*fs3);
-    KK_FLOAT fn = xmu_kk * fabs(ccel*r);
+    KK_FLOAT fs = Kokkos::sqrt(fs1*fs1 + fs2*fs2 + fs3*fs3);
+    KK_FLOAT fn = xmu_kk * Kokkos::fabs(ccel*r);
 
     if (fs > fn) {
       if (shrmag != static_cast<KK_FLOAT>(0.0)) {
@@ -463,6 +463,7 @@ void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryC
 
 template<class DeviceType>
 template<int NEIGHFLAG, int NEWTON_PAIR, int VFLAG, int SHEARUPDATE>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryCompute<NEIGHFLAG,NEWTON_PAIR,VFLAG,SHEARUPDATE>, const int ii) const {
   EV_FLOAT ev;
@@ -471,6 +472,7 @@ void PairGranHookeHistoryKokkos<DeviceType>::operator()(TagPairGranHookeHistoryC
 
 template<class DeviceType>
 template<int NEIGHFLAG, int NEWTON_PAIR>
+// NOLINTNEXTLINE
 KOKKOS_INLINE_FUNCTION
 void PairGranHookeHistoryKokkos<DeviceType>::ev_tally_xyz(EV_FLOAT &ev, int i, int j,
                                                           KK_FLOAT fx, KK_FLOAT fy, KK_FLOAT fz,

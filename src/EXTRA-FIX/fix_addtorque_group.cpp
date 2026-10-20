@@ -30,6 +30,8 @@
 #include "update.h"
 #include "variable.h"
 
+#include <cstring>
+
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
@@ -38,7 +40,7 @@ enum{NONE,CONSTANT,EQUAL,ATOM};
 /* ---------------------------------------------------------------------- */
 
 FixAddTorqueGroup::FixAddTorqueGroup(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg), xstr(nullptr), ystr(nullptr), zstr(nullptr)
 {
   if (narg != 6) error->all(FLERR,"Illegal fix addtorque/group command");
 
@@ -56,7 +58,9 @@ FixAddTorqueGroup::FixAddTorqueGroup(LAMMPS *lmp, int narg, char **arg) :
   respa_level_support = 1;
   ilevel_respa = 0;
 
-  xstr = ystr = zstr = nullptr;
+  xstyle = ystyle = zstyle = NONE;
+  xvar = yvar = zvar = -1;
+  varflag = NONE;
 
   if (utils::strmatch(arg[3],"^v_")) {
     xstr = utils::strdup(arg[3]+2);
@@ -85,6 +89,8 @@ FixAddTorqueGroup::FixAddTorqueGroup(LAMMPS *lmp, int narg, char **arg) :
 
 FixAddTorqueGroup::~FixAddTorqueGroup()
 {
+  if (copymode) return;
+
   delete [] xstr;
   delete [] ystr;
   delete [] zstr;

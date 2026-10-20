@@ -286,146 +286,196 @@ class PairSNAPKokkos : public PairSNAP {
 
   // CPU and GPU backend
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeForce<NEIGHFLAG,EVFLAG>,const int& ii) const;
 
   template<int NEIGHFLAG, int EVFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeForce<NEIGHFLAG,EVFLAG>,const int& ii, EV_FLOAT&) const;
 
   // GPU backend only
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeNeigh,const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeNeigh>::member_type& team) const;
 
   // GPU backend only
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeCayleyKlein, const int iatom_mod, const int jnbor, const int iatom_div) const;
 
   // CPU and GPU
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPPreUi, const int& iatom_mod, const int& j, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPPreUi, const int& iatom, const int& j) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPPreUi, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template<bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeUiSmall<chemsnap>,
     const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeUiSmall<chemsnap>>::member_type& team) const;
 
+// NOLINTNEXTLINE
   template<bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeUiLarge<chemsnap>,
     const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeUiLarge<chemsnap>>::member_type& team) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPTransformUi, const int& iatom_mod, const int& idxu, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPTransformUi, const int& iatom, const int& idxu) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPTransformUi, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeZi<chemsnap>, const int& iatom_mod, const int& idxz, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeZi<chemsnap>, const int& iatom, const int& idxz) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeZi<chemsnap>, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBi<chemsnap>, const int& iatom_mod, const int& idxb, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBi<chemsnap>, const int& iatom, const int& idxb) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBi<chemsnap>, const int& iatom) const;
 
+  // central atom elements of the `yi_batch` atoms ComputeBi processes together
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  Kokkos::Array<int, yi_batch> get_ielem_batch(const int&) const;
+
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaLinear, const int& iatom_mod, const int& idxb, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaLinear, const int& iatom, const int& idxb) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaLinear, const int& iatom) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaQuadratic, const int& iatom_mod, const int& idxb, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaQuadratic, const int& iatom, const int& idxb) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeBetaQuadratic, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYi<chemsnap>, const int& iatom_mod, const int& idxz, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYi<chemsnap>, const int& iatom, const int& idxz) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYi<chemsnap>, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYiWithZlist<chemsnap>, const int& iatom_mod, const int& idxz, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYiWithZlist<chemsnap>, const int& iatom, const int& idxz) const;
 
+// NOLINTNEXTLINE
   template <bool chemsnap> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeYiWithZlist<chemsnap>, const int& iatom) const;
 
+// NOLINTNEXTLINE
   template<int dir> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeFusedDeidrjSmall<dir>,const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeFusedDeidrjSmall<dir> >::member_type& team) const;
 
+// NOLINTNEXTLINE
   template<int dir> KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeFusedDeidrjLarge<dir>,const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeFusedDeidrjLarge<dir> >::member_type& team) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeFusedDeidrjAllSmall, const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeFusedDeidrjAllSmall>::member_type& team) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeFusedDeidrjAllLarge, const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeFusedDeidrjAllLarge>::member_type& team) const;
 
   // CPU backend only
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeNeighCPU,const typename Kokkos::TeamPolicy<DeviceType, TagPairSNAPComputeNeighCPU>::member_type& team) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeUiCPU, const int& iatom_mod, const int& idxu, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeUiCPU, const int& iatom, const int& jnbor) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeUiCPU, const int& iatom) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDuidrjCPU, const int& iatom_mod, const int& jnbor, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDuidrjCPU, const int& iatom, const int& jnbor) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDuidrjCPU, const int& iatom) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDeidrjCPU, const int& iatom_mod, const int& jnbor, const int& iatom_div) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDeidrjCPU, const int& iatom, const int& jnbor) const;
 
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (TagPairSNAPComputeDeidrjCPU, const int& iatom) const;
 
   template<int NEIGHFLAG>
+// NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j,
       const accum_type &fx, const accum_type &fy, const accum_type &fz,
@@ -456,14 +506,18 @@ class PairSNAPKokkos : public PairSNAP {
   Kokkos::View<real_type*, DeviceType> d_sinnerelem;           // element inner cutoff midpoint
   Kokkos::View<real_type*, DeviceType> d_dinnerelem;           // element inner cutoff half-width
   Kokkos::View<T_INT*, DeviceType> d_map;                    // mapping from atom types to elements
-  Kokkos::View<T_INT*, DeviceType> d_ninside;                // ninside for all atoms in list
-  typename SNAKokkos<DeviceType, real_type, accum_type, vector_length>::t_sna_2d d_beta;                // betas for all atoms in list
+  Kokkos::View<T_INT*, DeviceType> d_ninside;                // ninside for the atoms in the current chunk
+  typename SNAKokkos<DeviceType, real_type, accum_type, vector_length>::t_sna_2d d_beta;                // betas for the atoms in the current chunk
 
   typedef Kokkos::DualView<double**, DeviceType> tdual_fparams;
   tdual_fparams k_cutsq;
+  // the scale factor of fix adapt, mirrored on the device.  self allocated, so
+  // DAT:: is safe here, and refreshed every step because fix adapt rewrites it
+  tdual_fparams k_scale;
   typedef Kokkos::View<const double**, DeviceType,
       Kokkos::MemoryTraits<Kokkos::RandomAccess> > t_fparams_rnd;
   t_fparams_rnd rnd_cutsq;
+  t_fparams_rnd rnd_scale;
 
   typename AT::t_kkfloat_1d_3_lr_randomread x;
   typename AT::t_kkacc_1d_3 f;
