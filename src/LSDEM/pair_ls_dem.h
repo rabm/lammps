@@ -62,6 +62,7 @@ class PairLSDEM : public Pair {
   std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
 
   void allocate();
+  bool use_nodes_of_i(int, int, double, double) const;
 };
 
 }    // namespace LAMMPS_NS

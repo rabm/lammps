@@ -322,7 +322,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
-      // be more accurate. If the volumes are tied, use the grain ID.
+      // be more accurate. If the volumes are tied, use the relative grain positions.
       // Only calculate force between closest pair of node and grid.
 
       calc_force_of_j_on_i = 0;
@@ -330,7 +330,7 @@ void PairLSDEM::compute(int eflag, int vflag)
 
       if (watershed_flag) {
         // Use the nodes of the smallest grain.
-        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
+        if (use_nodes_of_i(i, j, ivol, jvol)) {
           calc_force_of_i_on_j = 1;
         } else {
           calc_force_of_j_on_i = 1;
@@ -380,7 +380,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       } else {
 
         // Use the nodes of the smallest grain.
-        if (ivol < jvol || (ivol == jvol && ibodyID < jbodyID)) {
+        if (use_nodes_of_i(i, j, ivol, jvol)) {
           // Grain i is smaller, use nodes of i and level set of j.
           key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
           auto it = min_distances.find(key);
@@ -801,6 +801,29 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   if (vflag_fdotr) virial_fdotr_compute();
+}
+
+/* ----------------------------------------------------------------------
+   return true if the nodes of atom i's grain should probe the level set of atom j's grain
+   use the smaller grain, if volumes are tied use the direction between the grain centers
+     since molecule IDs/tags can be assigned in a decomposition-dependent order
+------------------------------------------------------------------------- */
+
+bool PairLSDEM::use_nodes_of_i(int i, int j, double ivol, double jvol) const
+{
+  if (ivol != jvol) return ivol < jvol;
+
+  double **xcom = atom->xcom;
+  double del[3];
+  MathExtra::sub3(xcom[j], xcom[i], del);
+  domain->minimum_image(FLERR, del);
+
+  static constexpr double EPS_TIE = 1.0e-12;
+  if (del[0] > EPS_TIE) return true;
+  if (del[0] < -EPS_TIE) return false;
+  if (del[1] > EPS_TIE) return true;
+  if (del[1] < -EPS_TIE) return false;
+  return del[2] > 0.0;
 }
 
 /* ----------------------------------------------------------------------
