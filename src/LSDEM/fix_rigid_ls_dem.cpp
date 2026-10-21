@@ -379,6 +379,7 @@ void FixRigidLSDEM::init()
       }
 
       if (distributed_flag) {
+        int max_error = 0;
         for (i = 0; i < atom->nlocal; i++) {
           if (!(mask[i] & groupbit)) continue;
           ibody = body[i];
@@ -398,11 +399,14 @@ void FixRigidLSDEM::init()
           if (error_code == -1)
             error->one(FLERR, "Unexpected out of bounds error in distributed level set creation, atom {}", atom->tag[i]);
 
-          MPI_Allreduce(&error_code, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-          if (error_code_global && comm->me == 0)
-            error->warning(FLERR, "Level set of body {} does not include a large enough buffer for the distributed grid cutoff on "
-              "atom {}\nLocal grid padded with BIG values\nWarning will not print for other nodes in this body.", ibody, atom->tag[i]);
+          max_error = MAX(max_error, error_code);
         }
+
+        // reduce once outside the loop over local atoms, since ranks have different numbers of atoms
+        MPI_Allreduce(&max_error, &error_code_global, 1, MPI_INT, MPI_MAX, world);
+        if (error_code_global && comm->me == 0)
+          error->warning(FLERR, "Level set of a body does not include a large enough buffer for the distributed grid cutoff\n"
+            "Local grid padded with BIG values");
       }
     } else {
       // Calculate watershed and temporarily store peratom data
