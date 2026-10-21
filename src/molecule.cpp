@@ -2519,7 +2519,6 @@ void Molecule::read(int flag)
         com[2] *= sizescale;
         if ((domain->dimension == 2) && (com[2] != 0.0))
           error->all(FLERR, fileiarg, "Molecule file z center-of-mass must be 0.0 for 2d systems");
-<<<<<<< HEAD
       } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+\\f+\\s+quat\\s*$")) {
         quatflag = quatflag_user = 1;
         quat[0] = values.next_double();
@@ -2527,10 +2526,7 @@ void Molecule::read(int flag)
         quat[2] = values.next_double();
         quat[3] = values.next_double();
         nwant = 5;
-      } else if (values.matches("^\\s*\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+\\f+\\s+inertia\\s*$")) {
-=======
       } else if (values.matches(R"(^\s*\f+\s+\f+\s+\f+\s+\f+\s+\f+\s+\f+\s+inertia\s*$)")) {
->>>>>>> develop
         inertiaflag = inertiaflag_user = 1;
         itensor[0] = values.next_double();
         itensor[1] = values.next_double();
