@@ -105,6 +105,15 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
     }
   }
 
+  // FixRigidSmall() calls grow_arrays() before this class is constructed,
+  //   so allocate the remaining per-atom arrays here, before any exchange
+  memory->grow(atom_grid_style, atom->nmax, "rigid/small/ls/dem:atom_grid_style");
+  for (int i = 0; i < atom->nmax; i++) atom_grid_style[i] = -1;
+  if (storage_mode == WATERSHED) {
+    memory->grow(node_index, atom->nmax, "rigid/small/ls/dem:node_index");
+    for (int i = 0; i < atom->nmax; i++) node_index[i] = -1;
+  }
+
   // set bodyownLS for owned atoms
   int *mask = atom->mask;
   tagint *tag = atom->tag;
