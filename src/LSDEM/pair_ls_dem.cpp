@@ -90,7 +90,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
   double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
   double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
-  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], sintheta, costheta, term1[3], term2;
+  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], costheta, term1[3], term2;
   double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
   double normal_old[3], tangent_old[3], fs_mag_add, areai, areaj;
 
@@ -602,21 +602,18 @@ void PairLSDEM::compute(int eflag, int vflag)
         k[1] += spin_norm*normal_old[1] + bch_coef*term1[1];
         k[2] += spin_norm*normal_old[2] + bch_coef*term1[2];
 
-        // Applying the rotation
-        double sinsq = MathExtra::lensq3(k); // sin^2(theta); avoids a sqrt then re-squaring
+        // Applying the rotation with the unnormalised Rodrigues formula:
+        //   k already carries axis * sin(theta), so neither the axis nor the cross term needs normalising
+        //   and (1 - cos) / sin^2 = 1 / (1 + cos) avoids small-angle cancellation
+        //   fs_rot = fs cos + (k x fs) + k (k . fs) / (1 + cos), with cos = sqrt(1 - |k|^2)
+        double sinsq = MathExtra::lensq3(k); // sin^2(theta) = |k|^2
         if (sinsq > EPSILON * EPSILON) { // Don't apply rotation if magnitude is tiny
-          sintheta = sqrt(sinsq); // Rotation magnitude
           costheta = sqrt(MAX(1.0 - sinsq, 0.0));
-          double sininv = 1.0 / sintheta; // one reciprocal instead of three divides
-          k[0] *= sininv; // Rotation axis
-          k[1] *= sininv;
-          k[2] *= sininv;
-          // Applying Rodrigues' rotation formula to get the rotated shear displacement
           MathExtra::cross3(k, fs_tmp, term1);
-          term2 = MathExtra::dot3(k, fs_tmp) * (1.0 - costheta);
-          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] * sintheta + k[0] * term2;
-          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] * sintheta + k[1] * term2;
-          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] * sintheta + k[2] * term2;
+          term2 = MathExtra::dot3(k, fs_tmp) / (1.0 + costheta);
+          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] + k[0] * term2;
+          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] + k[1] * term2;
+          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] + k[2] * term2;
         }
       }
 
