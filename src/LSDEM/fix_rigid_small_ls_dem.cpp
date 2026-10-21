@@ -390,12 +390,18 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
       }
     }
 
+    // replace existing ghost bodies with the updated values (e.g. node_area),
+    //   otherwise ghosts are appended and atoms keep pointing to the outdated copies
+    nghost_body = 0;
+    commflag = FULL_BODY;
+    comm->forward_comm(this);
+
+    nghost_bodyLS = 0;
     commflag_ls = FULL_BODY_LS;
     comm->forward_comm(this, 1 + bodysizeLS);
     commflag_ls = PARENT;
 
-    commflag = FULL_BODY;
-    comm->forward_comm(this);
+    reset_atom2body();
 
     memory->destroy(itensor_custom);
     memory->destroy(xcm_custom);
