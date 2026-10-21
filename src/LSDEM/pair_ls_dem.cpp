@@ -482,9 +482,9 @@ void PairLSDEM::compute(int eflag, int vflag)
         const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
         const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
         const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
-        contact_point[0] = npos0 - 0.5 * u * normal[0];
-        contact_point[1] = npos1 - 0.5 * u * normal[1];
-        contact_point[2] = npos2 - 0.5 * u * normal[2];
+        contact_point[0] = npos0 - 0.5 * u * hsign * normal[0];
+        contact_point[1] = npos1 - 0.5 * u * hsign * normal[1];
+        contact_point[2] = npos2 - 0.5 * u * hsign * normal[2];
       }
 
       // Hoist the pairwise coefficients (constant for this i-j type pair) into
