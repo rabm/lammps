@@ -1018,7 +1018,7 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   // Ghost subgrids were already set by the setup borders() call before values were
   //   calculated above, push them to existing ghosts. Later border calls update new ghosts
-  if (distributed_flag && storage_mode == ARRAY) {
+  if (distributed_flag && (storage_mode == ARRAY)) {
     commflag_ls = SUBGRID_LS;
     comm->forward_comm(this, subgrid_size[0] * subgrid_size[1] * subgrid_size[2] + 3);
     commflag_ls = PARENT;

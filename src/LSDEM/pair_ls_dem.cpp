@@ -606,8 +606,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         //   k already carries axis * sin(theta), so neither the axis nor the cross term needs normalising
         //   and (1 - cos) / sin^2 = 1 / (1 + cos) avoids small-angle cancellation
         //   fs_rot = fs cos + (k x fs) + k (k . fs) / (1 + cos), with cos = sqrt(1 - |k|^2)
-        double sinsq = MathExtra::lensq3(k); // sin^2(theta) = |k|^2
-        if (sinsq > EPSILON * EPSILON) { // Don't apply rotation if magnitude is tiny
+        double sinsq = MathExtra::lensq3(k);    // sin^2(theta) = |k|^2
+        if (sinsq > EPSILON * EPSILON) {        // Don't apply rotation if magnitude is tiny
           costheta = sqrt(MAX(1.0 - sinsq, 0.0));
           MathExtra::cross3(k, fs_tmp, term1);
           term2 = MathExtra::dot3(k, fs_tmp) / (1.0 + costheta);

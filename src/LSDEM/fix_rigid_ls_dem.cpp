@@ -404,9 +404,11 @@ void FixRigidLSDEM::init()
 
         // reduce once outside the loop over local atoms, since ranks have different numbers of atoms
         MPI_Allreduce(&max_error, &error_code_global, 1, MPI_INT, MPI_MAX, world);
-        if (error_code_global && comm->me == 0)
-          error->warning(FLERR, "Level set of a body does not include a large enough buffer for the distributed grid cutoff\n"
-            "Local grid padded with BIG values");
+        if (error_code_global && (comm->me == 0))
+          error->warning(FLERR,
+                         "Level set of a body does not include a large enough buffer for the "
+                         "distributed grid cutoff\n"
+                         "Local grid padded with BIG values");
       }
     } else {
       // Calculate watershed and temporarily store peratom data
