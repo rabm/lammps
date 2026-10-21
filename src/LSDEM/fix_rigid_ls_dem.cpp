@@ -665,25 +665,40 @@ void FixRigidLSDEM::setup(int /*vflag*/)
   int iatom;
   int *mask = atom->mask;
   double quat_conj[4];
+  int *q2g_owner;
+  memory->create(q2g_owner, nbody, "rigid/ls/dem:q2g_owner");
   for (int ibody = 0; ibody < nbody; ibody++) {
 
     // calculate relative rotation from inerital frame to LS grid
     //   assume all atoms in body have equivalent initial quaterions
     //   (user could incorrectly use diplace_atoms on subset)
+    // bodies are replicated but only ranks with a local atom of the body can compute this,
+    //   so the lowest such rank computes it and it is summed with zeros from all other ranks
+    q2g_owner[ibody] = comm->nprocs;
+    quatd2g[ibody][0] = quatd2g[ibody][1] = quatd2g[ibody][2] = quatd2g[ibody][3] = 0.0;
     for (iatom = 0; iatom < atom->nlocal; iatom++) {
       if (!(mask[iatom] & groupbit)) continue;
       if (body[iatom] == ibody) break;
     }
+    if (iatom == atom->nlocal) continue;
 
+    q2g_owner[ibody] = comm->me;
     MathExtra::qconjugate(quat[ibody], quat_conj);
-    if (read_quat) {
-      MathExtra::qconjugate(quat[ibody], quat_conj);
+    if (read_quat)
       MathExtra::quatquat(quat_conj, quat_custom[ibody], quatd2g[ibody]);
-    } else {
-      MathExtra::qconjugate(quat[ibody], quat_conj);
+    else
       MathExtra::quatquat(quat_conj, atom->quat[iatom], quatd2g[ibody]);
-    }
   }
+
+  MPI_Allreduce(MPI_IN_PLACE, q2g_owner, nbody, MPI_INT, MPI_MIN, world);
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    if (q2g_owner[ibody] == comm->nprocs)
+      error->all(FLERR, "Rigid body {} has no atoms in fix rigid/ls/dem", ibody + 1);
+    if (q2g_owner[ibody] != comm->me)
+      quatd2g[ibody][0] = quatd2g[ibody][1] = quatd2g[ibody][2] = quatd2g[ibody][3] = 0.0;
+  }
+  if (nbody) MPI_Allreduce(MPI_IN_PLACE, &quatd2g[0][0], 4 * nbody, MPI_DOUBLE, MPI_SUM, world);
+  memory->destroy(q2g_owner);
 
   memory->destroy(itensor_custom);
   memory->destroy(quat_custom);
