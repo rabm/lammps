@@ -51,7 +51,7 @@ using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 enum {ARRAY, WATERSHED};
-enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS};
+enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS, SUBGRID_LS};
 enum {RPARENT, RTAGMIN};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
@@ -305,6 +305,9 @@ void FixRigidSmallLSDEM::init()
     // todo try remove +1 and cast to int
     for (int a = 0; a < 3; a++) subgrid_size[a] = 2 * rcell + 1;
     if (domain->dimension == 2) subgrid_size[2] = 1;
+
+    // room to forward the subgrid values + minima to ghosts in process_levelsets()
+    comm_forward = MAX(comm_forward, subgrid_size[0] * subgrid_size[1] * subgrid_size[2] + 3);
 
     int tmp1, tmp2;
     index_grid_values = atom->find_custom("grid_values", tmp1, tmp2);
@@ -1006,6 +1009,14 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   // resize buffers as necessary
   comm->init();
+
+  // Ghost subgrids were already set by the setup borders() call before values were
+  //   calculated above, push them to existing ghosts. Later border calls update new ghosts
+  if (distributed_flag && storage_mode == ARRAY) {
+    commflag_ls = SUBGRID_LS;
+    comm->forward_comm(this, subgrid_size[0] * subgrid_size[1] * subgrid_size[2] + 3);
+    commflag_ls = PARENT;
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1726,6 +1737,19 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
       j = list[i];
       buf[m++] = ubuf(atom_grid_style[j]).d;
     }
+  } else if (commflag_ls == SUBGRID_LS) {
+    double **grid_values = atom->darray[index_grid_values];
+    double **grid_min_local = atom->darray[index_grid_min];
+    int ngrid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+    m = 0;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      for (int k = 0; k < ngrid; k++)
+        buf[m++] = grid_values[j][k];
+      buf[m++] = grid_min_local[j][0];
+      buf[m++] = grid_min_local[j][1];
+      buf[m++] = grid_min_local[j][2];
+    }
   } else if (commflag_ls == PREFORCE_LS) {
     double **grain_com = atom->xcom;
     double **grain_quat = atom->quat;
@@ -1787,6 +1811,17 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
   } else if (commflag_ls == PROCESS_GS) {
     for (i = first; i < last; i++) {
       atom_grid_style[i] = ubuf(buf[m++]).i;
+    }
+  } else if (commflag_ls == SUBGRID_LS) {
+    double **grid_values = atom->darray[index_grid_values];
+    double **grid_min_local = atom->darray[index_grid_min];
+    int ngrid = subgrid_size[0] * subgrid_size[1] * subgrid_size[2];
+    for (i = first; i < last; i++) {
+      for (int k = 0; k < ngrid; k++)
+        grid_values[i][k] = buf[m++];
+      grid_min_local[i][0] = buf[m++];
+      grid_min_local[i][1] = buf[m++];
+      grid_min_local[i][2] = buf[m++];
     }
   } else if (commflag_ls == PREFORCE_LS) {
     double **grain_com = atom->xcom;
