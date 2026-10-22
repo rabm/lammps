@@ -471,7 +471,7 @@ void FixRigidLSDEM::init()
         max_node_index = MAX(max_node_index, node_index[i]);
       }
       max_node_index += 1; // zero indexed
-      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
+      MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
 
       if (nbin > nmax_bins_all) {
         nmax_bins_all = nbin;
