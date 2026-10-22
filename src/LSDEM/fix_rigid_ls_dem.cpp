@@ -532,7 +532,7 @@ void FixRigidLSDEM::init()
                 newbin = currentbin + sign * ns;
 
                 if (newbin < 0 || newbin >= nbin) continue;
-                if (temp_grid_values[newbin] > grid_stride[ibody]) continue;
+                if (temp_grid_values[newbin] > grid_stride[target_body]) continue;
                 if (temp_grid_values[newbin] < -rcell) continue;
 
                 // if unvisited, add walker
