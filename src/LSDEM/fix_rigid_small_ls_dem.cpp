@@ -814,7 +814,7 @@ void FixRigidSmallLSDEM::process_levelsets()
 
       // Among all bodies with the same file, pick the one with the smallest id
       tagint target_body = MAXTAGINT;
-      for (ibody = 0; ibody < nbody; ibody++) {
+      for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
         if (pair.second.id != bodyLS[ibody].file_id)
           continue;
         target_body = MIN(target_body, tag[body[ibody].ilocal]);
