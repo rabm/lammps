@@ -18,7 +18,8 @@
 
 namespace LSDEMExtra {
 
-  // level-set grid of the grain of a node with array storage, as read by get_ls_value()
+  // level-set grid of the grain of a node, as read by get_ls_value()
+  //   watershed storage: the grid of the grain and the table and buffer of the node, no values
 
   struct GridInfo {
     int global;               // 1 for a grid shared by grains, its values are scaled by scale
@@ -28,6 +29,8 @@ namespace LSDEMExtra {
     double scale;             // scale factor for the values of a shared grid
     const double *values;     // grid values
     int nvalues;              // number of grid values
+    const std::unordered_map<int, double> *ws_table;     // watershed bins owned by the node
+    const std::unordered_map<int, double> *ws_buffer;    // watershed bins next to them
   };
 
   double smeared_heaviside_step(double);
