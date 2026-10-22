@@ -63,7 +63,6 @@ class PairLSDEM : public Pair {
 
   class FixRigidLSDEM *fix_rigid;
   class FixRigidSmallLSDEM *fix_rigid_small;
-  std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
 
   // body of each local and ghost atom, refilled when the neighbor list is rebuilt
   //   grp: 0 = not in an ls/dem group, 1 = rigid/small/ls/dem, 2 = rigid/ls/dem
@@ -103,23 +102,34 @@ class PairLSDEM : public Pair {
   void build_rep_segments();
   void add_rep_candidate(int, int, int, int, int, int, int);
 
-  // contacts of the closest nodes, evaluated by process_contact() in the order of key
+  // watershed bin of a node in the grid of another grain and its grid position
+
+  struct WsBin {
+    int bin;
+    double xl[3];
+  };
+  std::vector<WsBin> wsbins;
+
+  // contacts of the closest nodes (array) or of the nodes owning the bin (watershed),
+  //   evaluated by process_contact() in the order of key
   //   i is the atom whose neighbor list holds the pair, calc = 1 if i is the node used
+  //   ws: index in wsbins, -1 for array
 
   struct Contact {
     int i;
     int j;
     int calc;
     int key;
+    int ws;
   };
   std::vector<Contact> contacts;
-  inline void add_contact(int irep, const Cand &cand)
+  inline void add_contact(int irep, const Cand &cand, int ws)
   {
     if (cand.key < 0) return;
     if (cand.rep_owns_pair)
-      contacts.push_back({irep, cand.idx, 1, cand.key});
+      contacts.push_back({irep, cand.idx, 1, cand.key, ws});
     else
-      contacts.push_back({cand.idx, irep, 0, cand.key});
+      contacts.push_back({cand.idx, irep, 0, cand.key, ws});
   }
 
   void process_contact(int, int, int, int, double *);
