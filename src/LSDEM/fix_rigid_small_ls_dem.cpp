@@ -2574,8 +2574,8 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
 }
 
 /* ----------------------------------------------------------------------
-   grid of the grain of atom j as read by get_ls_value_array(),
-   for a copy of the level sets on the device by pair ls/dem/kk
+   grid of the grain of atom j as read by get_ls_value_array() or
+   get_ls_value_watershed(), for a copy of the level sets on the device by pair ls/dem/kk
 ------------------------------------------------------------------------- */
 
 void FixRigidSmallLSDEM::get_grid_info(int j, GridInfo &g)
@@ -2585,6 +2585,23 @@ void FixRigidSmallLSDEM::get_grid_info(int j, GridInfo &g)
   g.global = (bodyLS[jbody].style == GLOBAL) ? 1 : 0;
   g.stride = bodyLS[jbody].grid_stride;
   g.scale = bodyLS[jbody].grid_scale;
+  g.ws_table = g.ws_buffer = nullptr;
+  if (storage_mode == WATERSHED) {
+    for (int k = 0; k < 3; k++) {
+      g.ngrid[k] = bodyLS[jbody].grid_size[k];
+      g.grid_min[k] = bodyLS[jbody].grid_min[k];
+    }
+    if (bodyLS[jbody].style == DISTRIBUTED) {
+      g.ws_table = &dist_ws_tables[j];
+      g.ws_buffer = &dist_ws_buffers[j];
+    } else {
+      g.ws_table = &global_ws_tables[bodyLS[jbody].grid_index][node_index[j]];
+      g.ws_buffer = &global_ws_buffers[bodyLS[jbody].grid_index][node_index[j]];
+    }
+    g.values = nullptr;
+    g.nvalues = 0;
+    return;
+  }
   if (bodyLS[jbody].style == DISTRIBUTED) {
     double **local_grid_min = atom->darray[index_grid_min];
     for (int k = 0; k < 3; k++) {
