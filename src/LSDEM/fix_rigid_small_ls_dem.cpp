@@ -685,8 +685,7 @@ void FixRigidSmallLSDEM::process_levelsets()
   memory->create(temp_grid_values, max_grid_size_flat, "rigid/small/lsdem:temp_grid_values");
 
   int *global_node_bins = nullptr;
-  if (storage_mode == WATERSHED)
-    memory->grow(global_node_bins, max_grid_size_flat, "rigid/ls/dem:global_node_bins");
+  int nmax_node_bins = -1;
 
   double **grid_values, **grid_min_local;
   int nlocal = atom->nlocal;
@@ -832,6 +831,12 @@ void FixRigidSmallLSDEM::process_levelsets()
       max_node_index += 1; // zero indexed
       MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
 
+      // global_node_bins is indexed by node index, so it needs one entry per node
+      if (max_node_index > nmax_node_bins) {
+        nmax_node_bins = max_node_index;
+        memory->grow(global_node_bins, nmax_node_bins, "rigid/small/ls/dem:global_node_bins");
+      }
+
       int nx = gridfile_data[gridfile].grid_size[0];
       int ny = gridfile_data[gridfile].grid_size[1];
       int nz = gridfile_data[gridfile].grid_size[2];
@@ -870,7 +875,6 @@ void FixRigidSmallLSDEM::process_levelsets()
         global_node_bins[node_index[i]] = currentbin;
       }
 
-      // Note that global_node_bins is sized earlier based on the largest grid
       MPI_Allreduce(MPI_IN_PLACE, global_node_bins, max_node_index, MPI_INT, MPI_MAX, world);
 
       // Now, run watershed operation

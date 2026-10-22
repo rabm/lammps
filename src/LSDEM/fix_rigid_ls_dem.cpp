@@ -375,7 +375,7 @@ void FixRigidLSDEM::init()
 
   double dx[3];
   int error_code, error_code_global, index_global;
-  int nmax_bins_all = -1;
+  int nmax_node_bins = -1;
   for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
@@ -473,9 +473,10 @@ void FixRigidLSDEM::init()
       max_node_index += 1; // zero indexed
       MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_INT, MPI_MAX, world);
 
-      if (nbin > nmax_bins_all) {
-        nmax_bins_all = nbin;
-        memory->grow(global_node_bins, nmax_bins_all, "rigid/ls/dem:global_node_bins");
+      // global_node_bins is indexed by node index, so it needs one entry per node
+      if (max_node_index > nmax_node_bins) {
+        nmax_node_bins = max_node_index;
+        memory->grow(global_node_bins, nmax_node_bins, "rigid/ls/dem:global_node_bins");
       }
 
       for (int k = 0; k < max_node_index; k ++)
