@@ -230,6 +230,13 @@ void PairLSDEM::build_rep_segments()
     }
   }
 
+  // only a node with another image (periodic images with the same tag) can be in a
+  //   segment twice, so only those are compared with the other candidates
+
+  if ((int) has_image.size() < ntotal) has_image.resize(ntotal);
+  for (int a = 0; a < ntotal; a++)
+    has_image[a] = (atom->sametag[a] >= 0) || (atom->map(tag[a]) != a);
+
   // pairs in the neighbor lists of local atoms are numbered in the order of the lists,
   //   which is the order the contacts are evaluated in, pairs of ghost atoms get -1
 
@@ -264,8 +271,9 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
   for (Seg &seg : segs)
     if ((seg.pbody == pbody) && (seg.poff == poff)) {
       // a node may appear more than once with the same tag (periodic images)
-      for (const Cand &other : seg.cand)
-        if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
+      if (has_image[c])
+        for (const Cand &other : seg.cand)
+          if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
       // the candidate with a key and the lowest atom index is kept first
       seg.cand.push_back(cand);
       if ((key >= 0) && ((seg.cand[0].key < 0) || (c < seg.cand[0].idx)))
@@ -1089,6 +1097,9 @@ void PairLSDEM::init_style()
 
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
+
+  if (atom->map_style == Atom::MAP_NONE)
+    error->all(FLERR, "Pair ls/dem requires an atom map, see atom_modify");
 
   // resolve an "auto" cutoff before Pair::init() calls init_one(), so it sets the neighbor cutoff
 

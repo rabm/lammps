@@ -104,6 +104,7 @@ class PairLSDEM : public Pair {
     std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;
+  std::vector<char> has_image;
   bigint segs_lastbuild;
   void build_rep_segments();
   void add_rep_candidate(int, int, int, int, int, int, int);
