@@ -1578,9 +1578,9 @@ double FixRigidLSDEM::get_ls_value_watershed(int i, int j, int currentbin, doubl
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
-  // Rotate normal back to global coordinates
+  // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }
@@ -1621,9 +1621,9 @@ double FixRigidLSDEM::get_ls_value_array(int i, int j, double *normal)
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (grid_style[jbody] == GLOBAL) dist *= grid_scale[jbody];
 
-  // Rotate normal back to global coordinates
+  // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }

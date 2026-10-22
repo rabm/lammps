@@ -2422,9 +2422,9 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
   // Grain-stored grid values are shared and un-scaled, so apply scaling
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
 
-  // Rotate normal back to global coordinates
+  // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }
@@ -2465,8 +2465,10 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
   double dist = interpolate_LS_array(dim, currentbin, mygrid, ngrid, x_local, ix, normal, jstride);
 
   if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+
+  // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
-  MathExtra::quatrotvec(grain_quat[j], normal, normal);
+  if (dist < 0.0) MathExtra::quatrotvec(grain_quat[j], normal, normal);
 
   return dist;
 }
