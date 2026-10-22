@@ -894,6 +894,11 @@ void FixRigidSmallLSDEM::process_levelsets()
 
         if (currentbin < 0) continue;
 
+        // A bin that contains several nodes belongs to the first of them only, otherwise the bin
+        //   is in the watershed of each of them and a node of another grain in that bin
+        //   is in contact with all of them, sharing one shear history in an order-dependent way
+        if (bin_owners[currentbin] != -1) continue;
+
         bin_owners[currentbin] = i;
         node_bins[i].insert(currentbin);
         walkers[i].insert(currentbin);
