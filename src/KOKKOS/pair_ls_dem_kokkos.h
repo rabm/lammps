@@ -107,7 +107,10 @@ struct PairLSDEMKernelsKokkos {
   // force on atom i, torques on atoms i and j and virial of each contact that applied a force,
   //   in the order the contacts were found, kon: index of the contact of each key, -1 for none
 
+  //   kij: atoms i and j of each contact, the virial is summed on the host in their order
+
   Kokkos::View<KK_FLOAT *, DeviceType> kf, kti, ktj, kv;
+  Kokkos::View<int *, DeviceType> kij;
   Kokkos::View<int *, DeviceType> kon;
   Kokkos::View<int, DeviceType> ncontact;
   typename AT::t_kkacc_1d_6 vatom;
@@ -195,6 +198,9 @@ class PairLSDEMKokkos : public PairLSDEM {
   void init_style() override;
   void setup() override;
 
+  // public so its device lambdas can be compiled for CUDA
+  void build_segments();
+
  protected:
   typename AT::t_kkfloat_1d_3_lr x;
   typename AT::t_kkacc_1d_3 f;
@@ -205,11 +211,6 @@ class PairLSDEMKokkos : public PairLSDEM {
   DAT::ttransform_kkacc_1d k_eatom;
   DAT::ttransform_kkacc_1d_6 k_vatom;
 
-  // 1 if atom j of the contact with this key is local, so the virial is tallied twice
-  std::vector<char> h_key_jlocal;
-
-  // keys of pairs with candidates in the order pair ls/dem evaluates its contacts in
-  std::vector<int> h_korder;
 
   int nseg, ncand, nrep, nkey;
 
@@ -220,7 +221,10 @@ class PairLSDEMKokkos : public PairLSDEM {
   std::vector<double> h_ggrid;
   std::vector<int> h_gwkey;
 
-  void build_segments();
+  // work arrays of build_segments(): grain offset and candidate flag of each atom
+
+  Kokkos::View<int *, DeviceType> d_boff, d_partner;
+
   void allocate() override;
 
   friend void pair_virial_fdotr_compute<PairLSDEMKokkos>(PairLSDEMKokkos *);
