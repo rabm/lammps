@@ -225,6 +225,45 @@ void FixRigidSmallLSDEM::init()
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
+  // grain extent from the molecule templates: twice the largest node distance from the centroid
+
+  double grain_extent = 0.0;
+  for (int im = 0; im < atom->nmolecule; im++) {
+    Molecule *onemol = atom->molecules[im];
+    if (!onemol->lsdemflag) continue;
+    int nn = onemol->natoms;
+    if (nn < 2) continue;
+    double **mx = onemol->x;
+    double centroid[3] = {0.0, 0.0, 0.0};
+    for (int a = 0; a < nn; a++)
+      for (int d = 0; d < 3; d++) centroid[d] += mx[a][d] / nn;
+    double rmaxsq = 0.0;
+    for (int a = 0; a < nn; a++) {
+      double del[3];
+      MathExtra::sub3(mx[a], centroid, del);
+      rmaxsq = MAX(rmaxsq, MathExtra::lensq3(del));
+    }
+    grain_extent = MAX(grain_extent, 2.0 * sqrt(rmaxsq));
+  }
+
+  // atoms of a contact partner find the atom that owns their body through the ghost atoms,
+  //   so the communication cutoff must reach the pair cutoff plus the grain extent;
+  //   set it if the user did not give one with comm_modify cutoff, otherwise warn if it is too short
+
+  if (grain_extent > 0.0) {
+    double need = maxcut + grain_extent;
+    if (comm->cutghostuser == 0.0) {
+      comm->cutghostuser = need;
+      if (comm->me == 0)
+        utils::logmesg(lmp, "fix {}: auto communication cutoff = {:.8g} (grain extent {:.8g} + pair cutoff {:.8g})\n",
+                       style, need, grain_extent, maxcut);
+    } else if ((comm->cutghostuser < need) && (comm->me == 0)) {
+      error->warning(FLERR, "Fix {} communication cutoff {:.8g} is shorter than the grain extent "
+                     "{:.8g} plus the pair cutoff {:.8g}, so atoms may not find the atom that owns their body",
+                     style, comm->cutghostuser, grain_extent, maxcut);
+    }
+  }
+
   if (ls_read_flag) return;
   // set in setup_pre_neighbor()
 

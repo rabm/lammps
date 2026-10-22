@@ -263,6 +263,36 @@ void FixRigidLSDEM::init()
     }
   }
 
+  // grain extent from the bounding box of the level set grids
+
+  double grain_extent = 0.0;
+  for (ibody = 0; ibody < nbody; ibody++)
+    for (int d = 0; d < 3; d++)
+      grain_extent =
+          MAX(grain_extent, grid_size[ibody][d] * grid_stride[ibody] * grid_scale[ibody]);
+
+  // atoms of a contact partner find the atom that owns their body through the ghost atoms,
+  //   so the communication cutoff must reach the pair cutoff plus the grain extent;
+  //   set it if the user did not give one with comm_modify cutoff, otherwise warn if it is too short
+
+  if (grain_extent > 0.0) {
+    double need = maxcut + grain_extent;
+    if (comm->cutghostuser == 0.0) {
+      comm->cutghostuser = need;
+      if (comm->me == 0)
+        utils::logmesg(lmp,
+                       "fix {}: auto communication cutoff = {:.8g} (grain extent {:.8g} + pair "
+                       "cutoff {:.8g})\n",
+                       style, need, grain_extent, maxcut);
+    } else if ((comm->cutghostuser < need) && (comm->me == 0)) {
+      error->warning(
+          FLERR,
+          "Fix {} communication cutoff {:.8g} is shorter than the grain extent "
+          "{:.8g} plus the pair cutoff {:.8g}, so atoms may not find the atom that owns their body",
+          style, comm->cutghostuser, grain_extent, maxcut);
+    }
+  }
+
   // ------------------------------ //
   // Allocate memory for level sets //
   // ------------------------------ //
