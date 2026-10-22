@@ -249,10 +249,13 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   nkey = nlocpair;
 
   // a segment without a pair from the neighbor list of a local atom has no contacts,
-  //   so only the segments found in those lists are kept, most pairs of ghost atoms are not
+  //   so only the segments found in those lists are kept, most pairs of ghost atoms are not:
+  //   a pair of a local atom is in a kept segment, a pair of a ghost atom only if the node of
+  //   that segment has a kept segment (most do not) and that one is found
 
   typedef Kokkos::UnorderedMap<uint64_t, void, DeviceType> LiveMap;
   LiveMap live(MAX(16 * inum, 1024));
+  IView kept("pair:kept", ntotal);
   int failed = 1;
   while (failed) {
     failed = 0;
@@ -262,12 +265,21 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         int j = d_neighbors(i, jj);
         if (sp[(j >> SBBITS) & 3] == 0.0) continue;
         j &= NEIGHMASK;
-        if (d_vol(i) <= d_vol(j)) fail += live.insert(segkey(i, d_bid(j), d_off(j))).failed();
-        if (d_vol(i) >= d_vol(j)) fail += live.insert(segkey(j, d_bid(i), d_off(i))).failed();
+        if (d_vol(i) <= d_vol(j)) {
+          fail += live.insert(segkey(i, d_bid(j), d_off(j))).failed();
+          kept(i) = 1;
+        }
+        if (d_vol(i) >= d_vol(j)) {
+          fail += live.insert(segkey(j, d_bid(i), d_off(i))).failed();
+          kept(j) = 1;
+        }
       }
     }, failed);
     if (failed) live.rehash(2 * live.capacity());
   }
+  auto is_kept = [=] KOKKOS_FUNCTION (int ii, int r, int c) {
+    return (ii < inum) || (kept(r) && live.exists(segkey(r, d_bid(c), d_off(c))));
+  };
 
   // candidates of each node of the kept segments, as add_rep_candidate(), filled in any order
   //   and then sorted by grain, offset and atom index, so each segment is a contiguous range
@@ -279,10 +291,8 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       int j = d_neighbors(i, jj);
       if (sp[(j >> SBBITS) & 3] == 0.0) continue;
       j &= NEIGHMASK;
-      if ((d_vol(i) <= d_vol(j)) && live.exists(segkey(i, d_bid(j), d_off(j))))
-        Kokkos::atomic_inc(&rbeg(i));
-      if ((d_vol(i) >= d_vol(j)) && live.exists(segkey(j, d_bid(i), d_off(i))))
-        Kokkos::atomic_inc(&rbeg(j));
+      if ((d_vol(i) <= d_vol(j)) && is_kept(ii, i, j)) Kokkos::atomic_inc(&rbeg(i));
+      if ((d_vol(i) >= d_vol(j)) && is_kept(ii, j, i)) Kokkos::atomic_inc(&rbeg(j));
     }
   });
   bigint nrec = 0;
@@ -319,13 +329,13 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       j &= NEIGHMASK;
       const int key = (ii < inum) ? pbeg(ii) + n : -1;
       n++;
-      if ((d_vol(i) <= d_vol(j)) && live.exists(segkey(i, d_bid(j), d_off(j)))) {
+      if ((d_vol(i) <= d_vol(j)) && is_kept(ii, i, j)) {
         const int m = rbeg(i) + Kokkos::atomic_fetch_add(&rfill(i), 1);
         cand_idx(m) = j;
         cand_key(m) = key;
         cand_owns(m) = 1;
       }
-      if ((d_vol(i) >= d_vol(j)) && live.exists(segkey(j, d_bid(i), d_off(i)))) {
+      if ((d_vol(i) >= d_vol(j)) && is_kept(ii, j, i)) {
         const int m = rbeg(j) + Kokkos::atomic_fetch_add(&rfill(j), 1);
         cand_idx(m) = i;
         cand_key(m) = key;
@@ -333,20 +343,26 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       }
     }
   });
-  live = LiveMap();
   rfill = IView();
 
   // candidates of each node sorted by grain, offset, tag and atom index (unique),
-  //   so the images of a node with the same tag are next to each other
+  //   so the images of a node with the same tag are next to each other;
+  //   grain, offset and the low 32 bits of the tag of each atom are packed in one number,
+  //   so most comparisons read one value of each candidate
 
+  Kokkos::View<uint64_t *, DeviceType> sortkey(
+      Kokkos::view_alloc("pair:sortkey", Kokkos::WithoutInitializing), MAX(ntotal, 1));
+  Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int a) {
+    sortkey(a) = ((uint64_t) (2 * (uint32_t) d_bid(a) + d_off(a)) << 32) |
+      (uint64_t) (uint32_t) d_tag(a);
+  });
   Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int r) {
     const int b = rbeg(r);
     const int n = rbeg(r + 1) - b;
     if (n < 2) return;
     auto less = [&](int x, int y) {
       const int cx = cand_idx(b + x), cy = cand_idx(b + y);
-      if (d_bid(cx) != d_bid(cy)) return d_bid(cx) < d_bid(cy);
-      if (d_off(cx) != d_off(cy)) return d_off(cx) < d_off(cy);
+      if (sortkey(cx) != sortkey(cy)) return sortkey(cx) < sortkey(cy);
       if (d_tag(cx) != d_tag(cy)) return d_tag(cx) < d_tag(cy);
       return cx < cy;
     };
@@ -460,12 +476,16 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   grow(kern.rep_kslot, nkslot, "pair:rep_kslot");
   auto rep_kslot = kern.rep_kslot;
 
-  // the atoms of each contact: i holds the pair in its neighbor list and is local
+  // the atoms of each contact: i holds the pair in its neighbor list and is local,
+  //   as i * 2^32 + j so ordering by it orders by i, then j (none if not a candidate)
 
-  IView key_i("pair:key_i", MAX(nkey, 1));
-  IView key_j("pair:key_j", MAX(nkey, 1));
-  Kokkos::deep_copy(key_i, -1);
-  Kokkos::deep_copy(key_j, -1);
+  typedef Kokkos::View<uint64_t *, DeviceType> UView;
+  auto pack_ij = [] KOKKOS_FUNCTION (int i, int j) {
+    return ((uint64_t) (uint32_t) i << 32) | (uint64_t) (uint32_t) j;
+  };
+  const uint64_t NOPAIR = ~((uint64_t) 0);
+  UView key_ij(Kokkos::view_alloc("pair:key_ij", Kokkos::WithoutInitializing), MAX(nkey, 1));
+  Kokkos::deep_copy(key_ij, NOPAIR);
   Kokkos::parallel_for(Range(0, nrep), KOKKOS_LAMBDA(const int q) {
     const int r = rep_atom(q);
     const int kb = rep_kbeg(q);
@@ -474,13 +494,13 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       if (cand_key(m) < 0) continue;
       const int c = cand_idx(m);
       rep_kslot(kb + n++) = m;
-      key_i(cand_key(m)) = cand_owns(m) ? r : c;
-      key_j(cand_key(m)) = cand_owns(m) ? c : r;
+      key_ij(cand_key(m)) = cand_owns(m) ? pack_ij(r, c) : pack_ij(c, r);
     }
-    auto less = [&](int x, int y) {
-      const int kx = cand_key(rep_kslot(kb + x)), ky = cand_key(rep_kslot(kb + y));
-      return (key_i(kx) < key_i(ky)) || ((key_i(kx) == key_i(ky)) && (key_j(kx) < key_j(ky)));
+    auto ij = [&](int x) {
+      const int m = rep_kslot(kb + x);
+      return cand_owns(m) ? pack_ij(r, cand_idx(m)) : pack_ij(cand_idx(m), r);
     };
+    auto less = [&](int x, int y) { return ij(x) < ij(y); };
     auto swap = [&](int x, int y) {
       const int t = rep_kslot(kb + x);
       rep_kslot(kb + x) = rep_kslot(kb + y);
@@ -495,9 +515,11 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   auto gat_beg = kern.gat_beg;
   IView gcnt("pair:gcnt", nlocal + 1);
   Kokkos::parallel_for(Range(0, nkey), KOKKOS_LAMBDA(const int key) {
-    if (key_i(key) < 0) return;
-    Kokkos::atomic_inc(&gcnt(key_i(key)));
-    if (key_j(key) < nlocal) Kokkos::atomic_inc(&gcnt(key_j(key)));
+    const uint64_t kij = key_ij(key);
+    if (kij == NOPAIR) return;
+    const int i = kij >> 32, j = kij & 0xffffffffu;
+    Kokkos::atomic_inc(&gcnt(i));
+    if (j < nlocal) Kokkos::atomic_inc(&gcnt(j));
   });
   int ngat = 0;
   Kokkos::parallel_scan(Range(0, nlocal + 1), KOKKOS_LAMBDA(const int a, int &upd, const bool fin) {
@@ -508,16 +530,16 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   auto gat_ent = kern.gat_ent;
   Kokkos::deep_copy(gcnt, 0);
   Kokkos::parallel_for(Range(0, nkey), KOKKOS_LAMBDA(const int key) {
-    if (key_i(key) < 0) return;
-    gat_ent(gat_beg(key_i(key)) + Kokkos::atomic_fetch_add(&gcnt(key_i(key)), 1)) = 2 * key;
-    if (key_j(key) < nlocal)
-      gat_ent(gat_beg(key_j(key)) + Kokkos::atomic_fetch_add(&gcnt(key_j(key)), 1)) = 2 * key + 1;
+    const uint64_t kij = key_ij(key);
+    if (kij == NOPAIR) return;
+    const int i = kij >> 32, j = kij & 0xffffffffu;
+    gat_ent(gat_beg(i) + Kokkos::atomic_fetch_add(&gcnt(i), 1)) = 2 * key;
+    if (j < nlocal) gat_ent(gat_beg(j) + Kokkos::atomic_fetch_add(&gcnt(j), 1)) = 2 * key + 1;
   });
   Kokkos::parallel_for(Range(0, nlocal), KOKKOS_LAMBDA(const int a) {
     const int b = gat_beg(a);
     auto less = [&](int x, int y) {
-      const int kx = gat_ent(b + x) >> 1, ky = gat_ent(b + y) >> 1;
-      return (key_i(kx) < key_i(ky)) || ((key_i(kx) == key_i(ky)) && (key_j(kx) < key_j(ky)));
+      return key_ij(gat_ent(b + x) >> 1) < key_ij(gat_ent(b + y) >> 1);
     };
     auto swap = [&](int x, int y) {
       const int t = gat_ent(b + x);
