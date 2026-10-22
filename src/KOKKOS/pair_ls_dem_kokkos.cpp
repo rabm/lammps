@@ -24,14 +24,14 @@
 #include "force.h"
 #include "kokkos.h"
 #include "memory_kokkos.h"
-#include "neigh_list.h"
+#include "neigh_list_kokkos.h"
 #include "neigh_request.h"
 #include "neighbor.h"
 #include "update.h"
 
+#include <Kokkos_UnorderedMap.hpp>
 #include <algorithm>
 #include <array>
-#include <unordered_set>
 
 using namespace LAMMPS_NS;
 
@@ -54,6 +54,29 @@ static void upload(ViewType &d, const std::vector<T> &h, const char *name)
   auto h_view = Kokkos::create_mirror_view(Kokkos::subview(d, std::make_pair((size_t) 0, n)));
   for (size_t m = 0; m < n; m++) h_view(m) = static_cast<V>(h[m]);
   Kokkos::deep_copy(Kokkos::subview(d, std::make_pair((size_t) 0, n)), h_view);
+}
+
+/* ----------------------------------------------------------------------
+   heap sort of n items in one thread, less(x, y) compares and swap(x, y) exchanges items x and y
+------------------------------------------------------------------------- */
+
+template <class Less, class Swap>
+KOKKOS_INLINE_FUNCTION static void heap_sort(const int n, const Less &less, const Swap &swap)
+{
+  auto sift = [&](int root, const int end) {
+    while (2 * root + 1 < end) {
+      int child = 2 * root + 1;
+      if ((child + 1 < end) && less(child, child + 1)) child++;
+      if (!less(root, child)) return;
+      swap(root, child);
+      root = child;
+    }
+  };
+  for (int start = n / 2 - 1; start >= 0; start--) sift(start, n);
+  for (int end = n - 1; end > 0; end--) {
+    swap(0, end);
+    sift(0, end);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -108,12 +131,13 @@ void PairLSDEMKokkos<DeviceType>::init_style()
 {
   PairLSDEM::init_style();
 
-  // the half neighbor list with ghost atoms has no KOKKOS variant, so it is built on the host
-  //   in the same order as for pair ls/dem, the segments and contact keys follow that order
+  // half neighbor list with ghost atoms built by KOKKOS, the contact keys do not depend
+  //   on its order, see build_segments()
 
   auto request = neighbor->find_request(this);
-  request->set_kokkos_host(0);
-  request->set_kokkos_device(0);
+  request->set_kokkos_host(std::is_same_v<DeviceType, LMPHostType> &&
+                           !std::is_same_v<DeviceType, LMPDeviceType>);
+  request->set_kokkos_device(std::is_same_v<DeviceType, LMPDeviceType>);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -149,217 +173,363 @@ void PairLSDEMKokkos<DeviceType>::setup()
 }
 
 /* ----------------------------------------------------------------------
-   segments of PairLSDEM::build_rep_segments() built from the neighbor list into flat
-   arrays on the device, with the level-set grids of the candidate nodes,
-   the candidates of each node and the contacts of each atom are ordered by the atoms of their pair
+   segments of PairLSDEM::build_rep_segments() built on the device from the device
+   neighbor list into flat arrays, with the level-set grids of the candidate nodes,
+   the contacts of each node and of each atom are ordered by the atoms of their pair
+   as pair ls/dem evaluates them, so nothing depends on the order of the neighbor list
    the order of the segments of a node does not matter, each is evaluated on its own
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::build_segments()
 {
+  typedef Kokkos::RangePolicy<DeviceType> Range;
+  typedef Kokkos::View<int *, DeviceType> IView;
   const int nlocal = atom->nlocal;
   const int ntotal = nlocal + atom->nghost;
   const int inum = list->inum;
   const int allnum = list->inum + list->gnum;
-  int *ilist = list->ilist;
-  int *numneigh = list->numneigh;
-  int **firstneigh = list->firstneigh;
-  double *special_lj = force->special_lj;
-  tagint *tag = atom->tag;
 
-  // candidates of each node in the order of the neighbor list, as in build_rep_segments()
+  for (int a = 0; a < ntotal; a++)
+    if (binfo[a].grp == 0)
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", atom->tag[a]);
 
-  struct Rec {
-    int bid;
-    int cand;
-    int key;
-    char off;
-    char owns;
-    char tie;
+  // body of each atom
+
+  {
+    std::vector<double> h_vol(ntotal), h_area(ntotal);
+    std::vector<int> h_bid(ntotal), h_bidx(ntotal), h_boff(ntotal);
+    for (int a = 0; a < ntotal; a++) {
+      const BodyInfo &b = binfo[a];
+      h_vol[a] = b.vol;
+      h_area[a] = b.area;
+      h_bid[a] = b.bID;
+      h_bidx[a] = b.bidx;
+      h_boff[a] = b.off;
+    }
+    upload(kern.vol, h_vol, "pair:vol");
+    upload(kern.area, h_area, "pair:area");
+    upload(kern.bid, h_bid, "pair:bid");
+    upload(kern.bidx, h_bidx, "pair:bidx");
+    upload(d_boff, h_boff, "pair:boff");
+  }
+
+  atomKK->sync(execution_space, TAG_MASK);
+  auto d_tag = atomKK->k_tag.view<DeviceType>();
+  auto d_vol = kern.vol;
+  auto d_bid = kern.bid;
+  auto d_off = d_boff;
+
+  auto k_list = static_cast<NeighListKokkos<DeviceType> *>(list);
+  auto d_ilist = k_list->d_ilist;
+  auto d_numneigh = k_list->d_numneigh;
+  auto d_neighbors = k_list->d_neighbors;
+  Kokkos::Array<double, 4> sp;
+  for (int k = 0; k < 4; k++) sp[k] = force->special_lj[k];
+
+  auto segkey = [] KOKKOS_FUNCTION (int r, int bid, int off) {
+    return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
   };
+
+  // pairs of each atom without excluded pairs, those of local atoms are numbered in
+  //   the order of the list (their key), which is only used to find their contact
+
+  IView pbeg(Kokkos::view_alloc("pair:pbeg", Kokkos::WithoutInitializing), allnum + 1);
+  bigint npair = 0;
+  Kokkos::parallel_scan(Range(0, allnum), KOKKOS_LAMBDA(const int ii, bigint &upd, const bool fin) {
+    const int i = d_ilist(ii);
+    int n = 0;
+    for (int jj = 0; jj < d_numneigh(i); jj++) n += (sp[(d_neighbors(i, jj) >> SBBITS) & 3] != 0.0);
+    if (fin) pbeg(ii) = upd;
+    upd += n;
+  }, npair);
+  if (2 * npair > MAXSMALLINT) error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
+  int nlocpair = 0;
+  if (inum) Kokkos::deep_copy(nlocpair, Kokkos::subview(pbeg, inum));
+  nkey = nlocpair;
 
   // a segment without a pair from the neighbor list of a local atom has no contacts,
   //   so only the segments found in those lists are kept, most pairs of ghost atoms are not
 
-  auto segkey = [](int r, int bid, int off) {
-    return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
-  };
-  std::unordered_set<uint64_t> live;
-  for (int ii = 0; ii < allnum; ii++) {
-    const int i = ilist[ii];
-    const BodyInfo &bi = binfo[i];
-    if (bi.grp == 0)
-      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-    int *jlist = firstneigh[i];
-    const int jnum = numneigh[i];
-    for (int jj = 0; jj < jnum; jj++) {
-      int j = jlist[jj];
-      if (special_lj[sbmask(j)] == 0) continue;
-      j &= NEIGHMASK;
-      const BodyInfo &bj = binfo[j];
-      if (bj.grp == 0)
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      if (ii >= inum) continue;
-      if (bi.vol <= bj.vol) live.insert(segkey(i, bj.bID, bj.off));
-      if (bi.vol >= bj.vol) live.insert(segkey(j, bi.bID, bi.off));
-    }
-  }
-
-  // pass 1 counts and pass 2 stores the candidates of each node of the kept segments
-
-  std::vector<bigint> rbeg(ntotal + 1, 0);
-  std::vector<Rec> rec;
-  for (int pass = 1; pass <= 2; pass++) {
-    std::vector<bigint> fill;
-    if (pass == 2) {
-      for (int a = 0; a < ntotal; a++) rbeg[a + 1] += rbeg[a];
-      rec.resize(rbeg[ntotal]);
-      fill.assign(rbeg.begin(), rbeg.end() - 1);
-    }
-    int ipair = 0;
-    for (int ii = 0; ii < allnum; ii++) {
-      const int i = ilist[ii];
-      const BodyInfo &bi = binfo[i];
-      int *jlist = firstneigh[i];
-      const int jnum = numneigh[i];
-      for (int jj = 0; jj < jnum; jj++) {
-        int j = jlist[jj];
-        if (special_lj[sbmask(j)] == 0) continue;
+  typedef Kokkos::UnorderedMap<uint64_t, void, DeviceType> LiveMap;
+  LiveMap live(MAX(16 * inum, 1024));
+  int failed = 1;
+  while (failed) {
+    failed = 0;
+    Kokkos::parallel_reduce(Range(0, inum), KOKKOS_LAMBDA(const int ii, int &fail) {
+      const int i = d_ilist(ii);
+      for (int jj = 0; jj < d_numneigh(i); jj++) {
+        int j = d_neighbors(i, jj);
+        if (sp[(j >> SBBITS) & 3] == 0.0) continue;
         j &= NEIGHMASK;
-        const BodyInfo &bj = binfo[j];
-        const int key = (ii < inum) ? ipair++ : -1;
-        const int tie = (bi.vol == bj.vol);
-        if ((bi.vol <= bj.vol) && live.count(segkey(i, bj.bID, bj.off))) {
-          if (pass == 1) rbeg[i + 1]++;
-          else rec[fill[i]++] = {bj.bID, j, key, bj.off, 1, (char) tie};
-        }
-        if ((bi.vol >= bj.vol) && live.count(segkey(j, bi.bID, bi.off))) {
-          if (pass == 1) rbeg[j + 1]++;
-          else rec[fill[j]++] = {bi.bID, i, key, bi.off, 0, (char) tie};
-        }
+        if (d_vol(i) <= d_vol(j)) fail += live.insert(segkey(i, d_bid(j), d_off(j))).failed();
+        if (d_vol(i) >= d_vol(j)) fail += live.insert(segkey(j, d_bid(i), d_off(i))).failed();
+      }
+    }, failed);
+    if (failed) live.rehash(2 * live.capacity());
+  }
+
+  // candidates of each node of the kept segments, as add_rep_candidate(), filled in any order
+  //   and then sorted by grain, offset and atom index, so each segment is a contiguous range
+
+  IView rbeg("pair:rbeg", ntotal + 1);
+  Kokkos::parallel_for(Range(0, allnum), KOKKOS_LAMBDA(const int ii) {
+    const int i = d_ilist(ii);
+    for (int jj = 0; jj < d_numneigh(i); jj++) {
+      int j = d_neighbors(i, jj);
+      if (sp[(j >> SBBITS) & 3] == 0.0) continue;
+      j &= NEIGHMASK;
+      if ((d_vol(i) <= d_vol(j)) && live.exists(segkey(i, d_bid(j), d_off(j))))
+        Kokkos::atomic_inc(&rbeg(i));
+      if ((d_vol(i) >= d_vol(j)) && live.exists(segkey(j, d_bid(i), d_off(i))))
+        Kokkos::atomic_inc(&rbeg(j));
+    }
+  });
+  bigint nrec = 0;
+  Kokkos::parallel_scan(Range(0, ntotal + 1),
+                        KOKKOS_LAMBDA(const int a, bigint &upd, const bool fin) {
+    const int n = (a < ntotal) ? rbeg(a) : 0;
+    if (fin) rbeg(a) = upd;
+    upd += n;
+  }, nrec);
+  if (nrec > MAXSMALLINT) error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
+  ncand = nrec;
+
+  auto grow = [](IView &d, int n, const char *name) {
+    if ((int) d.extent(0) < MAX(n, 1))
+      d = IView(Kokkos::view_alloc(std::string(name), Kokkos::WithoutInitializing), MAX(n, 1));
+  };
+  grow(kern.cand_idx, ncand, "pair:cand_idx");
+  grow(kern.cand_key, ncand, "pair:cand_key");
+  grow(kern.cand_owns, ncand, "pair:cand_owns");
+  if (watershed_flag) grow(kern.cand_seg, ncand, "pair:cand_seg");
+  auto cand_idx = kern.cand_idx;
+  auto cand_key = kern.cand_key;
+  auto cand_owns = kern.cand_owns;
+  auto cand_seg = kern.cand_seg;
+  const int ncand_ = ncand;
+
+  IView rfill("pair:rfill", ntotal);
+  Kokkos::parallel_for(Range(0, allnum), KOKKOS_LAMBDA(const int ii) {
+    const int i = d_ilist(ii);
+    int n = 0;
+    for (int jj = 0; jj < d_numneigh(i); jj++) {
+      int j = d_neighbors(i, jj);
+      if (sp[(j >> SBBITS) & 3] == 0.0) continue;
+      j &= NEIGHMASK;
+      const int key = (ii < inum) ? pbeg(ii) + n : -1;
+      n++;
+      if ((d_vol(i) <= d_vol(j)) && live.exists(segkey(i, d_bid(j), d_off(j)))) {
+        const int m = rbeg(i) + Kokkos::atomic_fetch_add(&rfill(i), 1);
+        cand_idx(m) = j;
+        cand_key(m) = key;
+        cand_owns(m) = 1;
+      }
+      if ((d_vol(i) >= d_vol(j)) && live.exists(segkey(j, d_bid(i), d_off(i)))) {
+        const int m = rbeg(j) + Kokkos::atomic_fetch_add(&rfill(j), 1);
+        cand_idx(m) = i;
+        cand_key(m) = key;
+        cand_owns(m) = 0;
       }
     }
-  }
-  std::unordered_set<uint64_t>().swap(live);
+  });
+  live = LiveMap();
+  rfill = IView();
 
-  // group the candidates of each node by the grain they belong to, keeping their order
+  // candidates of each node sorted by grain, offset, tag and atom index (unique),
+  //   so the images of a node with the same tag are next to each other
 
-  std::vector<int> h_seg_rep, h_seg_flag, h_seg_cbeg(1, 0);
-  std::vector<int> h_cand_idx, h_cand_key, h_cand_owns, h_cand_seg;
-  std::vector<int> h_rep_atom, h_rep_kbeg(1, 0), h_rep_kslot;
-  std::vector<char> partner(ntotal, 0);
-  std::vector<std::array<int, 3>> keyslot;
-  std::vector<tagint> tags;
-  int maxkey = -1;
+  Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int r) {
+    const int b = rbeg(r);
+    const int n = rbeg(r + 1) - b;
+    if (n < 2) return;
+    auto less = [&](int x, int y) {
+      const int cx = cand_idx(b + x), cy = cand_idx(b + y);
+      if (d_bid(cx) != d_bid(cy)) return d_bid(cx) < d_bid(cy);
+      if (d_off(cx) != d_off(cy)) return d_off(cx) < d_off(cy);
+      if (d_tag(cx) != d_tag(cy)) return d_tag(cx) < d_tag(cy);
+      return cx < cy;
+    };
+    auto swap = [&](int x, int y) {
+      int t = cand_idx(b + x);
+      cand_idx(b + x) = cand_idx(b + y);
+      cand_idx(b + y) = t;
+      t = cand_key(b + x);
+      cand_key(b + x) = cand_key(b + y);
+      cand_key(b + y) = t;
+      t = cand_owns(b + x);
+      cand_owns(b + x) = cand_owns(b + y);
+      cand_owns(b + y) = t;
+    };
+    heap_sort(n, less, swap);
+  });
+
+  // segments: the candidates of a node on one grain
+
+  IView rseg("pair:rseg", ntotal + 1);
+  Kokkos::parallel_scan(Range(0, ntotal + 1), KOKKOS_LAMBDA(const int r, int &upd, const bool fin) {
+    int n = 0;
+    if (r < ntotal)
+      for (int m = rbeg(r); m < rbeg(r + 1); m++)
+        n += (m == rbeg(r)) || (d_bid(cand_idx(m)) != d_bid(cand_idx(m - 1))) ||
+          (d_off(cand_idx(m)) != d_off(cand_idx(m - 1)));
+    if (fin) rseg(r) = upd;
+    upd += n;
+  }, nseg);
+  grow(kern.seg_rep, nseg, "pair:seg_rep");
+  grow(kern.seg_flag, nseg, "pair:seg_flag");
+  grow(kern.seg_cbeg, nseg + 1, "pair:seg_cbeg");
+  auto seg_rep = kern.seg_rep;
+  auto seg_flag = kern.seg_flag;
+  auto seg_cbeg = kern.seg_cbeg;
+  const int nseg_ = nseg;
+  const int watershed_ = watershed_flag;
+  Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int r) {
+    int s = rseg(r) - 1;
+    for (int m = rbeg(r); m < rbeg(r + 1); m++) {
+      if ((m == rbeg(r)) || (d_bid(cand_idx(m)) != d_bid(cand_idx(m - 1))) ||
+          (d_off(cand_idx(m)) != d_off(cand_idx(m - 1)))) {
+        s++;
+        seg_cbeg(s) = m;
+        seg_rep(s) = r;
+        seg_flag(s) = (d_vol(r) == d_vol(cand_idx(m))) ? 1 : 0;
+      }
+      if (watershed_) cand_seg(m) = s;
+    }
+    if (r == 0) seg_cbeg(nseg_) = ncand_;
+  });
+
+  // a node may appear more than once with the same tag (periodic images),
+  //   a segment has one contact, or one per image of the closest node
+
+  if ((int) d_partner.extent(0) < MAX(ntotal, 1))
+    d_partner = IView("pair:partner", MAX(ntotal, 1));
+  else
+    Kokkos::deep_copy(d_partner, 0);
+  auto partner = d_partner;
   bigint maxcontact = 0;
-  h_cand_idx.reserve(rec.size());
-  h_cand_key.reserve(rec.size());
-  h_cand_owns.reserve(rec.size());
-  h_cand_seg.reserve(rec.size());
-
-  for (int r = 0; r < ntotal; r++) {
-    if (rbeg[r] == rbeg[r + 1]) continue;
-    auto first = rec.begin() + rbeg[r];
-    auto last = rec.begin() + rbeg[r + 1];
-    std::stable_sort(first, last, [](const Rec &x, const Rec &y) {
-      return (x.bid < y.bid) || ((x.bid == y.bid) && (x.off < y.off));
-    });
-    keyslot.clear();
-    for (auto sb = first; sb != last;) {
-      auto se = sb;
-      while ((se != last) && (se->bid == sb->bid) && (se->off == sb->off)) ++se;
-
-      // a node may appear more than once with the same tag (periodic images)
-      tags.clear();
-      int nkeyed = 0;
-      for (auto c = sb; c != se; ++c) {
-        tags.push_back(tag[c->cand]);
-        nkeyed += (c->key >= 0);
-      }
-      std::sort(tags.begin(), tags.end());
-      const int dup = std::adjacent_find(tags.begin(), tags.end()) != tags.end();
-
-      // a segment has one contact, or one per image of the closest node
-      maxcontact += dup ? nkeyed : MIN(nkeyed, 1);
-      h_seg_rep.push_back(r);
-      h_seg_flag.push_back((sb->tie ? 1 : 0) | (dup ? 2 : 0));
-      for (auto c = sb; c != se; ++c) {
-        const int slot = h_cand_idx.size();
-        h_cand_idx.push_back(c->cand);
-        h_cand_key.push_back(c->key);
-        h_cand_owns.push_back(c->owns);
-        h_cand_seg.push_back(h_seg_rep.size() - 1);
-        partner[c->cand] = 1;
-        if (c->key >= 0) {
-          keyslot.push_back({c->owns ? r : c->cand, c->owns ? c->cand : r, slot});
-          maxkey = MAX(maxkey, c->key);
-        }
-      }
-      h_seg_cbeg.push_back(h_cand_idx.size());
-      sb = se;
+  Kokkos::parallel_reduce(Range(0, nseg), KOKKOS_LAMBDA(const int s, bigint &sum) {
+    const int b = seg_cbeg(s);
+    const int e = seg_cbeg(s + 1);
+    int dup = 0, nkeyed = 0;
+    for (int m = b; m < e; m++) {
+      nkeyed += (cand_key(m) >= 0);
+      Kokkos::atomic_max(&partner(cand_idx(m)), 1);
+      if ((m > b) && (d_tag(cand_idx(m)) == d_tag(cand_idx(m - 1)))) dup = 1;
     }
-    std::sort(keyslot.begin(), keyslot.end());
-    h_rep_atom.push_back(r);
-    for (const auto &ks : keyslot) h_rep_kslot.push_back(ks[2]);
-    h_rep_kbeg.push_back(h_rep_kslot.size());
-  }
-  std::vector<Rec>().swap(rec);
-  std::vector<bigint>().swap(rbeg);
+    if (dup) seg_flag(s) |= 2;
+    sum += dup ? nkeyed : MIN(nkeyed, 1);
+  }, maxcontact);
+  if (maxcontact > MAXSMALLINT / 6) error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
 
-  nseg = h_seg_rep.size();
-  ncand = h_cand_idx.size();
-  nrep = h_rep_atom.size();
-  nkey = maxkey + 1;
-  if ((nkey > MAXSMALLINT / 2) || (maxcontact > MAXSMALLINT / 6))
-    error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
+  // nodes with segments and their candidates in the order of the atoms of their pair
+
+  IView rrep(Kokkos::view_alloc("pair:rrep", Kokkos::WithoutInitializing), ntotal);
+  Kokkos::parallel_scan(Range(0, ntotal), KOKKOS_LAMBDA(const int r, int &upd, const bool fin) {
+    const int has = (rbeg(r + 1) > rbeg(r));
+    if (fin) rrep(r) = upd;
+    upd += has;
+  }, nrep);
+  grow(kern.rep_atom, nrep, "pair:rep_atom");
+  grow(kern.rep_kbeg, nrep + 1, "pair:rep_kbeg");
+  auto rep_atom = kern.rep_atom;
+  auto rep_kbeg = kern.rep_kbeg;
+  IView rep_cbeg(Kokkos::view_alloc("pair:rep_cbeg", Kokkos::WithoutInitializing), nrep + 1);
+  const int nrep_ = nrep;
+  Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int r) {
+    if (rbeg(r + 1) > rbeg(r)) {
+      rep_atom(rrep(r)) = r;
+      rep_cbeg(rrep(r)) = rbeg(r);
+    }
+    if (r == 0) rep_cbeg(nrep_) = ncand_;
+  });
+  rrep = IView();
+  rseg = IView();
+  int nkslot = 0;
+  Kokkos::parallel_scan(Range(0, nrep), KOKKOS_LAMBDA(const int q, int &upd, const bool fin) {
+    int n = 0;
+    for (int m = rep_cbeg(q); m < rep_cbeg(q + 1); m++) n += (cand_key(m) >= 0);
+    if (fin) rep_kbeg(q) = upd;
+    upd += n;
+    if (fin && (q == nrep_ - 1)) rep_kbeg(nrep_) = upd;
+  }, nkslot);
+  grow(kern.rep_kslot, nkslot, "pair:rep_kslot");
+  auto rep_kslot = kern.rep_kslot;
 
   // the atoms of each contact: i holds the pair in its neighbor list and is local
 
-  std::vector<int> key_i(nkey, -1), key_j(nkey, -1);
-  for (int q = 0; q < nrep; q++) {
-    const int r = h_rep_atom[q];
-    for (int k = h_rep_kbeg[q]; k < h_rep_kbeg[q + 1]; k++) {
-      const int slot = h_rep_kslot[k];
-      const int key = h_cand_key[slot];
-      key_i[key] = h_cand_owns[slot] ? r : h_cand_idx[slot];
-      key_j[key] = h_cand_owns[slot] ? h_cand_idx[slot] : r;
+  IView key_i("pair:key_i", MAX(nkey, 1));
+  IView key_j("pair:key_j", MAX(nkey, 1));
+  Kokkos::deep_copy(key_i, -1);
+  Kokkos::deep_copy(key_j, -1);
+  Kokkos::parallel_for(Range(0, nrep), KOKKOS_LAMBDA(const int q) {
+    const int r = rep_atom(q);
+    const int kb = rep_kbeg(q);
+    int n = 0;
+    for (int m = rep_cbeg(q); m < rep_cbeg(q + 1); m++) {
+      if (cand_key(m) < 0) continue;
+      const int c = cand_idx(m);
+      rep_kslot(kb + n++) = m;
+      key_i(cand_key(m)) = cand_owns(m) ? r : c;
+      key_j(cand_key(m)) = cand_owns(m) ? c : r;
     }
-  }
-
-  // keys in the order of the atoms of their pair, the order pair ls/dem evaluates contacts in
-
-  h_korder.clear();
-  for (int key = 0; key < nkey; key++)
-    if (key_i[key] >= 0) h_korder.push_back(key);
-  std::sort(h_korder.begin(), h_korder.end(), [&](int a, int b) {
-    return (key_i[a] < key_i[b]) || ((key_i[a] == key_i[b]) && (key_j[a] < key_j[b]));
+    auto less = [&](int x, int y) {
+      const int kx = cand_key(rep_kslot(kb + x)), ky = cand_key(rep_kslot(kb + y));
+      return (key_i(kx) < key_i(ky)) || ((key_i(kx) == key_i(ky)) && (key_j(kx) < key_j(ky)));
+    };
+    auto swap = [&](int x, int y) {
+      const int t = rep_kslot(kb + x);
+      rep_kslot(kb + x) = rep_kslot(kb + y);
+      rep_kslot(kb + y) = t;
+    };
+    heap_sort(n, less, swap);
   });
 
-  // contacts of each local atom, filled in that order
+  // contacts of each local atom in the order of the atoms of their pair: 2 * key, + 1 if j
 
-  std::vector<int> h_gat_beg(nlocal + 1, 0), h_gat_ent;
-  for (const int key : h_korder) {
-    h_gat_beg[key_i[key] + 1]++;
-    if (key_j[key] < nlocal) h_gat_beg[key_j[key] + 1]++;
-  }
-  for (int a = 0; a < nlocal; a++) h_gat_beg[a + 1] += h_gat_beg[a];
-  h_gat_ent.resize(h_gat_beg[nlocal]);
-  {
-    std::vector<int> fill(h_gat_beg.begin(), h_gat_beg.end() - 1);
-    for (const int key : h_korder) {
-      h_gat_ent[fill[key_i[key]]++] = 2 * key;
-      if (key_j[key] < nlocal) h_gat_ent[fill[key_j[key]]++] = 2 * key + 1;
-    }
-  }
-  h_key_jlocal.assign(nkey, 0);
-  for (int key = 0; key < nkey; key++) h_key_jlocal[key] = (key_j[key] >= 0) && (key_j[key] < nlocal);
+  grow(kern.gat_beg, nlocal + 1, "pair:gat_beg");
+  auto gat_beg = kern.gat_beg;
+  IView gcnt("pair:gcnt", nlocal + 1);
+  Kokkos::parallel_for(Range(0, nkey), KOKKOS_LAMBDA(const int key) {
+    if (key_i(key) < 0) return;
+    Kokkos::atomic_inc(&gcnt(key_i(key)));
+    if (key_j(key) < nlocal) Kokkos::atomic_inc(&gcnt(key_j(key)));
+  });
+  int ngat = 0;
+  Kokkos::parallel_scan(Range(0, nlocal + 1), KOKKOS_LAMBDA(const int a, int &upd, const bool fin) {
+    if (fin) gat_beg(a) = upd;
+    upd += (a < nlocal) ? gcnt(a) : 0;
+  }, ngat);
+  grow(kern.gat_ent, ngat, "pair:gat_ent");
+  auto gat_ent = kern.gat_ent;
+  Kokkos::deep_copy(gcnt, 0);
+  Kokkos::parallel_for(Range(0, nkey), KOKKOS_LAMBDA(const int key) {
+    if (key_i(key) < 0) return;
+    gat_ent(gat_beg(key_i(key)) + Kokkos::atomic_fetch_add(&gcnt(key_i(key)), 1)) = 2 * key;
+    if (key_j(key) < nlocal)
+      gat_ent(gat_beg(key_j(key)) + Kokkos::atomic_fetch_add(&gcnt(key_j(key)), 1)) = 2 * key + 1;
+  });
+  Kokkos::parallel_for(Range(0, nlocal), KOKKOS_LAMBDA(const int a) {
+    const int b = gat_beg(a);
+    auto less = [&](int x, int y) {
+      const int kx = gat_ent(b + x) >> 1, ky = gat_ent(b + y) >> 1;
+      return (key_i(kx) < key_i(ky)) || ((key_i(kx) == key_i(ky)) && (key_j(kx) < key_j(ky)));
+    };
+    auto swap = [&](int x, int y) {
+      const int t = gat_ent(b + x);
+      gat_ent(b + x) = gat_ent(b + y);
+      gat_ent(b + y) = t;
+    };
+    heap_sort(gat_beg(a + 1) - b, less, swap);
+  });
 
-  // body of each atom and the level-set grid of the atoms that are candidates
+  auto h_partner = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), d_partner);
 
-  std::vector<double> h_vol(ntotal), h_area(ntotal), h_gmin(3 * ntotal, 0.0);
+  // level-set grid of the atoms that are candidates
+
+  std::vector<double> h_gmin(3 * ntotal, 0.0);
   std::vector<double> h_gstride(ntotal, 1.0), h_gscale(ntotal, 1.0), h_dgrid;
-  std::vector<int> h_bid(ntotal), h_bidx(ntotal), h_gstyle(ntotal, -1), h_gngrid(3 * ntotal, 0);
+  std::vector<int> h_gstyle(ntotal, -1), h_gngrid(3 * ntotal, 0);
   std::vector<int> h_gnws(ntotal, 0), h_dwkey;
   std::vector<bigint> h_goff(ntotal, 0);
   int newglobal = 0;
@@ -389,11 +559,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
 
   for (int a = 0; a < ntotal; a++) {
     const BodyInfo &b = binfo[a];
-    h_vol[a] = b.vol;
-    h_area[a] = b.area;
-    h_bid[a] = b.bID;
-    h_bidx[a] = b.bidx;
-    if (!partner[a] || (b.bidx < 0) || (b.grp == 0)) continue;
+    if (!h_partner(a) || (b.bidx < 0) || (b.grp == 0)) continue;
 
     if (b.grp == 2)
       fix_rigid->get_grid_info(a, g);
@@ -440,22 +606,6 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     }
   }
 
-  upload(kern.seg_rep, h_seg_rep, "pair:seg_rep");
-  upload(kern.seg_flag, h_seg_flag, "pair:seg_flag");
-  upload(kern.seg_cbeg, h_seg_cbeg, "pair:seg_cbeg");
-  upload(kern.cand_idx, h_cand_idx, "pair:cand_idx");
-  upload(kern.cand_key, h_cand_key, "pair:cand_key");
-  upload(kern.cand_owns, h_cand_owns, "pair:cand_owns");
-  if (watershed_flag) upload(kern.cand_seg, h_cand_seg, "pair:cand_seg");
-  upload(kern.rep_atom, h_rep_atom, "pair:rep_atom");
-  upload(kern.rep_kbeg, h_rep_kbeg, "pair:rep_kbeg");
-  upload(kern.rep_kslot, h_rep_kslot, "pair:rep_kslot");
-  upload(kern.gat_beg, h_gat_beg, "pair:gat_beg");
-  upload(kern.gat_ent, h_gat_ent, "pair:gat_ent");
-  upload(kern.vol, h_vol, "pair:vol");
-  upload(kern.area, h_area, "pair:area");
-  upload(kern.bid, h_bid, "pair:bid");
-  upload(kern.bidx, h_bidx, "pair:bidx");
   upload(kern.gstyle, h_gstyle, "pair:gstyle");
   upload(kern.gngrid, h_gngrid, "pair:gngrid");
   upload(kern.gmin, h_gmin, "pair:gmin");
@@ -483,6 +633,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     kern.kti = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kti", 3 * MAX(maxcontact, 1));
     kern.ktj = Kokkos::View<KK_FLOAT *, DeviceType>("pair:ktj", 3 * MAX(maxcontact, 1));
     kern.kv = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kv", 6 * MAX(maxcontact, 1));
+    kern.kij = Kokkos::View<int *, DeviceType>("pair:kij", 2 * MAX(maxcontact, 1));
   }
 }
 
@@ -609,15 +760,25 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   // global virial summed on the host in the order of the contacts of pair ls/dem,
   //   as ev_tally_xyz() does
 
-  if (vflag_global && nkey) {
-    auto h_kon = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), kern.kon);
-    auto h_kv = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), kern.kv);
-    for (const int key : h_korder) {
-      const int c = h_kon(key);
-      if (c < 0) continue;
-      for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
-      if (h_key_jlocal[key])
+  if (vflag_global) {
+    int nc = 0;
+    Kokkos::deep_copy(nc, kern.ncontact);
+    if (nc) {
+      auto h_kij = Kokkos::create_mirror_view_and_copy(
+          LMPHostType::memory_space(), Kokkos::subview(kern.kij, std::make_pair(0, 2 * nc)));
+      auto h_kv = Kokkos::create_mirror_view_and_copy(
+          LMPHostType::memory_space(), Kokkos::subview(kern.kv, std::make_pair(0, 6 * nc)));
+      std::vector<int> order(nc);
+      for (int c = 0; c < nc; c++) order[c] = c;
+      std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return (h_kij(2 * a) < h_kij(2 * b)) ||
+          ((h_kij(2 * a) == h_kij(2 * b)) && (h_kij(2 * a + 1) < h_kij(2 * b + 1)));
+      });
+      for (const int c : order) {
         for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
+        if (h_kij(2 * c + 1) < nlocal)
+          for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
+      }
     }
   }
 
@@ -1301,6 +1462,8 @@ void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of
   fpair[1] *= narea;
   fpair[2] *= narea;
   const int c = Kokkos::atomic_fetch_add(&ncontact(), 1);
+  kij(2 * c) = i;
+  kij(2 * c + 1) = j;
   kf(3 * c) = fpair[0];
   kf(3 * c + 1) = fpair[1];
   kf(3 * c + 2) = fpair[2];
