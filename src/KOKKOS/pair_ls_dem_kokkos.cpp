@@ -379,9 +379,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   grow(kern.seg_rep, nseg, "pair:seg_rep");
   grow(kern.seg_flag, nseg, "pair:seg_flag");
   grow(kern.seg_cbeg, nseg + 1, "pair:seg_cbeg");
-  grow(kern.seg_cmin, nseg, "pair:seg_cmin");
   grow(kern.seg_kmin, nseg, "pair:seg_kmin");
-  auto seg_cmin = kern.seg_cmin;
   auto seg_kmin = kern.seg_kmin;
   auto seg_rep = kern.seg_rep;
   auto seg_flag = kern.seg_flag;
@@ -415,16 +413,14 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   Kokkos::parallel_reduce(Range(0, nseg), KOKKOS_LAMBDA(const int s, bigint &sum) {
     const int b = seg_cbeg(s);
     const int e = seg_cbeg(s + 1);
-    int dup = 0, nkeyed = 0, cmin = b, kmin = -1;
+    int dup = 0, nkeyed = 0, kmin = -1;
     for (int m = b; m < e; m++) {
       nkeyed += (cand_key(m) >= 0);
-      if (cand_idx(m) < cand_idx(cmin)) cmin = m;
       if ((cand_key(m) >= 0) && ((kmin < 0) || (cand_idx(m) < cand_idx(kmin)))) kmin = m;
       Kokkos::atomic_max(&partner(cand_idx(m)), 1);
       if ((m > b) && (d_tag(cand_idx(m)) == d_tag(cand_idx(m - 1)))) dup = 1;
     }
     if (dup) seg_flag(s) |= 2;
-    seg_cmin(s) = cand_idx(cmin);
     seg_kmin(s) = kmin;
     sum += dup ? nkeyed : MIN(nkeyed, 1);
   }, maxcontact);
@@ -1156,17 +1152,16 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   const int sflag = seg_flag(s);
 
   // grains of equal volume choose whose nodes are used by their current positions,
-  //   from the candidate with the lowest index
+  //   from the candidate with a key and the lowest index, a segment without a key has no contacts
 
-  if ((sflag & 1) && !use_nodes_of_i(r, seg_cmin(s))) return;
+  const int first = seg_kmin(s);
+  if (first < 0) return;
+  if ((sflag & 1) && !use_nodes_of_i(r, cand_idx(first))) return;
 
-  // watershed: the bin of the node in the grid of the other grain is found once, from the
-  //   candidate with the lowest index in the neighbor list of a local atom,
-  //   each candidate owning it is a contact
+  // watershed: the bin of the node in the grid of the other grain is found once, from that
+  //   candidate, each candidate owning it is a contact
 
   if (watershed) {
-    const int first = seg_kmin(s);
-    if (first < 0) return;
     const int c = cand_idx(first);
     if (bidx(c) < 0) {
       if (Kokkos::atomic_fetch_add(&flag(0), 1) == 0) flag_tag(0) = tag(c);
