@@ -35,6 +35,7 @@
 #include <cstring>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 static constexpr double EPSILON = 1e-12;
@@ -196,10 +197,14 @@ void PairLSDEM::build_rep_segments()
   if ((int) rep_segs.size() < ntotal) rep_segs.resize(ntotal);
   for (int a = 0; a < ntotal; a++) rep_segs[a].clear();
 
-  // pairs in the neighbor lists of local atoms are numbered in the order of the lists,
-  //   which is the order the contacts are evaluated in, pairs of ghost atoms get -1
+  // a node and another grain without a pair from the neighbor list of a local atom
+  //   have no contacts, so only the ones found in those lists are kept,
+  //   most pairs of ghost atoms are not
 
-  int ipair = 0;
+  auto segkey = [](int r, int bid, int off) {
+    return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
+  };
+  std::unordered_set<uint64_t> live;
   for (int ii = 0; ii < allnum; ii++) {
     const int i = ilist[ii];
     const BodyInfo &bi = binfo[i];
@@ -214,16 +219,32 @@ void PairLSDEM::build_rep_segments()
       const BodyInfo &bj = binfo[j];
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+      if (ii >= inum) continue;
+      if (bi.vol <= bj.vol) live.insert(segkey(i, bj.bID, bj.off));
+      if (bi.vol >= bj.vol) live.insert(segkey(j, bi.bID, bi.off));
+    }
+  }
+
+  // pairs in the neighbor lists of local atoms are numbered in the order of the lists,
+  //   which is the order the contacts are evaluated in, pairs of ghost atoms get -1
+
+  int ipair = 0;
+  for (int ii = 0; ii < allnum; ii++) {
+    const int i = ilist[ii];
+    const BodyInfo &bi = binfo[i];
+    int *jlist = firstneigh[i];
+    const int jnum = numneigh[i];
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = jlist[jj];
+      if (special_lj[sbmask(j)] == 0) continue;
+      j &= NEIGHMASK;
+      const BodyInfo &bj = binfo[j];
       const int key = (ii < inum) ? ipair++ : -1;
-      if (bi.vol != bj.vol) {
-        if (bi.vol < bj.vol)
-          add_rep_candidate(i, bj.bID, bj.off, j, 0, key, 1);
-        else
-          add_rep_candidate(j, bi.bID, bi.off, i, 0, key, 0);
-      } else {
-        add_rep_candidate(i, bj.bID, bj.off, j, 1, key, 1);
-        add_rep_candidate(j, bi.bID, bi.off, i, 1, key, 0);
-      }
+      const int tie = (bi.vol == bj.vol);
+      if ((bi.vol <= bj.vol) && live.count(segkey(i, bj.bID, bj.off)))
+        add_rep_candidate(i, bj.bID, bj.off, j, tie, key, 1);
+      if ((bi.vol >= bj.vol) && live.count(segkey(j, bi.bID, bi.off)))
+        add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
 }
