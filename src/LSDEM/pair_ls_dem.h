@@ -69,7 +69,8 @@ class PairLSDEM : public Pair {
   int index_ls_dem_fs1;
 
   class FixRigidLSDEM *fix_rigid;
-  class FixRigidSmallLSDEM *fix_rigid_small;
+  class FixRigidSmallLSDEMAccess *fix_rigid_small;
+  class FixRigidSmallLSDEM *fix_rigid_small_cpu;    // null for accelerated variants
 
   // body of each local and ghost atom, refilled when the neighbor list is rebuilt
   //   grp: 0 = not in an ls/dem group, 1 = rigid/small/ls/dem, 2 = rigid/ls/dem

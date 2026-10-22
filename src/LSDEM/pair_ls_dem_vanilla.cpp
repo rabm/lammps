@@ -261,7 +261,7 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         // Check if I already calculated bin for atom i2 on j2's body
         if (saved_bins[i2].find(jbodykey2) == saved_bins[i2].end()) {
           if (j2large) tmp_bin = fix_rigid->get_bin(i2, j2, x_local);
-          else tmp_bin = fix_rigid_small->get_bin(i2, j2, x_local);
+          else tmp_bin = fix_rigid_small_cpu->get_bin(i2, j2, x_local);
 
           saved_bins[i2][jbodykey2] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
         } else {
@@ -276,7 +276,7 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
           if (j2large) {
             if (fix_rigid->check_watershed_bin(tmp_bin, j2) ==   0) continue;
           } else {
-            if (fix_rigid_small->check_watershed_bin(tmp_bin, j2) == 0) continue;
+            if (fix_rigid_small_cpu->check_watershed_bin(tmp_bin, j2) == 0) continue;
           }
           checked_bins[j2].insert(tmp_bin);
         }
@@ -379,7 +379,7 @@ void PairLSDEMVanilla::process_contact(int i, int j, int tmp_bin, double *x_loca
   if (large_fix)
     u = -fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
   else
-    u = -fix_rigid_small->get_ls_value(i, j, tmp_bin, normal, x_local);
+    u = -fix_rigid_small_cpu->get_ls_value(i, j, tmp_bin, normal, x_local);
 
   double *fs_i = fs[i];
   double *n_i = n[i];
