@@ -71,6 +71,8 @@ action atom_vec_hybrid_kokkos.cpp
 action atom_vec_hybrid_kokkos.h
 action atom_vec_kokkos.cpp
 action atom_vec_kokkos.h
+action atom_vec_ls_dem_kokkos.cpp atom_vec_ls_dem.cpp
+action atom_vec_ls_dem_kokkos.h atom_vec_ls_dem.h
 action atom_vec_molecular_kokkos.cpp atom_vec_molecular.cpp
 action atom_vec_molecular_kokkos.h atom_vec_molecular.h
 action atom_vec_sphere_kokkos.cpp atom_vec_sphere.cpp

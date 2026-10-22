@@ -74,6 +74,9 @@ AtomKokkos::~AtomKokkos()
   memoryKK->destroy_kokkos(k_radius, radius);
   memoryKK->destroy_kokkos(k_rmass, rmass);
   memoryKK->destroy_kokkos(k_omega, omega);
+  memoryKK->destroy_kokkos(k_xcom, xcom);
+  memoryKK->destroy_kokkos(k_quat, quat);
+  memoryKK->destroy_kokkos(k_grid_index, grid_index);
   memoryKK->destroy_kokkos(k_angmom, angmom);
   memoryKK->destroy_kokkos(k_torque, torque);
   memoryKK->destroy_kokkos(k_ellipsoid, ellipsoid);
@@ -212,7 +215,8 @@ void *AtomKokkos::extract(const char *name)
       {"num_improper", IMPROPER_MASK}, {"improper_type", IMPROPER_MASK},
       {"improper_atom1", IMPROPER_MASK}, {"improper_atom2", IMPROPER_MASK},
       {"improper_atom3", IMPROPER_MASK}, {"improper_atom4", IMPROPER_MASK},
-      {"sp", SP_MASK}, {"dpdTheta", DPDTHETA_MASK}};
+      {"sp", SP_MASK}, {"dpdTheta", DPDTHETA_MASK}, {"xcom", XCOM_MASK}, {"quat", QUAT_MASK},
+      {"grid_index", GRID_INDEX_MASK}};
 
   const auto it = extract_mask.find(name);
   if (it != extract_mask.end()) {
