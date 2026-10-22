@@ -155,6 +155,8 @@ template <class Base> class FixRigidSmallLSDEMT : public Base, public FixRigidSm
   void get_grid_info(int, LSDEMExtra::GridInfo &) override;
 
  protected:
+  enum { PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS, SUBGRID_LS, WATERSHED_LS };
+
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
   int read_quat;
   int commflag_ls;
