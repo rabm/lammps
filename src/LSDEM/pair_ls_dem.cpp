@@ -771,11 +771,13 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   f[i][1] += fpair[1];
   f[i][2] += fpair[2];
 
+#ifndef NDEBUG
   if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
     error->one(FLERR,
                "Bad force calculated between atoms {} {} on bodies {} {} with overlap {} and "
                "normal {} {} {}\n",
                tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+#endif
 
   // Lever arm on grain i
   lever[0] = contact_point[0] - icomx;
@@ -792,11 +794,13 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   torque[i][1] += torque_pair[1];
   torque[i][2] += torque_pair[2];
 
+#ifndef NDEBUG
   if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
     error->one(FLERR,
                "Bad torque calculated between atoms {} {} on bodies {} {} with overlap {} and "
                "normal {} {} {}\n",
                tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+#endif
 
   // Mirror forces and torques on grain j
   if (newton_pair || j < nlocal) {    // Need to check this again if we end up enabling newton_pair
