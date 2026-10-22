@@ -1,0 +1,202 @@
+/* -*- c++ -*- ----------------------------------------------------------
+   LAMMPS - Large-scale Atomic/Molecular Massively Parallel Simulator
+   https://www.lammps.org/, Sandia National Laboratories
+   LAMMPS development team: developers@lammps.org
+
+   Copyright (2003) Sandia Corporation.  Under the terms of Contract
+   DE-AC04-94AL85000 with Sandia Corporation, the U.S. Government retains
+   certain rights in this software.  This software is distributed under
+   the GNU General Public License.
+
+   See the README file in the top-level LAMMPS directory.
+------------------------------------------------------------------------- */
+
+#ifdef PAIR_CLASS
+// clang-format off
+PairStyle(ls/dem/kk,PairLSDEMKokkos<LMPDeviceType>);
+PairStyle(ls/dem/kk/device,PairLSDEMKokkos<LMPDeviceType>);
+PairStyle(ls/dem/kk/host,PairLSDEMKokkos<LMPHostType>);
+// clang-format on
+#else
+
+// clang-format off
+#ifndef LMP_PAIR_LS_DEM_KOKKOS_H
+#define LMP_PAIR_LS_DEM_KOKKOS_H
+
+#include "pair_ls_dem.h"
+#include "pair_kokkos.h"
+#include "kokkos_type.h"
+
+#include <unordered_map>
+
+namespace LAMMPS_NS {
+
+struct TagPairLSDEMSelect {};
+struct TagPairLSDEMContact {};
+struct TagPairLSDEMGather {};
+
+/* ----------------------------------------------------------------------
+   device data and kernels of pair ls/dem/kk, kept apart from the pair style
+   so a kernel launch copies only views and scalars, not the host containers
+------------------------------------------------------------------------- */
+
+template <class DeviceType>
+struct PairLSDEMKernelsKokkos {
+  typedef DeviceType device_type;
+  typedef ArrayTypes<DeviceType> AT;
+
+  struct params_lsdem {
+    KOKKOS_INLINE_FUNCTION
+    params_lsdem() {kn=kt=mu=etan=etat=knp=etan1=decayn1=etat1=decayt1=0;}
+    KOKKOS_INLINE_FUNCTION
+    params_lsdem(int /*i*/) {kn=kt=mu=etan=etat=knp=etan1=decayn1=etat1=decayt1=0;}
+    KK_FLOAT kn, kt, mu, etan, etat, knp, etan1, decayn1, etat1, decayt1;
+  };
+  typedef Kokkos::DualView<params_lsdem**, Kokkos::LayoutRight, DeviceType> tdual_params;
+
+  typename AT::t_kkfloat_1d_3_lr x;
+  typename AT::t_kkfloat_1d_3 v;
+  typename AT::t_kkfloat_1d_3 omega;
+  typename AT::t_kkfloat_1d_3 xcom;
+  typename AT::t_kkfloat_1d_4 quat;
+  typename AT::t_kkacc_1d_3 f;
+  typename AT::t_kkacc_1d_3 torque;
+  typename AT::t_int_1d type;
+  typename AT::t_tagint_1d tag;
+
+  // shear history of the nodes
+
+  typename AT::t_int_2d_lr d_ivector;
+  typename AT::t_kkfloat_2d d_dvector;
+  typename AT::t_double_2d_lr d_hist_n, d_hist_fs;
+  int touch_row, fn1_row, fs1_row;
+
+  typename tdual_params::t_dev params;
+
+  // body and level-set grid of each local and ghost atom, refilled at reneighboring
+  //   gstyle: -1 = no grid, 0 = grid of a grain (distributed), 1 = shared grid (global)
+  //   gngrid, gmin: 3 values per atom
+  //   goff: offset of the grid values in dgrid (distributed) or ggrid (global)
+
+  Kokkos::View<KK_FLOAT *, DeviceType> vol, area;
+  Kokkos::View<int *, DeviceType> bid, bidx;
+  Kokkos::View<int *, DeviceType> gstyle, gngrid;
+  Kokkos::View<KK_FLOAT *, DeviceType> gmin, gstride, gscale;
+  Kokkos::View<bigint *, DeviceType> goff;
+  Kokkos::View<KK_FLOAT *, DeviceType> dgrid, ggrid;
+
+  // segments of PairLSDEM::rep_segs and their candidates, flattened
+  //   seg_flag: 1 = tie, 2 = dup
+
+  Kokkos::View<int *, DeviceType> seg_rep, seg_flag, seg_cbeg;
+  Kokkos::View<int *, DeviceType> cand_idx, cand_key, cand_owns, cand_on;
+
+  // nodes with segments and their candidates in the order of the key
+
+  Kokkos::View<int *, DeviceType> rep_atom, rep_kbeg, rep_kslot;
+
+  // force on atom i, torques on atoms i and j and virial of each contact that applied a force,
+  //   in the order the contacts were found, kon: index of the contact of each key, -1 for none
+
+  Kokkos::View<KK_FLOAT *, DeviceType> kf, kti, ktj, kv;
+  Kokkos::View<int *, DeviceType> kon;
+  Kokkos::View<int, DeviceType> ncontact;
+  typename AT::t_kkacc_1d_6 vatom;
+
+  // contacts of each local atom in the order of the key: 2 * key, + 1 if the atom is j
+
+  Kokkos::View<int *, DeviceType> gat_beg, gat_ent;
+
+  // errors and warnings found on the device
+  //   flag[0]: atom without body, flag[1]: shear history warnings, flag[2]: first warning stored
+  //   flag_tag[0]: atom without body, flag_tag[1-4]: node, its body, partner node, partner body
+
+  Kokkos::View<int *, DeviceType> flag;
+  Kokkos::View<tagint *, DeviceType> flag_tag;
+
+  int nlocal, dimension, vflag_either, vflag_atom;
+  KK_FLOAT maxcutsq, dt;
+  int triclinic, xperiodic, yperiodic, zperiodic;
+  KK_FLOAT xprd, yprd, zprd, xprd_half, yprd_half, zprd_half, xy, xz, yz;
+
+  // closest node of each segment, marks the candidates that are contacts
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairLSDEMSelect, const int) const;
+
+  // contacts of one node in the order of their key, which updates its shear history
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairLSDEMContact, const int) const;
+
+  // forces and torques on one local atom summed in the order of the contact keys
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairLSDEMGather, const int) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void minimum_image(KK_FLOAT &, KK_FLOAT &, KK_FLOAT &) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  bool use_nodes_of_i(int, int) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  KK_FLOAT ls_value(int, int, KK_FLOAT *) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void contact(int, int, int, int) const;
+};
+
+/* ---------------------------------------------------------------------- */
+
+template <class DeviceType>
+class PairLSDEMKokkos : public PairLSDEM {
+ public:
+  typedef DeviceType device_type;
+  typedef ArrayTypes<DeviceType> AT;
+  typedef PairLSDEMKernelsKokkos<DeviceType> Kernels;
+
+  PairLSDEMKokkos(class LAMMPS *);
+  ~PairLSDEMKokkos() override;
+  void compute(int, int) override;
+  void init_style() override;
+  void setup() override;
+
+ protected:
+  typename AT::t_kkfloat_1d_3_lr x;
+  typename AT::t_kkacc_1d_3 f;
+
+  Kernels kern;
+  typename Kernels::tdual_params k_params;
+
+  DAT::ttransform_kkacc_1d k_eatom;
+  DAT::ttransform_kkacc_1d_6 k_vatom;
+
+  // 1 if atom j of the contact with this key is local, so the virial is tallied twice
+  std::vector<char> h_key_jlocal;
+
+  int nseg, ncand, nrep, nkey;
+
+  // global grids already on the device, by their host address
+
+  std::unordered_map<const double *, bigint> ggrid_offset;
+  std::vector<double> h_ggrid;
+
+  void build_segments();
+  void allocate() override;
+
+  friend void pair_virial_fdotr_compute<PairLSDEMKokkos>(PairLSDEMKokkos *);
+};
+
+}
+
+#endif
+#endif
+
