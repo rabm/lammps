@@ -66,8 +66,9 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 
 /* ---------------------------------------------------------------------- */
 
-FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
-  FixRigidSmall(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr),
+template <class Base>
+FixRigidSmallLSDEMT<Base>::FixRigidSmallLSDEMT(LAMMPS *lmp, int narg, char **arg) :
+  Base(lmp, narg, arg), bodyLS(nullptr), bodyownLS(nullptr), global_grids(nullptr),
   id_fix(nullptr), id_fix2(nullptr), quat_custom(nullptr), node_index(nullptr), atom_grid_style(nullptr)
 {
   maxcut = -1;
@@ -139,14 +140,15 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   if (langflag)
     error->all(FLERR, "Langevin thermostat not supported with fix rigid/small/ls/dem");
 
-  // currently only call FixRigidSmall::setup_bodies_static() once
+  // currently only call Base::setup_bodies_static() once
   //   need to think how to support this...
   reinitflag = 0;
 }
 
 /* ---------------------------------------------------------------------- */
 
-FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
+template <class Base>
+FixRigidSmallLSDEMT<Base>::~FixRigidSmallLSDEMT()
 {
   // delete extra property/atom fixes
 
@@ -169,16 +171,18 @@ FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::setmask()
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::setmask()
 {
-  int mask = FixRigidSmall::setmask();
+  int mask = Base::setmask();
   mask |= PRE_FORCE;
   return mask;
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::post_constructor()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::post_constructor()
 {
   int tmp1, tmp2;
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
@@ -196,9 +200,10 @@ void FixRigidSmallLSDEM::post_constructor()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::init()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::init()
 {
-  FixRigidSmall::init();
+  Base::init();
 
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
@@ -232,7 +237,7 @@ void FixRigidSmallLSDEM::init()
   if (ls_read_flag) return;
   // set in setup_pre_neighbor()
 
-  // allocate storage for LS-derived quantities (used in FixRigidSmall::setup_pre_neighbor() except for quat)
+  // allocate storage for LS-derived quantities (used in Base::setup_pre_neighbor() except for quat)
 
   memory->create(itensor_custom, nlocal_body, 6, "rigid/small:itensor_custom");
   memory->create(xcm_custom, nlocal_body, 3, "rigid/small:xcm_custom");
@@ -336,7 +341,8 @@ void FixRigidSmallLSDEM::init()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::setup_pre_neighbor()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::setup_pre_neighbor()
 {
   if (!ls_read_flag) {
     // acquire ghost bodies via forward comm
@@ -364,7 +370,7 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
   }
 
   // call setup bodies again after infile data read (e.g. xcm) and LS grid values calculated (e.g. itensor)
-  FixRigidSmall::setup_pre_neighbor();
+  Base::setup_pre_neighbor();
 
   if (!ls_read_flag) {
     // extra calculations using values from parent
@@ -431,7 +437,8 @@ void FixRigidSmallLSDEM::setup_pre_neighbor()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::copy_mol_data_to_bodies()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::copy_mol_data_to_bodies()
 {
   int *mask = atom->mask;
   int *grid_index = atom->grid_index;
@@ -455,7 +462,8 @@ void FixRigidSmallLSDEM::copy_mol_data_to_bodies()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::copy_in_data_to_bodies()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::copy_in_data_to_bodies()
 {
   tagint myid;
   int *mask = atom->mask;
@@ -483,7 +491,8 @@ void FixRigidSmallLSDEM::copy_in_data_to_bodies()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::calculate_xcom()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::calculate_xcom()
 {
   // copied from setup_static_bodies()
 
@@ -567,7 +576,8 @@ void FixRigidSmallLSDEM::calculate_xcom()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::process_levelsets()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::process_levelsets()
 {
   int ibody, i, a;
   int dimension = domain->dimension;
@@ -1082,14 +1092,16 @@ void FixRigidSmallLSDEM::process_levelsets()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::setup_pre_force(int vflag)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::setup_pre_force(int vflag)
 {
   pre_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::pre_force(int vflag)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::pre_force(int vflag)
 {
   commflag_ls = PREFORCE_LS;
   comm->forward_comm(this, 11);
@@ -1106,7 +1118,8 @@ void FixRigidSmallLSDEM::pre_force(int vflag)
    comm cutoff must be at least 1/2 of longest body, can this be relaxed?
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::reset_atom2body_ghost()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::reset_atom2body_ghost()
 {
   int iowner;
 
@@ -1128,9 +1141,10 @@ void FixRigidSmallLSDEM::reset_atom2body_ghost()
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::initial_integrate(int vflag)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::initial_integrate(int vflag)
 {
-  FixRigidSmall::initial_integrate(vflag);
+  Base::initial_integrate(vflag);
 
   // communicate quatd2g
   commflag_ls = INITIAL_LS;
@@ -1166,9 +1180,10 @@ void FixRigidSmallLSDEM::initial_integrate(int vflag)
 
 /* ---------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::pre_neighbor()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::pre_neighbor()
 {
-  FixRigidSmall::pre_neighbor();
+  Base::pre_neighbor();
 
   nghost_bodyLS = 0;
   commflag_ls = FULL_BODY_LS;
@@ -1187,7 +1202,8 @@ void FixRigidSmallLSDEM::pre_neighbor()
      2. torques are not computed from forces on atoms (unlike Fix Rigid)
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::compute_forces_and_torques()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::compute_forces_and_torques()
 {
   int i, ibody;
 
@@ -1277,9 +1293,10 @@ void FixRigidSmallLSDEM::compute_forces_and_torques()
    allocate local atom-based arrays
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::grow_arrays(int nmax)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::grow_arrays(int nmax)
 {
-  FixRigidSmall::grow_arrays(nmax);
+  Base::grow_arrays(nmax);
   memory->grow(bodyownLS, nmax, "rigid/small/ls/dem:bodyownLS");
   memory->grow(atom_grid_style, nmax, "rigid/small/ls/dem:atom_grid_style");
 
@@ -1296,9 +1313,10 @@ void FixRigidSmallLSDEM::grow_arrays(int nmax)
    copy values within local atom-based arrays
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::copy_arrays(int i, int j, int delflag)
 {
-  FixRigidSmall::copy_arrays(i, j, delflag);
+  Base::copy_arrays(i, j, delflag);
 
   // if deleting atom J via delflag and J owns a body, then delete it
 
@@ -1346,9 +1364,10 @@ void FixRigidSmallLSDEM::copy_arrays(int i, int j, int delflag)
    initialize one atom's array values, called when atom is created
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::set_arrays(int i)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::set_arrays(int i)
 {
-  FixRigidSmall::set_arrays(i);
+  Base::set_arrays(i);
   bodyownLS[i] = -1;
 
   atom->ivector[index_ls_dem_touch_id][i] = -1;
@@ -1363,7 +1382,8 @@ void FixRigidSmallLSDEM::set_arrays(int i)
    each proc contributes info for rigid bodies it owns
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::write_restart_file(const char *file)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::write_restart_file(const char *file)
 {
   FILE *fp;
 
@@ -1501,7 +1521,8 @@ void FixRigidSmallLSDEM::write_restart_file(const char *file)
           relative to template in Molecule class
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::set_molecule(int nlocalprev, tagint tagprev, int imol,
                                  double *xgeom, double *vcm, double *quat)
 {
   //TODO: modify to update LSDEM properties
@@ -1596,7 +1617,8 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
    pack values for border communication at re-neighboring
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_border(int n, int *list, double *buf)
 {
   if (storage_mode != WATERSHED) return 0;
   if (!ls_read_flag) return 0;
@@ -1608,7 +1630,8 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
    pack the node index and, for distributed storage, the watershed bins of atoms
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_watershed(int n, int *list, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_watershed(int n, int *list, double *buf)
 {
   int i, j;
   int m = 0;
@@ -1641,7 +1664,8 @@ int FixRigidSmallLSDEM::pack_watershed(int n, int *list, double *buf)
    watershed bins of atoms, owned bins first, then buffer bins
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_watershed_chunk(int n, int *list, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_watershed_chunk(int n, int *list, double *buf)
 {
   int m = 0;
   const std::size_t lo = (std::size_t) ws_chunk * ws_chunk_size;
@@ -1668,7 +1692,8 @@ int FixRigidSmallLSDEM::pack_watershed_chunk(int n, int *list, double *buf)
    unpack the node index and chunk ws_chunk of the watershed bins of ghost atoms
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::unpack_watershed_chunk(int n, int first, double *buf)
 {
   int m = 0;
   const std::size_t lo = (std::size_t) ws_chunk * ws_chunk_size;
@@ -1703,7 +1728,8 @@ void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
    unpack values for border communication at re-neighboring
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::unpack_border(int n, int first, double *buf)
 {
   if (storage_mode != WATERSHED) return 0;
   if (!ls_read_flag) return 0;
@@ -1715,7 +1741,8 @@ int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
    unpack the node index and, for distributed storage, the watershed bins of ghost atoms
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::unpack_watershed(int n, int first, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::unpack_watershed(int n, int first, double *buf)
 {
   int i, last;
   std::size_t k;
@@ -1751,9 +1778,10 @@ int FixRigidSmallLSDEM::unpack_watershed(int n, int first, double *buf)
    pack values in local atom-based arrays for exchange with another proc
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_exchange(int i, double *buf)
 {
-  int m = FixRigidSmall::pack_exchange(i, buf);
+  int m = Base::pack_exchange(i, buf);
 
   // atom not in a rigid body
 
@@ -1798,9 +1826,10 @@ int FixRigidSmallLSDEM::pack_exchange(int i, double *buf)
    unpack values in local atom-based arrays from exchange with another proc
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::unpack_exchange(int nlocal, double *buf)
 {
-  int m = FixRigidSmall::unpack_exchange(nlocal, buf);
+  int m = Base::unpack_exchange(nlocal, buf);
 
   // atom not in a rigid body
 
@@ -1857,7 +1886,8 @@ int FixRigidSmallLSDEM::unpack_exchange(int nlocal, double *buf)
    for FULL_BODY, send 0/1 flag with every atom
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_forward_comm(int n, int *list, double *buf,
                                      int /*pbc_flag*/, int * /*pbc*/)
 {
   int m, i, j;
@@ -1925,7 +1955,7 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
   } else if (commflag_ls == WATERSHED_LS) {
     m = pack_watershed_chunk(n, list, buf);
   } else {
-    m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
+    m = Base::pack_forward_comm(n, list, buf, 0, nullptr);
   }
   return m;
 }
@@ -1936,7 +1966,8 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
    for other commflag values, only unpack body info if atom owns it
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::unpack_forward_comm(int n, int first, double *buf)
 {
   int m, i, j, last;
   last = first + n;
@@ -2002,7 +2033,7 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
   } else if (commflag_ls == WATERSHED_LS) {
     unpack_watershed_chunk(n, first, buf);
   } else {
-    FixRigidSmall::unpack_forward_comm(n, first, buf);
+    Base::unpack_forward_comm(n, first, buf);
   }
 }
 
@@ -2011,10 +2042,11 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
    only pack body info if atom owns it
 ------------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::pack_reverse_comm(int n, int first, double *buf)
 {
   if (commflag_rev_ls == RPARENT) {
-    int m = FixRigidSmall::pack_reverse_comm(n, first, buf);
+    int m = Base::pack_reverse_comm(n, first, buf);
     return m;
   }
 
@@ -2037,10 +2069,11 @@ int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
    only unpack body info if own or ghost atom owns the body
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::unpack_reverse_comm(int n, int *list, double *buf)
 {
   if (commflag_rev_ls == RPARENT)
-    FixRigidSmall::unpack_reverse_comm(n, list, buf);
+    Base::unpack_reverse_comm(n, list, buf);
 
   if (commflag_rev_ls == RTAGMIN) {
     int i, j, m, tagcomm;
@@ -2058,7 +2091,8 @@ void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
    grow bodyLS data structure
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::grow_body_ls()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::grow_body_ls()
 {
   nmax_bodyLS += DELTA_BODY;
   bodyLS = (BodyLS *) memory->srealloc(bodyLS, nmax_bodyLS * sizeof(BodyLS),
@@ -2072,10 +2106,11 @@ void FixRigidSmallLSDEM::grow_body_ls()
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
-double FixRigidSmallLSDEM::memory_usage()
+template <class Base>
+double FixRigidSmallLSDEMT<Base>::memory_usage()
 {
   int nmax = atom->nmax;
-  double bytes = FixRigidSmall::memory_usage();
+  double bytes = Base::memory_usage();
   bytes += (double)nmax * sizeof(int);
   bytes += (double)nmax_bodyLS * sizeof(BodyLS);
   return bytes;
@@ -2087,7 +2122,8 @@ double FixRigidSmallLSDEM::memory_usage()
      set distributed flag
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::read_infile()
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::read_infile()
 {
   tagint id;
   int nchunk, eofflag, nlines;
@@ -2240,7 +2276,8 @@ void FixRigidSmallLSDEM::read_infile()
    for context, see function in FixRigidLSDEM
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::read_gridfile(int which, std::string filename, double *grid_values)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::read_gridfile(int which, std::string filename, double *grid_values)
 {
   int dim = domain->dimension;
   int grid_shape_buf[3];
@@ -2348,7 +2385,8 @@ void FixRigidSmallLSDEM::read_gridfile(int which, std::string filename, double *
    Using a full level set, calculate properites of grain
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, double *grid_min, double *grid_values)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::compute_grain_properties(int ibody, int *grid_size, double *grid_min, double *grid_values)
 {
   int dimension = domain->dimension;
   double com_temp[3];
@@ -2408,7 +2446,8 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
    see FixRigidLSDEM for context and explanation
 ------------------------------------------------------------------------- */
 
-double FixRigidSmallLSDEM::get_ls_value(int i, int j, int currentbin, double *normal, double *x_local)
+template <class Base>
+double FixRigidSmallLSDEMT<Base>::get_ls_value(int i, int j, int currentbin, double *normal, double *x_local)
 {
   if (storage_mode == WATERSHED)
     return get_ls_value_watershed(i, j, currentbin, normal, x_local);
@@ -2418,7 +2457,8 @@ double FixRigidSmallLSDEM::get_ls_value(int i, int j, int currentbin, double *no
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::get_bin(int i, int j, double *x_local)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::get_bin(int i, int j, double *x_local)
 {
   double **x = atom->x;
   double **grain_com = atom->xcom;
@@ -2467,7 +2507,8 @@ int FixRigidSmallLSDEM::get_bin(int i, int j, double *x_local)
 
 /* ---------------------------------------------------------------------- */
 
-int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
+template <class Base>
+int FixRigidSmallLSDEMT<Base>::check_watershed_bin(int currentbin, int j)
 {
   int jbody = atom2body[j];
   if (bodyLS[jbody].style == DISTRIBUTED ) {
@@ -2485,7 +2526,8 @@ int FixRigidSmallLSDEM::check_watershed_bin(int currentbin, int j)
 
 /* ---------------------------------------------------------------------- */
 
-double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, double *normal, double *x_local)
+template <class Base>
+double FixRigidSmallLSDEMT<Base>::get_ls_value_watershed(int i, int j, int currentbin, double *normal, double *x_local)
 {
   int ngrid[3], ix[3];
   int jbody = atom2body[j];
@@ -2529,7 +2571,8 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
 
 /* ---------------------------------------------------------------------- */
 
-double FixRigidSmallLSDEM::get_ls_value_array(int i, int j, double *normal)
+template <class Base>
+double FixRigidSmallLSDEMT<Base>::get_ls_value_array(int i, int j, double *normal)
 {
   int ngrid[3], ix[3];
   double x_local[3];
@@ -2578,7 +2621,8 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
    get_ls_value_watershed(), for a copy of the level sets on the device by pair ls/dem/kk
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::get_grid_info(int j, GridInfo &g)
+template <class Base>
+void FixRigidSmallLSDEMT<Base>::get_grid_info(int j, GridInfo &g)
 {
   int jbody = atom2body[j];
 
@@ -2617,4 +2661,10 @@ void FixRigidSmallLSDEM::get_grid_info(int j, GridInfo &g)
     g.values = global_grids[bodyLS[jbody].grid_index];
   }
   g.nvalues = g.ngrid[0] * g.ngrid[1] * g.ngrid[2];
+}
+
+/* ---------------------------------------------------------------------- */
+
+namespace LAMMPS_NS {
+template class FixRigidSmallLSDEMT<FixRigidSmall>;
 }
