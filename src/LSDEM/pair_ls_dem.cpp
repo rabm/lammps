@@ -403,7 +403,6 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   double *fs1 = atom->dvector[index_ls_dem_fs1];
   tagint *tag = atom->tag;
   int *type = atom->type;
-  int *mask = atom->mask;
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
   double dt = update->dt;
@@ -444,25 +443,18 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
         "Atom {} cannot find atom that owns body, consider increasing the communication cutoff",
         tag[j]);
 
-  // Evaluate the level set, and assign the interaction direction based on the
-  // node-grain combination. Force magnitude and direction go i -> j by definition.
-  if (calc_force_of_i_on_j) {    // Use node of i.
-    // Level set is by definition negative inside the particle,
-    // so swap the sign to get the overlap distance.
-    if (fix_rigid && (mask[j] & groupbit_large))
-      u = -fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
-    else if (fix_rigid_small && (mask[j] & groupbit_small))
-      u = -fix_rigid_small->get_ls_value(i, j, tmp_bin, normal, x_local);
-    else
-      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-  } else {    // Use node of j.
-    if (fix_rigid && (mask[i] & groupbit_large))
-      u = -fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
-    else if (fix_rigid_small && (mask[i] & groupbit_small))
-      u = -fix_rigid_small->get_ls_value(j, i, tmp_bin, normal, x_local);
-    else
-      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-  }
+  // Evaluate the level set of the other grain (par) at the node used (ni), one call for
+  // both directions. Force magnitude and direction go i -> j by definition.
+  // Level set is by definition negative inside the particle,
+  // so swap the sign to get the overlap distance.
+  const int ni = calc_force_of_i_on_j ? i : j;
+  const int par = calc_force_of_i_on_j ? j : i;
+  if (binfo[par].grp == 2)
+    u = -fix_rigid->get_ls_value(ni, par, tmp_bin, normal, x_local);
+  else if (binfo[par].grp == 1)
+    u = -fix_rigid_small->get_ls_value(ni, par, tmp_bin, normal, x_local);
+  else
+    error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[par]);
 
   // Resolve the direction-dependent quantities once, so the rest of the contact
   // path is free of calc_force_of_i_on_j branches. We always use the node on the
@@ -470,7 +462,6 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   // area (narea), and the body it is touching (partner_body). The stored shear and
   // normal vectors are kept in the node's own i->j frame, so when we use node j we
   // flip their sign (hsign = -1) on both read and write.
-  const int ni = calc_force_of_i_on_j ? i : j;
   const double hsign = calc_force_of_i_on_j ? 1.0 : -1.0;
   const double narea = calc_force_of_i_on_j ? areai : areaj;
   const int partner_body = calc_force_of_i_on_j ? jbodyID : ibodyID;
@@ -512,8 +503,10 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
     // The normal returned for node i points away from j, so it is negated to point
     // i->j; for node j it already points i->j. After this, normal points i->j in
     // both cases, and the contact point uses the chosen node's position.
-    if (calc_force_of_i_on_j)    // Use node of i.
-      MathExtra::negate3(normal);
+    const double nsign = calc_force_of_i_on_j ? -1.0 : 1.0;
+    normal[0] *= nsign;
+    normal[1] *= nsign;
+    normal[2] *= nsign;
     const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
     const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
     const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
