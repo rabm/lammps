@@ -100,7 +100,7 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<int *, DeviceType> cand_seg, seg_bin;
   Kokkos::View<KK_FLOAT *, DeviceType> seg_xl;
 
-  // nodes with segments and their candidates in the order of the key
+  // nodes with segments and their candidates in the order of the atoms of their pair
 
   Kokkos::View<int *, DeviceType> rep_atom, rep_kbeg, rep_kslot;
 
@@ -112,7 +112,8 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<int, DeviceType> ncontact;
   typename AT::t_kkacc_1d_6 vatom;
 
-  // contacts of each local atom in the order of the key: 2 * key, + 1 if the atom is j
+  // contacts of each local atom in the order of the atoms of their pair:
+  //   2 * key, + 1 if the atom is j
 
   Kokkos::View<int *, DeviceType> gat_beg, gat_ent;
 
@@ -134,13 +135,13 @@ struct PairLSDEMKernelsKokkos {
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairLSDEMSelect, const int) const;
 
-  // contacts of one node in the order of their key, which updates its shear history
+  // contacts of one node in the order of the atoms of their pair, which updates its shear history
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairLSDEMContact, const int) const;
 
-  // forces and torques on one local atom summed in the order of the contact keys
+  // forces and torques on one local atom summed in the order of the atoms of their pairs
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
@@ -206,6 +207,9 @@ class PairLSDEMKokkos : public PairLSDEM {
 
   // 1 if atom j of the contact with this key is local, so the virial is tallied twice
   std::vector<char> h_key_jlocal;
+
+  // keys of pairs with candidates in the order pair ls/dem evaluates its contacts in
+  std::vector<int> h_korder;
 
   int nseg, ncand, nrep, nkey;
 
