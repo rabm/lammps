@@ -91,8 +91,8 @@ struct PairLSDEMKernelsKokkos {
   // segments of PairLSDEM::rep_segs and their candidates, flattened
   //   seg_flag: 1 = tie, 2 = dup
 
-  //   seg_cmin: candidate atom with the lowest index, seg_kmin: that slot of those with a key
-  Kokkos::View<int *, DeviceType> seg_rep, seg_flag, seg_cbeg, seg_cmin, seg_kmin;
+  //   seg_kmin: slot of the candidate with a key and the lowest atom index
+  Kokkos::View<int *, DeviceType> seg_rep, seg_flag, seg_cbeg, seg_kmin;
   Kokkos::View<int *, DeviceType> cand_idx, cand_key, cand_owns, cand_on;
 
   // watershed storage: segment of each candidate, bin and grid position of the node of
