@@ -30,6 +30,7 @@
 #include "update.h"
 
 #include <algorithm>
+#include <array>
 #include <unordered_set>
 
 using namespace LAMMPS_NS;
@@ -150,7 +151,7 @@ void PairLSDEMKokkos<DeviceType>::setup()
 /* ----------------------------------------------------------------------
    segments of PairLSDEM::build_rep_segments() built from the neighbor list into flat
    arrays on the device, with the level-set grids of the candidate nodes,
-   the candidates of each node and the contacts of each atom are ordered by key
+   the candidates of each node and the contacts of each atom are ordered by the atoms of their pair
    the order of the segments of a node does not matter, each is evaluated on its own
 ------------------------------------------------------------------------- */
 
@@ -248,7 +249,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   std::vector<int> h_cand_idx, h_cand_key, h_cand_owns, h_cand_seg;
   std::vector<int> h_rep_atom, h_rep_kbeg(1, 0), h_rep_kslot;
   std::vector<char> partner(ntotal, 0);
-  std::vector<std::pair<int, int>> keyslot;
+  std::vector<std::array<int, 3>> keyslot;
   std::vector<tagint> tags;
   int maxkey = -1;
   bigint maxcontact = 0;
@@ -291,7 +292,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         h_cand_seg.push_back(h_seg_rep.size() - 1);
         partner[c->cand] = 1;
         if (c->key >= 0) {
-          keyslot.emplace_back(c->key, slot);
+          keyslot.push_back({c->owns ? r : c->cand, c->owns ? c->cand : r, slot});
           maxkey = MAX(maxkey, c->key);
         }
       }
@@ -300,7 +301,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     }
     std::sort(keyslot.begin(), keyslot.end());
     h_rep_atom.push_back(r);
-    for (const auto &ks : keyslot) h_rep_kslot.push_back(ks.second);
+    for (const auto &ks : keyslot) h_rep_kslot.push_back(ks[2]);
     h_rep_kbeg.push_back(h_rep_kslot.size());
   }
   std::vector<Rec>().swap(rec);
@@ -326,11 +327,19 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     }
   }
 
-  // contacts of each local atom, filled in key order so each list is ordered by key
+  // keys in the order of the atoms of their pair, the order pair ls/dem evaluates contacts in
+
+  h_korder.clear();
+  for (int key = 0; key < nkey; key++)
+    if (key_i[key] >= 0) h_korder.push_back(key);
+  std::sort(h_korder.begin(), h_korder.end(), [&](int a, int b) {
+    return (key_i[a] < key_i[b]) || ((key_i[a] == key_i[b]) && (key_j[a] < key_j[b]));
+  });
+
+  // contacts of each local atom, filled in that order
 
   std::vector<int> h_gat_beg(nlocal + 1, 0), h_gat_ent;
-  for (int key = 0; key < nkey; key++) {
-    if (key_i[key] < 0) continue;
+  for (const int key : h_korder) {
     h_gat_beg[key_i[key] + 1]++;
     if (key_j[key] < nlocal) h_gat_beg[key_j[key] + 1]++;
   }
@@ -338,8 +347,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   h_gat_ent.resize(h_gat_beg[nlocal]);
   {
     std::vector<int> fill(h_gat_beg.begin(), h_gat_beg.end() - 1);
-    for (int key = 0; key < nkey; key++) {
-      if (key_i[key] < 0) continue;
+    for (const int key : h_korder) {
       h_gat_ent[fill[key_i[key]]++] = 2 * key;
       if (key_j[key] < nlocal) h_gat_ent[fill[key_j[key]]++] = 2 * key + 1;
     }
@@ -569,8 +577,9 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   if (nkey) Kokkos::deep_copy(Kokkos::subview(kern.kon, std::make_pair(0, nkey)), -1);
   Kokkos::deep_copy(kern.ncontact, 0);
 
-  // closest nodes, then the contacts of each node in key order (they share its shear history),
-  //   then the sums of the forces and torques on each atom in key order, as in pair ls/dem
+  // closest nodes, then the contacts of each node in the order of their pairs (they share its
+  //   shear history), then the sums of the forces and torques on each atom in that order,
+  //   as in pair ls/dem
 
   Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagPairLSDEMSelect>(0, nseg), kern);
   Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagPairLSDEMContact>(0, nrep), kern);
@@ -597,12 +606,13 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
                      update->ntimestep, h_flag(1));
   }
 
-  // global virial summed on the host in key order, as ev_tally_xyz() does for pair ls/dem
+  // global virial summed on the host in the order of the contacts of pair ls/dem,
+  //   as ev_tally_xyz() does
 
   if (vflag_global && nkey) {
     auto h_kon = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), kern.kon);
     auto h_kv = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), kern.kv);
-    for (int key = 0; key < nkey; key++) {
+    for (const int key : h_korder) {
       const int c = h_kon(key);
       if (c < 0) continue;
       for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
@@ -976,17 +986,24 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   const int e = seg_cbeg(s + 1);
   const int sflag = seg_flag(s);
 
-  // grains of equal volume choose whose nodes are used by their current positions
+  // grains of equal volume choose whose nodes are used by their current positions,
+  //   from the candidate with the lowest index
 
-  if ((sflag & 1) && !use_nodes_of_i(r, cand_idx(b))) return;
+  if (sflag & 1) {
+    int c0 = cand_idx(b);
+    for (int m = b + 1; m < e; m++) c0 = (cand_idx(m) < c0) ? cand_idx(m) : c0;
+    if (!use_nodes_of_i(r, c0)) return;
+  }
 
   // watershed: the bin of the node in the grid of the other grain is found once, from the
-  //   first candidate in the neighbor list of a local atom, each candidate owning it is a contact
+  //   candidate with the lowest index in the neighbor list of a local atom,
+  //   each candidate owning it is a contact
 
   if (watershed) {
-    int first = b;
-    while ((first < e) && (cand_key(first) < 0)) first++;
-    if (first == e) return;
+    int first = -1;
+    for (int m = b; m < e; m++)
+      if ((cand_key(m) >= 0) && ((first < 0) || (cand_idx(m) < cand_idx(first)))) first = m;
+    if (first < 0) return;
     const int c = cand_idx(first);
     if (bidx(c) < 0) {
       if (Kokkos::atomic_fetch_add(&flag(0), 1) == 0) flag_tag(0) = tag(c);
@@ -1002,7 +1019,7 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
     seg_xl(3 * s + 1) = xl[1];
     seg_xl(3 * s + 2) = xl[2];
     KK_FLOAT val;
-    for (int m = first; m < e; m++)
+    for (int m = b; m < e; m++)
       if ((cand_key(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) cand_on(m) = 1;
     return;
   }
@@ -1019,7 +1036,7 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
     const KK_FLOAT delz = zitmp - x(c, 2);
     const KK_FLOAT rsq = delx * delx + dely * dely + delz * delz;
     if (rsq > maxcutsq) continue;
-    if ((win < 0) || (rsq < minrsq)) {
+    if ((win < 0) || (rsq < minrsq) || ((rsq == minrsq) && (c < cand_idx(win)))) {
       minrsq = rsq;
       win = m;
     }
