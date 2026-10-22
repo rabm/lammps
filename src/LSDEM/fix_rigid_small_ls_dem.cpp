@@ -923,7 +923,7 @@ void FixRigidSmallLSDEM::process_levelsets()
                 if ((cell[a] + sign < 0) || (cell[a] + sign >= ncell[a])) continue;
 
                 newbin = currentbin + sign * ns;
-                if (temp_grid_values[newbin] > bodyLS[ibody].grid_stride) continue;
+                if (temp_grid_values[newbin] > gridfile_data[gridfile].stride) continue;
                 if (temp_grid_values[newbin] < -rcell) continue;
 
                 // if unvisited, add walker
