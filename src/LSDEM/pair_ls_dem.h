@@ -81,7 +81,6 @@ class PairLSDEM : public Pair {
   void cache_body_info(int);
 
   // closest node on each other grain, bucketed by the node of the grain whose nodes are used
-  //   the first entry wins ties, as the earlier hash map did
 
   struct RepEntry {
     int pbody;
@@ -91,19 +90,6 @@ class PairLSDEM : public Pair {
   };
   std::vector<std::vector<RepEntry>> rep_buckets;
 
-  inline void rep_update(std::vector<RepEntry> &b, int pbody, int poff, int ctag, double rsq)
-  {
-    for (auto &e : b)
-      if ((e.pbody == pbody) && (e.poff == poff)) {
-        if (rsq < e.rsq) {
-          e.ctag = ctag;
-          e.rsq = rsq;
-        }
-        return;
-      }
-    b.push_back({pbody, (char) poff, ctag, rsq});
-  }
-
   // tag of the closest node on grain (pbody, poff), or -1 which matches no atom
   inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const
   {
@@ -111,6 +97,20 @@ class PairLSDEM : public Pair {
       if ((e.pbody == pbody) && (e.poff == poff)) return e.ctag;
     return -1;
   }
+
+  // neighbor nodes of a node on another grain (pbody, poff), rebuilt with the neighbor list
+  //   tie: the grains have equal volume, so whose nodes are used is decided each step
+
+  struct Seg {
+    int pbody;
+    char poff;
+    char tie;
+    std::vector<int> cand;
+  };
+  std::vector<std::vector<Seg>> rep_segs;
+  bigint segs_lastbuild;
+  void build_rep_segments();
+  void add_rep_candidate(int, int, int, int, int);
 
   void allocate();
   bool use_nodes_of_i(int, int, double, double) const;

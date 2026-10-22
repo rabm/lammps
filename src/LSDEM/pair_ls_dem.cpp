@@ -99,6 +99,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   cutoff_auto = 0;
   auto_cut_factor = AUTO_CUT_FACTOR;
   binfo_lastbuild = -1;
+  segs_lastbuild = -1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -175,11 +176,70 @@ void PairLSDEM::cache_body_info(int ntotal)
   }
 }
 
+/* ----------------------------------------------------------------------
+   for each node, list the neighbor nodes on each other grain in the order of the
+   neighbor list, under the node of the grain whose nodes are used,
+   grains of equal volume are listed both ways since their choice depends on position
+------------------------------------------------------------------------- */
+
+void PairLSDEM::build_rep_segments()
+{
+  const int allnum = list->inum + list->gnum;
+  int *ilist = list->ilist;
+  int *numneigh = list->numneigh;
+  int **firstneigh = list->firstneigh;
+  const int ntotal = atom->nlocal + atom->nghost;
+  double *special_lj = force->special_lj;
+  tagint *tag = atom->tag;
+
+  if ((int) rep_segs.size() < ntotal) rep_segs.resize(ntotal);
+  for (int a = 0; a < ntotal; a++) rep_segs[a].clear();
+
+  for (int ii = 0; ii < allnum; ii++) {
+    const int i = ilist[ii];
+    const BodyInfo &bi = binfo[i];
+    if (bi.grp == 0)
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+    int *jlist = firstneigh[i];
+    const int jnum = numneigh[i];
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = jlist[jj];
+      if (special_lj[sbmask(j)] == 0) continue;
+      j &= NEIGHMASK;
+      const BodyInfo &bj = binfo[j];
+      if (bj.grp == 0)
+        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+      if (bi.vol != bj.vol) {
+        if (bi.vol < bj.vol)
+          add_rep_candidate(i, bj.bID, bj.off, j, 0);
+        else
+          add_rep_candidate(j, bi.bID, bi.off, i, 0);
+      } else {
+        add_rep_candidate(i, bj.bID, bj.off, j, 1);
+        add_rep_candidate(j, bi.bID, bi.off, i, 1);
+      }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+
+void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie)
+{
+  std::vector<Seg> &segs = rep_segs[r];
+  for (Seg &seg : segs)
+    if ((seg.pbody == pbody) && (seg.poff == poff)) {
+      seg.cand.push_back(c);
+      return;
+    }
+  segs.push_back({pbody, (char) poff, (char) tie, {c}});
+}
+
 /* ---------------------------------------------------------------------- */
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
-  int i, j, ii, jj, allnum, inum, jnum, itype, jtype, ibody, jbody, ibodyID, jbodyID;
+  int i, j, ii, jj, inum, jnum, itype, jtype, ibody, jbody, ibodyID, jbodyID;
   tagint itag, jtag;
   double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
   double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
@@ -230,7 +290,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   int offset_i, offset_j;
 
   inum = list->inum;
-  allnum = inum + list->gnum;
   ilist = list->ilist;
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
@@ -248,59 +307,43 @@ void PairLSDEM::compute(int eflag, int vflag)
   if ((int) rep_buckets.size() < ntotal) rep_buckets.resize(ntotal);
   for (int a = 0; a < ntotal; a++) rep_buckets[a].clear();
 
-  // Loop over local + ghost atoms to find closest neighbors
+  // candidate nodes on each other grain only change when the neighbor list is rebuilt
+
+  if ((watershed_flag == 0) &&
+      ((neighbor->lastcall != segs_lastbuild) || ((int) rep_segs.size() < ntotal))) {
+    build_rep_segments();
+    segs_lastbuild = neighbor->lastcall;
+  }
+
+  // Find the closest node on each other grain for each node of the grain whose nodes are used,
+  //   in the order of the neighbor list, so the first of equally close nodes wins as before.
+  // Comparing squared distances (rsq) gives the same closest node as comparing r.
+
   if (watershed_flag == 0) {
-    for (ii = 0; ii < allnum; ii++) {
-      // Loop through local nodes
-      i = ilist[ii];
-      xitmp = x[i][0];
-      yitmp = x[i][1];
-      zitmp = x[i][2];
-      const BodyInfo &bi = binfo[i];
-      if (bi.grp == 0)
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      ibodyID = bi.bID;
-      ivol = bi.vol;
-      offset_i = bi.off;
-      itag = tag[i];
-      jlist = firstneigh[i];
-      jnum = numneigh[i];
-
-      for (jj = 0; jj < jnum; jj++) {
-        // Loop through neighbouring nodes
-        j = jlist[jj];
-        factor_lj = special_lj[sbmask(j)];
-
-        if (factor_lj == 0) continue;
-
-        // Make the neighbour mask an integer again (discarding history flags etc.)
-        j &= NEIGHMASK;
-
-        const BodyInfo &bj = binfo[j];
-        if (bj.grp == 0)
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-        jbodyID = bj.bID;
-        jvol = bj.vol;
-        offset_j = bj.off;
-
-        jtag = tag[j];
-
-        // Separation distance between the two nodes
-        double *xj = x[j];
-        delx = xitmp - xj[0];
-        dely = yitmp - xj[1];
-        delz = zitmp - xj[2];
-        rsq = delx * delx + dely * dely + delz * delz;
-
-        if (rsq > maxcutsq) continue;
-
-        // Record the closest node on the other grain for each node of the grain whose
-        // nodes are used (see below), the bucket of a node holds one entry per other grain.
-        // Comparing squared distances (rsq) gives the same closest node as comparing r.
-        if (use_nodes_of_i(i, j, ivol, jvol))
-          rep_update(rep_buckets[i], jbodyID, offset_j, (int) jtag, rsq);
-        else
-          rep_update(rep_buckets[j], ibodyID, offset_i, (int) itag, rsq);
+    for (int irep = 0; irep < ntotal; irep++) {
+      std::vector<Seg> &segs = rep_segs[irep];
+      if (segs.empty()) continue;
+      xitmp = x[irep][0];
+      yitmp = x[irep][1];
+      zitmp = x[irep][2];
+      for (Seg &seg : segs) {
+        // grains of equal volume choose whose nodes are used by their current positions
+        if (seg.tie && !use_nodes_of_i(irep, seg.cand[0], binfo[irep].vol, binfo[seg.cand[0]].vol))
+          continue;
+        int wtag = -1;
+        double minrsq = 0.0;
+        for (int c : seg.cand) {
+          delx = xitmp - x[c][0];
+          dely = yitmp - x[c][1];
+          delz = zitmp - x[c][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+          if ((wtag < 0) || (rsq < minrsq)) {
+            minrsq = rsq;
+            wtag = (int) tag[c];
+          }
+        }
+        if (wtag >= 0) rep_buckets[irep].push_back({seg.pbody, seg.poff, wtag, minrsq});
       }
     }
   }
@@ -1150,6 +1193,7 @@ void PairLSDEM::setup()
 {
   // the ghost atoms are recreated in each setup, so refill the body info at the next compute()
   binfo_lastbuild = -1;
+  segs_lastbuild = -1;
 
   int n = atom->ntypes;
   double maxcut2 = -1;
