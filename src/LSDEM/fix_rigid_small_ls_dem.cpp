@@ -2572,3 +2572,32 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
 
   return dist;
 }
+
+/* ----------------------------------------------------------------------
+   grid of the grain of atom j as read by get_ls_value_array(),
+   for a copy of the level sets on the device by pair ls/dem/kk
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::get_grid_info(int j, GridInfo &g)
+{
+  int jbody = atom2body[j];
+
+  g.global = (bodyLS[jbody].style == GLOBAL) ? 1 : 0;
+  g.stride = bodyLS[jbody].grid_stride;
+  g.scale = bodyLS[jbody].grid_scale;
+  if (bodyLS[jbody].style == DISTRIBUTED) {
+    double **local_grid_min = atom->darray[index_grid_min];
+    for (int k = 0; k < 3; k++) {
+      g.ngrid[k] = subgrid_size[k];
+      g.grid_min[k] = local_grid_min[j][k];
+    }
+    g.values = atom->darray[index_grid_values][j];
+  } else {
+    for (int k = 0; k < 3; k++) {
+      g.ngrid[k] = bodyLS[jbody].grid_size[k];
+      g.grid_min[k] = bodyLS[jbody].grid_min[k];
+    }
+    g.values = global_grids[bodyLS[jbody].grid_index];
+  }
+  g.nvalues = g.ngrid[0] * g.ngrid[1] * g.ngrid[2];
+}

@@ -21,6 +21,7 @@ FixStyle(rigid/ls/dem,FixRigidLSDEM);
 #define LMP_FIX_RIGID_LS_DEM_H
 
 #include "fix_rigid.h"
+#include "ls_dem_extra.h"
 
 #include <unordered_map>
 
@@ -56,6 +57,7 @@ class FixRigidLSDEM : public FixRigid {
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);
+  void get_grid_info(int, LSDEMExtra::GridInfo &);
 
  protected:
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
