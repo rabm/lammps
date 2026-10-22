@@ -292,6 +292,8 @@ action fix_recenter_kokkos.cpp
 action fix_recenter_kokkos.h
 action fix_rigid_small_kokkos.cpp fix_rigid_small.cpp
 action fix_rigid_small_kokkos.h fix_rigid_small.h
+action fix_rigid_ls_dem_kokkos.cpp fix_rigid_ls_dem.cpp
+action fix_rigid_ls_dem_kokkos.h fix_rigid_ls_dem.h
 action fix_rigid_small_ls_dem_kokkos.cpp fix_rigid_small_ls_dem.cpp
 action fix_rigid_small_ls_dem_kokkos.h fix_rigid_small_ls_dem.h
 action fix_rigid_nh_small_kokkos.cpp fix_rigid_nh_small.cpp
