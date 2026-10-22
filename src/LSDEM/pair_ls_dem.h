@@ -90,15 +90,11 @@ class PairLSDEM : public Pair {
     int key;
     int rep_owns_pair;
   };
-  //   cmin, kmin: candidate with the lowest atom index, of all and of those with a key (-1 if none)
-
   struct Seg {
     int pbody;
     char poff;
     char tie;
     char dup;
-    int cmin;
-    int kmin;
     std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;

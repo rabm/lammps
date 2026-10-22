@@ -263,13 +263,13 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
       // a node may appear more than once with the same tag (periodic images)
       for (const Cand &other : seg.cand)
         if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
-      const int m = seg.cand.size();
-      if (c < seg.cand[seg.cmin].idx) seg.cmin = m;
-      if ((key >= 0) && ((seg.kmin < 0) || (c < seg.cand[seg.kmin].idx))) seg.kmin = m;
+      // the candidate with a key and the lowest atom index is kept first
       seg.cand.push_back(cand);
+      if ((key >= 0) && ((seg.cand[0].key < 0) || (c < seg.cand[0].idx)))
+        std::swap(seg.cand.front(), seg.cand.back());
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, 0, 0, (key >= 0) ? 0 : -1, {cand}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -331,25 +331,25 @@ void PairLSDEM::compute(int eflag, int vflag)
     zitmp = x[irep][2];
     for (Seg &seg : segs) {
       // grains of equal volume choose whose nodes are used by their current positions,
-      //   from the candidate with the lowest index, so the choice does not depend on list order
+      //   from the first candidate (with a key and the lowest index), so the choice does not
+      //   depend on list order, a segment without a key has no contacts
+      if (seg.cand[0].key < 0) continue;
       const int ncand = seg.cand.size();
-      const int c0 = seg.cand[seg.cmin].idx;
+      const int c0 = seg.cand[0].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
 
       if (watershed_flag) {
-        const int first = seg.kmin;
-        if (first < 0) continue;
         // the grid and watershed of the other grain are found through its body
-        if (binfo[seg.cand[first].idx].bidx < 0)
+        if (binfo[seg.cand[0].idx].bidx < 0)
           error->one(FLERR,
                      "Atom {} cannot find atom that owns body, consider increasing the "
                      "communication cutoff",
-                     tag[seg.cand[first].idx]);
+                     tag[seg.cand[0].idx]);
         WsBin wb;
         if (seg.poff)
-          wb.bin = fix_rigid_small->get_bin(irep, seg.cand[first].idx, wb.xl);
+          wb.bin = fix_rigid_small->get_bin(irep, seg.cand[0].idx, wb.xl);
         else
-          wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
+          wb.bin = fix_rigid->get_bin(irep, seg.cand[0].idx, wb.xl);
         const int ws = wsbins.size();
         wsbins.push_back(wb);
         for (int m = 0; m < ncand; m++) {
