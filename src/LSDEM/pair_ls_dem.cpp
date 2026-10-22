@@ -100,6 +100,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   auto_cut_factor = AUTO_CUT_FACTOR;
+  exact_order = 0;
   overlap_det = overlap_limit = maxoverlap = 0.0;
   overlap_warned = 0;
   binfo_lastbuild = -1;
@@ -274,9 +275,9 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
       if (has_image[c])
         for (const Cand &other : seg.cand)
           if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
-      // the candidate with a key and the lowest atom index is kept first
+      // with the exact order, the candidate with a key and the lowest atom index is kept first
       seg.cand.push_back(cand);
-      if ((key >= 0) && ((seg.cand[0].key < 0) || (c < seg.cand[0].idx)))
+      if (exact_order && (key >= 0) && ((seg.cand[0].key < 0) || (c < seg.cand[0].idx)))
         std::swap(seg.cand.front(), seg.cand.back());
       return;
     }
@@ -321,16 +322,18 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   // Array: find the closest node on each other grain for each node of the grain whose nodes
-  //   are used, of equally close nodes the one with the lowest atom index wins.
+  //   are used, of equally close nodes the first one wins.
   //   Comparing squared distances (rsq) gives the same closest node as comparing r.
   //   Each pair of the closest node and a node with its tag (periodic images) in the
   //   neighbor list of a local atom is a contact.
   // Watershed: find the bin of the node in the grid of each other grain once, from the
-  //   candidate with the lowest atom index in the neighbor list of a local atom,
-  //   each candidate owning that bin is a contact.
-  // The contacts are then evaluated in the order of the atom indices of their pair.
-  // None of this depends on the order of the neighbor list, so pair ls/dem/kk with
-  //   a neighbor list built on the device gives the same results bit for bit.
+  //   first candidate in the neighbor list of a local atom, each candidate owning that bin
+  //   is a contact.
+  // The contacts are then evaluated in neighbor list order.
+  // With the exact order, the lowest atom index takes the place of the first candidate and
+  //   contacts are evaluated in the order of the atom indices of their pair. None of this then
+  //   depends on the order of the neighbor list, so pair ls/dem/kk with a neighbor list built
+  //   on the device gives the same results bit for bit. It costs some time, so it is optional.
 
   contacts.clear();
   wsbins.clear();
@@ -342,28 +345,31 @@ void PairLSDEM::compute(int eflag, int vflag)
     zitmp = x[irep][2];
     for (Seg &seg : segs) {
       // grains of equal volume choose whose nodes are used by their current positions,
-      //   from the first candidate (with a key and the lowest index), so the choice does not
-      //   depend on list order, a segment without a key has no contacts
-      if (seg.cand[0].key < 0) continue;
+      //   from the first candidate, with the exact order the one with a key and the lowest
+      //   index, a segment without a key has no contacts
+      if (exact_order && (seg.cand[0].key < 0)) continue;
       const int ncand = seg.cand.size();
       const int c0 = seg.cand[0].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
 
       if (watershed_flag) {
+        int first = 0;
+        while ((first < ncand) && (seg.cand[first].key < 0)) first++;
+        if (first == ncand) continue;
         // the grid and watershed of the other grain are found through its body
-        if (binfo[seg.cand[0].idx].bidx < 0)
+        if (binfo[seg.cand[first].idx].bidx < 0)
           error->one(FLERR,
                      "Atom {} cannot find atom that owns body, consider increasing the "
                      "communication cutoff",
-                     tag[seg.cand[0].idx]);
+                     tag[seg.cand[first].idx]);
         WsBin wb;
         if (seg.poff)
-          wb.bin = fix_rigid_small->get_bin(irep, seg.cand[0].idx, wb.xl);
+          wb.bin = fix_rigid_small->get_bin(irep, seg.cand[first].idx, wb.xl);
         else
-          wb.bin = fix_rigid->get_bin(irep, seg.cand[0].idx, wb.xl);
+          wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
         const int ws = wsbins.size();
         wsbins.push_back(wb);
-        for (int m = 0; m < ncand; m++) {
+        for (int m = first; m < ncand; m++) {
           const Cand &cand = seg.cand[m];
           if (cand.key < 0) continue;
           const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
@@ -382,7 +388,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         delz = zitmp - x[c][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
-        if ((win < 0) || (rsq < minrsq) || ((rsq == minrsq) && (c < seg.cand[win].idx))) {
+        if ((win < 0) || (rsq < minrsq) ||
+            (exact_order && (rsq == minrsq) && (c < seg.cand[win].idx))) {
           minrsq = rsq;
           win = m;
         }
@@ -397,9 +404,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
     }
   }
-  std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
-    return (a.i < b.i) || ((a.i == b.i) && (a.j < b.j));
-  });
+  if (exact_order)
+    std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
+      return (a.i < b.i) || ((a.i == b.i) && (a.j < b.j));
+    });
+  else
+    std::sort(contacts.begin(), contacts.end(),
+              [](const Contact &a, const Contact &b) { return a.key < b.key; });
 
   double x_local[3];
   for (const Contact &ct : contacts) {
@@ -955,12 +966,12 @@ void PairLSDEM::settings(int narg, char ** arg)
 
   // "auto" estimates the node-node cutoff from the node spacing of the grains in init_style()
   //   with an optional factor, otherwise the cutoff is the given number
+  int iarg = 1;
   if (strcmp(arg[0], "auto") == 0) {
-    if (narg > 2) error->all(FLERR, "Too many arguments for pair_style ls/dem auto");
     cutoff_auto = 1;
     maxcut = -1.0;
     auto_cut_factor = AUTO_CUT_FACTOR;
-    if (narg == 2) {
+    if ((narg > 1) && (strcmp(arg[1], "order") != 0)) {
       auto_cut_factor = utils::numeric(FLERR, arg[1], false, lmp);
       if (auto_cut_factor <= 0.0)
         error->all(FLERR, "The pair ls/dem auto cutoff factor {} must be positive",
@@ -970,11 +981,27 @@ void PairLSDEM::settings(int narg, char ** arg)
                        "A pair ls/dem auto cutoff factor of {} does not exceed the node "
                        "spacing, so contacts may be missed",
                        auto_cut_factor);
+      iarg = 2;
     }
   } else {
-    if (narg > 1) error->all(FLERR, "Too many arguments for pair_style ls/dem");
     cutoff_auto = 0;
     maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  }
+
+  // "order exact" makes the results independent of the order of the neighbor list
+  exact_order = 0;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg], "order") == 0) {
+      if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem order", error);
+      if (strcmp(arg[iarg + 1], "exact") == 0)
+        exact_order = 1;
+      else if (strcmp(arg[iarg + 1], "list") == 0)
+        exact_order = 0;
+      else
+        error->all(FLERR, "Unknown pair_style ls/dem order {}", arg[iarg + 1]);
+      iarg += 2;
+    } else
+      error->all(FLERR, "Unknown pair_style ls/dem keyword {}", arg[iarg]);
   }
 
   if (force->newton_pair)

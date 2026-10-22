@@ -44,6 +44,7 @@ class PairLSDEM : public Pair {
 
   double maxcut;
   int cutoff_auto;           // 1 if the cutoff is estimated from the node spacing
+  int exact_order;           // 1 if results do not depend on the order of the neighbor list
   double auto_cut_factor;    // multiple of the node spacing used for the auto cutoff
 
  protected:
