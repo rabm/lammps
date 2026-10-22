@@ -24,17 +24,60 @@
 #include "math_extra.h"
 #include "memory.h"
 #include "modify.h"
+#include "molecule.h"
 #include "neigh_list.h"
 #include "neighbor.h"
-#include "utils.h"
 #include "update.h"
+#include "utils.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
+#include <map>
 #include <unordered_map>
+#include <vector>
 
 static constexpr double EPSILON = 1e-12;
+// default for "pair_style ls/dem auto": node-node cutoff = factor x largest node spacing
+static constexpr double AUTO_CUT_FACTOR = 2.0;
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
+
+/* ----------------------------------------------------------------------
+   largest distance from a node to its nearest neighbor node in a set,
+   found by sorting along x and pruning the scan once dx exceeds the best gap
+------------------------------------------------------------------------- */
+
+static double max_nearest_node_gap(std::vector<std::array<double, 3>> &p)
+{
+  const int n = p.size();
+  if (n < 2) return 0.0;
+  std::sort(p.begin(), p.end());
+
+  double maxgapsq = 0.0;
+  for (int a = 0; a < n; a++) {
+    double best = -1.0;
+    for (int b = a + 1; b < n; b++) {
+      const double dx = p[b][0] - p[a][0];
+      if ((best >= 0.0) && (dx * dx >= best)) break;
+      const double dy = p[b][1] - p[a][1];
+      const double dz = p[b][2] - p[a][2];
+      const double rsq = dx * dx + dy * dy + dz * dz;
+      if ((best < 0.0) || (rsq < best)) best = rsq;
+    }
+    for (int b = a - 1; b >= 0; b--) {
+      const double dx = p[a][0] - p[b][0];
+      if ((best >= 0.0) && (dx * dx >= best)) break;
+      const double dy = p[a][1] - p[b][1];
+      const double dz = p[a][2] - p[b][2];
+      const double rsq = dx * dx + dy * dy + dz * dz;
+      if ((best < 0.0) || (rsq < best)) best = rsq;
+    }
+    if (best > 0.0) maxgapsq = MAX(maxgapsq, best);
+  }
+  return sqrt(maxgapsq);
+}
 
 //TODO:
 //  add checks for key overflow
@@ -53,6 +96,8 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
 {
   writedata = 1;
   single_enable = 0;
+  cutoff_auto = 0;
+  auto_cut_factor = AUTO_CUT_FACTOR;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -857,10 +902,31 @@ void PairLSDEM::allocate()
 
 void PairLSDEM::settings(int narg, char ** arg)
 {
-  if (narg != 1)
-    error->all(FLERR, "Illegal pair_style command");
+  if (narg < 1) utils::missing_cmd_args(FLERR, "pair_style ls/dem", error);
 
-  maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  // "auto" estimates the node-node cutoff from the node spacing of the grains in init_style()
+  //   with an optional factor, otherwise the cutoff is the given number
+  if (strcmp(arg[0], "auto") == 0) {
+    if (narg > 2) error->all(FLERR, "Too many arguments for pair_style ls/dem auto");
+    cutoff_auto = 1;
+    maxcut = -1.0;
+    auto_cut_factor = AUTO_CUT_FACTOR;
+    if (narg == 2) {
+      auto_cut_factor = utils::numeric(FLERR, arg[1], false, lmp);
+      if (auto_cut_factor <= 0.0)
+        error->all(FLERR, "The pair ls/dem auto cutoff factor {} must be positive",
+                   auto_cut_factor);
+      if ((auto_cut_factor <= 1.0) && (comm->me == 0))
+        error->warning(FLERR,
+                       "A pair ls/dem auto cutoff factor of {} does not exceed the node "
+                       "spacing, so contacts may be missed",
+                       auto_cut_factor);
+    }
+  } else {
+    if (narg > 1) error->all(FLERR, "Too many arguments for pair_style ls/dem");
+    cutoff_auto = 0;
+    maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  }
 
   if (force->newton_pair)
     error->all(FLERR, "Temporarily do not support newton pair on with LS/DEM");
@@ -983,7 +1049,106 @@ void PairLSDEM::init_style()
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
+  // resolve an "auto" cutoff before Pair::init() calls init_one(), so it sets the neighbor cutoff
+
+  if (cutoff_auto) {
+    double spacing = auto_node_spacing();
+    if (spacing <= 0.0)
+      error->all(FLERR,
+                 "Pair ls/dem cutoff auto found no grains to estimate the node spacing "
+                 "from, set the cutoff explicitly instead");
+
+    maxcut = auto_cut_factor * spacing;
+    if (allocated)
+      for (int i = 1; i <= atom->ntypes; i++)
+        for (int j = i; j <= atom->ntypes; j++)
+          if (setflag[i][j]) cut[i][j] = maxcut;
+
+    if (comm->me == 0)
+      utils::logmesg(lmp,
+                     "pair ls/dem: auto node-node cutoff = {:.8g} ({:g} x largest node "
+                     "spacing {:.8g})\n",
+                     maxcut, auto_cut_factor, spacing);
+  }
+
   neighbor->add_request(this, NeighConst::REQ_GHOST);
+}
+
+/* ----------------------------------------------------------------------
+   largest nearest-neighbor node spacing over all grains
+   fix rigid/small/ls/dem grains use their molecule templates,
+   fix rigid/ls/dem grains (no templates) gather their atoms, so the
+   estimate does not depend on the number of MPI ranks
+------------------------------------------------------------------------- */
+
+double PairLSDEM::auto_node_spacing()
+{
+  double spacing = 0.0;
+  std::vector<std::array<double, 3>> p;
+
+  for (int im = 0; im < atom->nmolecule; im++) {
+    Molecule *onemol = atom->molecules[im];
+    if (!onemol->lsdemflag) continue;
+    p.resize(onemol->natoms);
+    for (int a = 0; a < onemol->natoms; a++)
+      for (int d = 0; d < 3; d++) p[a][d] = onemol->x[a][d];
+    spacing = MAX(spacing, max_nearest_node_gap(p));
+  }
+
+  auto fixlist = modify->get_fix_by_style("^rigid/ls/dem");
+  if (fixlist.empty()) return spacing;
+  if (!atom->molecule_flag)
+    error->all(FLERR, "Pair ls/dem cutoff auto with fix rigid/ls/dem requires molecule IDs");
+
+  // gather the unwrapped coordinates and molecule IDs of all atoms in the fix group
+
+  const int groupbit_fix = fixlist.front()->groupbit;
+  const int nlocal = atom->nlocal;
+  int *mask = atom->mask;
+  tagint *molecule = atom->molecule;
+  imageint *image = atom->image;
+  double **x = atom->x;
+
+  std::vector<double> sendbuf;
+  double unwrap[3];
+  for (int i = 0; i < nlocal; i++) {
+    if (!(mask[i] & groupbit_fix)) continue;
+    domain->unmap(x[i], image[i], unwrap);
+    sendbuf.push_back((double) molecule[i]);
+    sendbuf.insert(sendbuf.end(), unwrap, unwrap + 3);
+  }
+
+  const int nprocs = comm->nprocs;
+  int nsend = sendbuf.size();
+  std::vector<int> recvcounts(nprocs), displs(nprocs);
+  MPI_Allgather(&nsend, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, world);
+  bigint ntotal = 0;
+  for (int iproc = 0; iproc < nprocs; iproc++) {
+    displs[iproc] = ntotal;
+    ntotal += recvcounts[iproc];
+  }
+  if (ntotal > MAXSMALLINT)
+    error->all(FLERR, "Too many atoms in fix rigid/ls/dem for pair ls/dem cutoff auto");
+  if (sendbuf.empty()) sendbuf.push_back(0.0);
+  std::vector<double> recvbuf(MAX(ntotal, 1));
+  MPI_Allgatherv(sendbuf.data(), nsend, MPI_DOUBLE, recvbuf.data(), recvcounts.data(),
+                 displs.data(), MPI_DOUBLE, world);
+
+  std::map<tagint, std::vector<std::array<double, 3>>> bodies;
+  for (bigint m = 0; m < ntotal; m += 4)
+    bodies[(tagint) recvbuf[m]].push_back({recvbuf[m + 1], recvbuf[m + 2], recvbuf[m + 3]});
+
+  // share the per-body work across ranks, the maximum is the same on any number of ranks
+
+  double spacing_local = 0.0, spacing_large = 0.0;
+  int ibody = 0;
+  for (auto &body : bodies) {
+    if (ibody++ % nprocs != comm->me) continue;
+    spacing_local = MAX(spacing_local, max_nearest_node_gap(body.second));
+  }
+  MPI_Allreduce(&spacing_local, &spacing_large, 1, MPI_DOUBLE, MPI_MAX, world);
+
+  return MAX(spacing, spacing_large);
 }
 
 /* ---------------------------------------------------------------------- */
