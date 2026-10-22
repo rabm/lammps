@@ -862,13 +862,15 @@ void FixRigidSmallLSDEM::process_levelsets()
         MathExtra::sub3(x_local, bodyLS[ibody].grid_min, x_local);
         MathExtra::scale3(1.0 / bodyLS[ibody].grid_stride, x_local);
 
-        ix[0] = int(x_local[0]);
-        ix[1] = int(x_local[1]);
-        ix[2] = int(x_local[2]);
+        ix[0] = static_cast<int>(floor(x_local[0]));
+        ix[1] = static_cast<int>(floor(x_local[1]));
+        ix[2] = static_cast<int>(floor(x_local[2]));
+
+        // a node outside the grid has no bin, its index would point outside the grid tables
+        if ((ix[0] < 0) || (ix[0] >= nx) || (ix[1] < 0) || (ix[1] >= ny) || (ix[2] < 0) || (ix[2] >= nz))
+          error->one(FLERR, "Atom {} on body {} lies outside the level set grid of its body", atom->tag[i], ibody);
 
         currentbin = ix[0] + ix[1] * nx + ix[2] * nx * ny;
-        if (currentbin < 0)
-          error->one(FLERR, "Invalid bin for atom {} on body {}", atom->tag[i], ibody);
 
         if (global_node_bins[node_index[i]] != -1)
           error->one(FLERR, "Second copy of node {} detected for atom {} on body {}, tag {}", node_index[i], atom->tag[i], ibody, bodytag[i]);
