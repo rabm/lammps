@@ -36,6 +36,10 @@
 #include "update.h"
 #include "variable.h"
 
+#ifdef LMP_KOKKOS
+#include "fix_rigid_small_kokkos.h"
+#endif
+
 #include <cmath>
 #include <cfloat>
 #include <cstring>
@@ -52,7 +56,6 @@ using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 enum {ARRAY, WATERSHED};
-enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS, SUBGRID_LS, WATERSHED_LS};
 enum {RPARENT, RTAGMIN};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
@@ -2858,4 +2861,10 @@ void FixRigidSmallLSDEMT<Base>::get_grid_info(int j, GridInfo &g)
 
 namespace LAMMPS_NS {
 template class FixRigidSmallLSDEMT<FixRigidSmall>;
+#ifdef LMP_KOKKOS
+template class FixRigidSmallLSDEMT<FixRigidSmallKokkos<LMPDeviceType>>;
+#ifdef LMP_KOKKOS_GPU
+template class FixRigidSmallLSDEMT<FixRigidSmallKokkos<LMPHostType>>;
+#endif
+#endif
 }

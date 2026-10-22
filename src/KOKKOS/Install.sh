@@ -292,6 +292,8 @@ action fix_recenter_kokkos.cpp
 action fix_recenter_kokkos.h
 action fix_rigid_small_kokkos.cpp fix_rigid_small.cpp
 action fix_rigid_small_kokkos.h fix_rigid_small.h
+action fix_rigid_small_ls_dem_kokkos.cpp fix_rigid_small_ls_dem.cpp
+action fix_rigid_small_ls_dem_kokkos.h fix_rigid_small_ls_dem.h
 action fix_rigid_nh_small_kokkos.cpp fix_rigid_nh_small.cpp
 action fix_rigid_nh_small_kokkos.h fix_rigid_nh_small.h
 action fix_rigid_nve_small_kokkos.cpp fix_rigid_nve_small.cpp
@@ -641,6 +643,7 @@ action pair_lennard_mdf_kokkos.cpp pair_lennard_mdf.cpp
 action pair_lennard_mdf_kokkos.h pair_lennard_mdf.h
 action pair_ls_dem_kokkos.cpp pair_ls_dem.cpp
 action pair_ls_dem_kokkos.h pair_ls_dem.h
+action ls_dem_sort_kokkos.h pair_ls_dem.h
 action pair_meam_kokkos.cpp pair_meam.cpp
 action pair_meam_kokkos.h pair_meam.h
 action pair_meam_ms_kokkos.cpp pair_meam_ms.cpp
