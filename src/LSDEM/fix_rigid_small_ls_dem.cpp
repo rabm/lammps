@@ -2042,7 +2042,7 @@ void FixRigidSmallLSDEM::read_infile()
 {
   tagint id;
   int nchunk, eofflag, nlines;
-  FILE *fp;
+  FILE *fp = nullptr;
   char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
   std::string gridfile;
@@ -2197,7 +2197,7 @@ void FixRigidSmallLSDEM::read_gridfile(int which, std::string filename, double *
   int grid_shape_buf[3];
   double grid_size_buf[4];
   int nchunk, eofflag;
-  FILE *fp;
+  FILE *fp = nullptr;
   char *eof, *start, *next, *buf;
   char line[MAXLINE] = {'\0'};
 
