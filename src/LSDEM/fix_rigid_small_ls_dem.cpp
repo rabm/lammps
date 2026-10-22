@@ -930,7 +930,8 @@ void FixRigidSmallLSDEM::process_levelsets()
 
                 newbin = currentbin + sign * ns;
                 if (temp_grid_values[newbin] > gridfile_data[gridfile].stride) continue;
-                if (temp_grid_values[newbin] < -rcell) continue;
+                // rcell is a number of cells, the level set values are distances in the grid file
+                if (temp_grid_values[newbin] < -rcell * gridfile_data[gridfile].stride) continue;
 
                 // if unvisited, add walker
                 if (bin_owners[newbin] == -1)

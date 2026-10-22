@@ -480,6 +480,11 @@ void FixRigidLSDEM::init()
       int ny = grid_size[target_body][1];
       int nz = grid_size[target_body][2];
       int nbin = nx * ny * nz;
+
+      // temp_grid_values are the unscaled values of the grid file, so compare them with
+      //   the unscaled stride, grid_stride was already multiplied by the scale of the body
+      const double stride_file = grid_stride[target_body] / grid_scale[target_body];
+
       int max_node_index = -1;
       for (i = 0; i < nlocal; i++) {
         if (!(mask[i] & groupbit)) continue;
@@ -595,8 +600,8 @@ void FixRigidLSDEM::init()
                 if ((cell[a] + sign < 0) || (cell[a] + sign >= ncell[a])) continue;
 
                 newbin = currentbin + sign * ns;
-                if (temp_grid_values[newbin] > grid_stride[target_body]) continue;
-                if (temp_grid_values[newbin] < -rcell) continue;
+                if (temp_grid_values[newbin] > stride_file) continue;
+                if (temp_grid_values[newbin] < -rcell * stride_file) continue;
 
                 // if unvisited, add walker
                 if (bin_owners[newbin] == -1)
