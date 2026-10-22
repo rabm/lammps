@@ -1,9 +1,12 @@
 .. index:: fix rigid/ls/dem
+.. index:: fix rigid/ls/dem/kk
 .. index:: fix rigid/small/ls/dem
 .. index:: fix rigid/small/ls/dem/kk
 
 fix rigid/ls/dem command
 ========================
+
+Accelerator Variants: *rigid/ls/dem/kk*
 
 fix rigid/small/ls/dem command
 ==============================
