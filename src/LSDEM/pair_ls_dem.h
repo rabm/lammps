@@ -65,6 +65,53 @@ class PairLSDEM : public Pair {
   class FixRigidSmallLSDEM *fix_rigid_small;
   std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
 
+  // body of each local and ghost atom, refilled when the neighbor list is rebuilt
+  //   grp: 0 = not in an ls/dem group, 1 = rigid/small/ls/dem, 2 = rigid/ls/dem
+
+  struct BodyInfo {
+    double vol;
+    double area;
+    int bID;
+    int bidx;
+    char grp;
+    char off;
+  };
+  std::vector<BodyInfo> binfo;
+  bigint binfo_lastbuild;
+  void cache_body_info(int);
+
+  // closest node on each other grain, bucketed by the node of the grain whose nodes are used
+  //   the first entry wins ties, as the earlier hash map did
+
+  struct RepEntry {
+    int pbody;
+    char poff;
+    int ctag;
+    double rsq;
+  };
+  std::vector<std::vector<RepEntry>> rep_buckets;
+
+  inline void rep_update(std::vector<RepEntry> &b, int pbody, int poff, int ctag, double rsq)
+  {
+    for (auto &e : b)
+      if ((e.pbody == pbody) && (e.poff == poff)) {
+        if (rsq < e.rsq) {
+          e.ctag = ctag;
+          e.rsq = rsq;
+        }
+        return;
+      }
+    b.push_back({pbody, (char) poff, ctag, rsq});
+  }
+
+  // tag of the closest node on grain (pbody, poff), or -1 which matches no atom
+  inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const
+  {
+    for (const auto &e : b)
+      if ((e.pbody == pbody) && (e.poff == poff)) return e.ctag;
+    return -1;
+  }
+
   void allocate();
   bool use_nodes_of_i(int, int, double, double) const;
 };
