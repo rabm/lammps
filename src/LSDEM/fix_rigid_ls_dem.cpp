@@ -1296,8 +1296,8 @@ int FixRigidLSDEM::read_infile(char **gridfiles)
 void FixRigidLSDEM::read_gridfile(int ibody, int which, std::string filename, int **grid_size, double *grid_values)
 {
   int dim = domain->dimension;
-  int grid_shape_buf[dim];
-  double grid_size_buf[dim + 1];
+  int grid_shape_buf[3];
+  double grid_size_buf[4];
   int nchunk, eofflag;
   FILE *fp;
   char *eof, *start, *next, *buf;
