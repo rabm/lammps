@@ -1,11 +1,14 @@
 .. index:: fix rigid/ls/dem
 .. index:: fix rigid/small/ls/dem
+.. index:: fix rigid/small/ls/dem/kk
 
 fix rigid/ls/dem command
 ========================
 
 fix rigid/small/ls/dem command
 ==============================
+
+Accelerator Variants: *rigid/small/ls/dem/kk*
 
 Syntax
 """"""
@@ -34,3 +37,5 @@ required ghost region.
 The *ls/storage* keyword selects the grid representation.  The body
 file specifies the level-set grid for each grain and whether that grid
 is global or distributed.
+
+.. include:: accel_styles.rst

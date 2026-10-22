@@ -23,6 +23,7 @@
 #include "fix_rigid_small_ls_dem.h"
 #include "force.h"
 #include "kokkos.h"
+#include "ls_dem_sort_kokkos.h"
 #include "memory_kokkos.h"
 #include "neigh_list_kokkos.h"
 #include "neigh_request.h"
@@ -34,6 +35,7 @@
 #include <array>
 
 using namespace LAMMPS_NS;
+using LSDEMKokkos::heap_sort;
 
 static constexpr double EPSILON = 1e-12;
 static constexpr double EPS_TIE = 1.0e-12;
@@ -54,29 +56,6 @@ static void upload(ViewType &d, const std::vector<T> &h, const char *name)
   auto h_view = Kokkos::create_mirror_view(Kokkos::subview(d, std::make_pair((size_t) 0, n)));
   for (size_t m = 0; m < n; m++) h_view(m) = static_cast<V>(h[m]);
   Kokkos::deep_copy(Kokkos::subview(d, std::make_pair((size_t) 0, n)), h_view);
-}
-
-/* ----------------------------------------------------------------------
-   heap sort of n items in one thread, less(x, y) compares and swap(x, y) exchanges items x and y
-------------------------------------------------------------------------- */
-
-template <class Less, class Swap>
-KOKKOS_INLINE_FUNCTION static void heap_sort(const int n, const Less &less, const Swap &swap)
-{
-  auto sift = [&](int root, const int end) {
-    while (2 * root + 1 < end) {
-      int child = 2 * root + 1;
-      if ((child + 1 < end) && less(child, child + 1)) child++;
-      if (!less(root, child)) return;
-      swap(root, child);
-      root = child;
-    }
-  };
-  for (int start = n / 2 - 1; start >= 0; start--) sift(start, n);
-  for (int end = n - 1; end > 0; end--) {
-    swap(0, end);
-    sift(0, end);
-  }
 }
 
 /* ---------------------------------------------------------------------- */
