@@ -77,6 +77,8 @@ struct PairLSDEMKernelsKokkos {
   //   gstyle: -1 = no grid, 0 = grid of a grain (distributed), 1 = shared grid (global)
   //   gngrid, gmin: 3 values per atom
   //   goff: offset of the grid values in dgrid (distributed) or ggrid (global)
+  //   watershed storage: the bins of the node from goff on, gnws of them, ordered by bin,
+  //     gwkey (global) or dwkey (distributed) is 2 * bin, + 1 if the node owns the bin
 
   Kokkos::View<KK_FLOAT *, DeviceType> vol, area;
   Kokkos::View<int *, DeviceType> bid, bidx;
@@ -84,12 +86,19 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<KK_FLOAT *, DeviceType> gmin, gstride, gscale;
   Kokkos::View<bigint *, DeviceType> goff;
   Kokkos::View<KK_FLOAT *, DeviceType> dgrid, ggrid;
+  Kokkos::View<int *, DeviceType> gnws, dwkey, gwkey;
 
   // segments of PairLSDEM::rep_segs and their candidates, flattened
   //   seg_flag: 1 = tie, 2 = dup
 
   Kokkos::View<int *, DeviceType> seg_rep, seg_flag, seg_cbeg;
   Kokkos::View<int *, DeviceType> cand_idx, cand_key, cand_owns, cand_on;
+
+  // watershed storage: segment of each candidate, bin and grid position of the node of
+  //   each segment in the grid of the other grain
+
+  Kokkos::View<int *, DeviceType> cand_seg, seg_bin;
+  Kokkos::View<KK_FLOAT *, DeviceType> seg_xl;
 
   // nodes with segments and their candidates in the order of the key
 
@@ -114,7 +123,7 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<int *, DeviceType> flag;
   Kokkos::View<tagint *, DeviceType> flag_tag;
 
-  int nlocal, dimension, vflag_either, vflag_atom;
+  int nlocal, dimension, vflag_either, vflag_atom, watershed;
   KK_FLOAT maxcutsq, dt;
   int triclinic, xperiodic, yperiodic, zperiodic;
   KK_FLOAT xprd, yprd, zprd, xprd_half, yprd_half, zprd_half, xy, xz, yz;
@@ -147,11 +156,27 @@ struct PairLSDEMKernelsKokkos {
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
+  void grid_position(int, int, KK_FLOAT *) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
   KK_FLOAT ls_value(int, int, KK_FLOAT *) const;
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
-  void contact(int, int, int, int) const;
+  int ws_find(int, int, int, KK_FLOAT &) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  KK_FLOAT ls_global_frame(int, KK_FLOAT, KK_FLOAT *) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  KK_FLOAT ls_value_watershed(int, int, KK_FLOAT *) const;
+
+// NOLINTNEXTLINE
+  KOKKOS_INLINE_FUNCTION
+  void contact(int, int, int, int, int) const;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -184,10 +209,12 @@ class PairLSDEMKokkos : public PairLSDEM {
 
   int nseg, ncand, nrep, nkey;
 
-  // global grids already on the device, by their host address
+  // global grids or watershed tables already on the device by their host address,
+  //   with their offset and number of watershed bins
 
-  std::unordered_map<const double *, bigint> ggrid_offset;
+  std::unordered_map<const void *, std::pair<bigint, int>> ggrid_offset;
   std::vector<double> h_ggrid;
+  std::vector<int> h_gwkey;
 
   void build_segments();
   void allocate() override;
@@ -199,4 +226,3 @@ class PairLSDEMKokkos : public PairLSDEM {
 
 #endif
 #endif
-
