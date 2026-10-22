@@ -122,9 +122,6 @@ void PairLSDEMKokkos<DeviceType>::setup()
 {
   PairLSDEM::setup();
 
-  if (watershed_flag)
-    error->all(FLERR, "Pair ls/dem/kk does not yet support the watershed storage of level sets");
-
   const int n = atom->ntypes;
   for (int i = 1; i <= n; i++)
     for (int j = 1; j <= n; j++) {
@@ -147,6 +144,7 @@ void PairLSDEMKokkos<DeviceType>::setup()
 
   ggrid_offset.clear();
   h_ggrid.clear();
+  h_gwkey.clear();
 }
 
 /* ----------------------------------------------------------------------
@@ -247,7 +245,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   // group the candidates of each node by the grain they belong to, keeping their order
 
   std::vector<int> h_seg_rep, h_seg_flag, h_seg_cbeg(1, 0);
-  std::vector<int> h_cand_idx, h_cand_key, h_cand_owns;
+  std::vector<int> h_cand_idx, h_cand_key, h_cand_owns, h_cand_seg;
   std::vector<int> h_rep_atom, h_rep_kbeg(1, 0), h_rep_kslot;
   std::vector<char> partner(ntotal, 0);
   std::vector<std::pair<int, int>> keyslot;
@@ -257,6 +255,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   h_cand_idx.reserve(rec.size());
   h_cand_key.reserve(rec.size());
   h_cand_owns.reserve(rec.size());
+  h_cand_seg.reserve(rec.size());
 
   for (int r = 0; r < ntotal; r++) {
     if (rbeg[r] == rbeg[r + 1]) continue;
@@ -289,6 +288,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         h_cand_idx.push_back(c->cand);
         h_cand_key.push_back(c->key);
         h_cand_owns.push_back(c->owns);
+        h_cand_seg.push_back(h_seg_rep.size() - 1);
         partner[c->cand] = 1;
         if (c->key >= 0) {
           keyslot.emplace_back(c->key, slot);
@@ -352,9 +352,32 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   std::vector<double> h_vol(ntotal), h_area(ntotal), h_gmin(3 * ntotal, 0.0);
   std::vector<double> h_gstride(ntotal, 1.0), h_gscale(ntotal, 1.0), h_dgrid;
   std::vector<int> h_bid(ntotal), h_bidx(ntotal), h_gstyle(ntotal, -1), h_gngrid(3 * ntotal, 0);
+  std::vector<int> h_gnws(ntotal, 0), h_dwkey;
   std::vector<bigint> h_goff(ntotal, 0);
   int newglobal = 0;
   LSDEMExtra::GridInfo g;
+
+  // watershed bins of a node ordered by bin, a bin of its table is not also taken from its buffer
+
+  std::vector<std::pair<int, double>> wsbin;
+  auto add_ws = [&](std::vector<int> &keys, std::vector<double> &values) {
+    wsbin.clear();
+    for (const auto &e : *g.ws_table) wsbin.emplace_back(e.first, e.second);
+    const int nown = wsbin.size();
+    for (const auto &e : *g.ws_buffer)
+      if (g.ws_table->count(e.first) == 0) wsbin.emplace_back(e.first, e.second);
+    for (int m = 0; m < (int) wsbin.size(); m++) {
+      if ((wsbin[m].first < 0) || (wsbin[m].first > MAXSMALLINT / 2))
+        error->one(FLERR, "Watershed bin {} out of range for pair ls/dem/kk", wsbin[m].first);
+      wsbin[m].first = 2 * wsbin[m].first + (m < nown);
+    }
+    std::sort(wsbin.begin(), wsbin.end());
+    for (const auto &e : wsbin) {
+      keys.push_back(e.first);
+      values.push_back(e.second);
+    }
+    return (int) wsbin.size();
+  };
 
   for (int a = 0; a < ntotal; a++) {
     const BodyInfo &b = binfo[a];
@@ -376,14 +399,33 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       h_gngrid[3 * a + k] = g.ngrid[k];
       h_gmin[3 * a + k] = g.grid_min[k];
     }
+    if (watershed_flag) {
+      if (!g.ws_table)
+        error->one(FLERR, "Pair ls/dem/kk requires watershed storage in all fix rigid ls/dem");
+      if (g.global) {
+        auto it = ggrid_offset.find(g.ws_table);
+        if (it == ggrid_offset.end()) {
+          const bigint off = h_ggrid.size();
+          const int n = add_ws(h_gwkey, h_ggrid);
+          it = ggrid_offset.emplace(g.ws_table, std::make_pair(off, n)).first;
+          newglobal = 1;
+        }
+        h_goff[a] = it->second.first;
+        h_gnws[a] = it->second.second;
+      } else {
+        h_goff[a] = h_dgrid.size();
+        h_gnws[a] = add_ws(h_dwkey, h_dgrid);
+      }
+      continue;
+    }
     if (g.global) {
       auto it = ggrid_offset.find(g.values);
       if (it == ggrid_offset.end()) {
-        it = ggrid_offset.emplace(g.values, (bigint) h_ggrid.size()).first;
+        it = ggrid_offset.emplace(g.values, std::make_pair((bigint) h_ggrid.size(), 0)).first;
         h_ggrid.insert(h_ggrid.end(), g.values, g.values + g.nvalues);
         newglobal = 1;
       }
-      h_goff[a] = it->second;
+      h_goff[a] = it->second.first;
     } else {
       h_goff[a] = h_dgrid.size();
       h_dgrid.insert(h_dgrid.end(), g.values, g.values + g.nvalues);
@@ -396,6 +438,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   upload(kern.cand_idx, h_cand_idx, "pair:cand_idx");
   upload(kern.cand_key, h_cand_key, "pair:cand_key");
   upload(kern.cand_owns, h_cand_owns, "pair:cand_owns");
+  if (watershed_flag) upload(kern.cand_seg, h_cand_seg, "pair:cand_seg");
   upload(kern.rep_atom, h_rep_atom, "pair:rep_atom");
   upload(kern.rep_kbeg, h_rep_kbeg, "pair:rep_kbeg");
   upload(kern.rep_kslot, h_rep_kslot, "pair:rep_kslot");
@@ -413,6 +456,15 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   upload(kern.goff, h_goff, "pair:goff");
   upload(kern.dgrid, h_dgrid, "pair:dgrid");
   if (newglobal || (kern.ggrid.extent(0) == 0)) upload(kern.ggrid, h_ggrid, "pair:ggrid");
+  if (watershed_flag) {
+    upload(kern.gnws, h_gnws, "pair:gnws");
+    upload(kern.dwkey, h_dwkey, "pair:dwkey");
+    if (newglobal || (kern.gwkey.extent(0) == 0)) upload(kern.gwkey, h_gwkey, "pair:gwkey");
+    if ((int) kern.seg_bin.extent(0) < MAX(nseg, 1)) {
+      kern.seg_bin = Kokkos::View<int *, DeviceType>("pair:seg_bin", MAX(nseg, 1));
+      kern.seg_xl = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_xl", 3 * MAX(nseg, 1));
+    }
+  }
 
   if ((int) kern.cand_on.extent(0) < MAX(ncand, 1))
     kern.cand_on = Kokkos::View<int *, DeviceType>("pair:cand_on", MAX(ncand, 1));
@@ -497,6 +549,7 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   kern.dt = update->dt;
   kern.vflag_either = vflag_either;
   kern.vflag_atom = vflag_atom;
+  kern.watershed = watershed_flag;
   kern.triclinic = domain->triclinic;
   kern.xperiodic = domain->xperiodic;
   kern.yperiodic = domain->yperiodic;
@@ -650,15 +703,15 @@ bool PairLSDEMKernelsKokkos<DeviceType>::use_nodes_of_i(int i, int j) const
 }
 
 /* ----------------------------------------------------------------------
-   level set of the grain of atom j at node i and its normal, as get_ls_value_array()
-   of fix rigid/ls/dem and rigid/small/ls/dem with interpolate_LS_array()
+   position of node i in the level-set grid of the grain of atom j in units of grid cells,
+   as get_bin() of fix rigid/ls/dem and rigid/small/ls/dem
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
-KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nvec) const
+void PairLSDEMKernelsKokkos<DeviceType>::grid_position(int i, int j, KK_FLOAT *xl) const
 {
-  KK_FLOAT dx[3], xl[3], qc[4], temp[4];
+  KK_FLOAT dx[3], qc[4], temp[4];
 
   dx[0] = x(i, 0) - xcom(j, 0);
   dx[1] = x(i, 1) - xcom(j, 1);
@@ -689,6 +742,20 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nv
   xl[0] *= sinv;
   xl[1] *= sinv;
   xl[2] *= sinv;
+}
+
+/* ----------------------------------------------------------------------
+   level set of the grain of atom j at node i and its normal, as get_ls_value_array()
+   of fix rigid/ls/dem and rigid/small/ls/dem with interpolate_LS_array()
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+KOKKOS_INLINE_FUNCTION
+KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nvec) const
+{
+  KK_FLOAT xl[3];
+  grid_position(i, j, xl);
+  const KK_FLOAT stride = gstride(j);
 
   const int ng0 = gngrid(3 * j);
   const int ng1 = gngrid(3 * j + 1);
@@ -755,13 +822,133 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nv
     }
   }
 
+  return ls_global_frame(j, dist, nvec);
+}
+
+/* ----------------------------------------------------------------------
+   level set of a grid cell corner in the watershed bins of node j, ordered by bin,
+   found if the node owns the bin or, if owned = 0, if the bin is next to them,
+   as get_ws_ls_value() and the table lookup of interpolate_LS_watershed()
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+KOKKOS_INLINE_FUNCTION
+int PairLSDEMKernelsKokkos<DeviceType>::ws_find(int j, int bin, int owned, KK_FLOAT &val) const
+{
+  const int global = gstyle(j);
+  const int *keys = global ? (gwkey.data() + goff(j)) : (dwkey.data() + goff(j));
+  int lo = 0;
+  int hi = gnws(j);
+  while (lo < hi) {
+    const int mid = (lo + hi) / 2;
+    if (keys[mid] < 2 * bin) lo = mid + 1;
+    else hi = mid;
+  }
+  if ((lo == gnws(j)) || ((keys[lo] >> 1) != bin)) return 0;
+  if (owned && !(keys[lo] & 1)) return 0;
+  val = global ? ggrid(goff(j) + lo) : dgrid(goff(j) + lo);
+  return 1;
+}
+
+/* ----------------------------------------------------------------------
+   level set of the grain of atom j at the node of segment s and its normal,
+   as get_ls_value_watershed() of fix rigid/ls/dem and rigid/small/ls/dem
+   with interpolate_LS_watershed(), the bin of the node was found by the select kernel
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+KOKKOS_INLINE_FUNCTION
+KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value_watershed(int j, int s, KK_FLOAT *nvec) const
+{
+  KK_FLOAT xl[3];
+  xl[0] = seg_xl(3 * s);
+  xl[1] = seg_xl(3 * s + 1);
+  xl[2] = seg_xl(3 * s + 2);
+  const int mybin = seg_bin(s);
+  const KK_FLOAT stride = gstride(j);
+
+  const int ng0 = gngrid(3 * j);
+  const int ng1 = gngrid(3 * j + 1);
+  const int ng2 = gngrid(3 * j + 2);
+  const int ix0 = int(xl[0]);
+  const int ix1 = int(xl[1]);
+  const int ix2 = int(xl[2]);
+  KK_FLOAT dist = BIG;
+  KK_FLOAT ls000, ls100, ls010, ls110, ls001, ls101, ls011, ls111;
+
+  if ((ix0 < 0 || ix0 >= (ng0 - 1)) || (ix1 < 0 || ix1 >= (ng1 - 1)) ||
+      ((dimension == 3) && (ix2 < 0 || ix2 >= (ng2 - 1)))) {
+    dist = BIG;
+  } else if (!ws_find(j, mybin, 1, ls000)) {
+    dist = BIG;
+  } else if (ls000 > 2.0 * stride) {
+    dist = ls000;
+  } else if (ws_find(j, mybin + 1, 0, ls100) && ws_find(j, mybin + ng0, 0, ls010) &&
+             ws_find(j, mybin + 1 + ng0, 0, ls110)) {
+    KK_FLOAT xr[3];
+    xr[0] = xl[0] - static_cast<KK_FLOAT>(ix0);
+    xr[1] = xl[1] - static_cast<KK_FLOAT>(ix1);
+    xr[2] = xl[2] - static_cast<KK_FLOAT>(ix2);
+
+    const KK_FLOAT lsxy0 = ls000 + xr[1] * (ls010 - ls000) +
+      xr[0] * (ls100 - ls000 + xr[1] * (ls110 - ls100 - ls010 + ls000));
+    dist = lsxy0;
+
+    nvec[0] = ls100 - ls000 + xr[1] * (ls110 - ls100 - ls010 + ls000);
+    nvec[1] = ls010 - ls000 + xr[0] * (ls110 - ls100 - ls010 + ls000);
+    nvec[2] = 0.0;
+
+    int found = 1;
+    if (dimension == 3) {
+      const int up = ng0 * ng1;
+      found = ws_find(j, mybin + up, 0, ls001) && ws_find(j, mybin + 1 + up, 0, ls101) &&
+        ws_find(j, mybin + ng0 + up, 0, ls011) && ws_find(j, mybin + 1 + ng0 + up, 0, ls111);
+      if (found) {
+        const KK_FLOAT lsxy1 = ls001 + xr[1] * (ls011 - ls001) +
+          xr[0] * (ls101 - ls001 + xr[1] * (ls111 - ls101 - ls011 + ls001));
+
+        dist = xr[2] * (lsxy1 - lsxy0) + lsxy0;
+        nvec[0] *= 1 - xr[2];
+        nvec[0] += xr[2] * (ls101 - ls001 + xr[1] * (ls111 - ls101 - ls011 + ls001));
+        nvec[1] *= 1 - xr[2];
+        nvec[1] += xr[2] * (ls011 - ls001 + xr[0] * (ls111 - ls101 - ls011 + ls001));
+        nvec[2] = lsxy1 - lsxy0;
+      } else {
+        dist = BIG;
+      }
+    }
+
+    if (found) {
+      const KK_FLOAT val = nvec[0] * nvec[0] + nvec[1] * nvec[1] + nvec[2] * nvec[2];
+      if (val > 0.0) {
+        const KK_FLOAT scale = 1.0 / Kokkos::sqrt(val);
+        nvec[0] *= scale;
+        nvec[1] *= scale;
+        nvec[2] *= scale;
+      }
+    }
+  }
+
+  return ls_global_frame(j, dist, nvec);
+}
+
+/* ----------------------------------------------------------------------
+   level set of a shared grid scaled to grain j and the normal rotated back to the global frame
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+KOKKOS_INLINE_FUNCTION
+KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_global_frame(int j, KK_FLOAT dist,
+                                                              KK_FLOAT *nvec) const
+{
   // values of a shared grid are not scaled
 
-  if (global) dist *= gscale(j);
+  if (gstyle(j)) dist *= gscale(j);
 
   // rotate the normal back to the global frame, it is only used for a contact (dist < 0)
 
   if (dist < 0.0) {
+    KK_FLOAT temp[4];
     const KK_FLOAT a0 = quat(j, 0), a1 = quat(j, 1), a2 = quat(j, 2), a3 = quat(j, 3);
     const KK_FLOAT b0 = nvec[0], b1 = nvec[1], b2 = nvec[2];
     temp[0] = -a1 * b0 - a2 * b1 - a3 * b2;
@@ -792,6 +979,33 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   // grains of equal volume choose whose nodes are used by their current positions
 
   if ((sflag & 1) && !use_nodes_of_i(r, cand_idx(b))) return;
+
+  // watershed: the bin of the node in the grid of the other grain is found once, from the
+  //   first candidate in the neighbor list of a local atom, each candidate owning it is a contact
+
+  if (watershed) {
+    int first = b;
+    while ((first < e) && (cand_key(first) < 0)) first++;
+    if (first == e) return;
+    const int c = cand_idx(first);
+    if (bidx(c) < 0) {
+      if (Kokkos::atomic_fetch_add(&flag(0), 1) == 0) flag_tag(0) = tag(c);
+      return;
+    }
+    KK_FLOAT xl[3];
+    grid_position(r, c, xl);
+    const int ng0 = gngrid(3 * c);
+    const int ng1 = gngrid(3 * c + 1);
+    const int bin = int(xl[0]) + int(xl[1]) * ng0 + int(xl[2]) * ng0 * ng1;
+    seg_bin(s) = bin;
+    seg_xl(3 * s) = xl[0];
+    seg_xl(3 * s + 1) = xl[1];
+    seg_xl(3 * s + 2) = xl[2];
+    KK_FLOAT val;
+    for (int m = first; m < e; m++)
+      if ((cand_key(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) cand_on(m) = 1;
+    return;
+  }
 
   const KK_FLOAT xitmp = x(r, 0);
   const KK_FLOAT yitmp = x(r, 1);
@@ -833,21 +1047,21 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMContact, const i
     if (!cand_on(slot)) continue;
     const int c = cand_idx(slot);
     if (cand_owns(slot))
-      contact(r, c, 1, cand_key(slot));
+      contact(r, c, 1, cand_key(slot), slot);
     else
-      contact(c, r, 0, cand_key(slot));
+      contact(c, r, 0, cand_key(slot), slot);
   }
 }
 
 /* ----------------------------------------------------------------------
-   contact model of PairLSDEM::process_contact() with array storage,
+   contact model of PairLSDEM::process_contact() for the candidate in slot,
    stores the force and torques of the contact by key instead of applying them
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of_i_on_j,
-                                                  int key) const
+                                                  int key, int slot) const
 {
   KK_FLOAT normal[3], fpair[3], contact_point[3], lever[3], torque_pair[3];
   KK_FLOAT fs_tmp[3], k[3], term1[3], tangent[3], v_rel[3], v_rel_t[3];
@@ -863,7 +1077,8 @@ void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of
   const int ni = calc_force_of_i_on_j ? i : j;
   const int par = calc_force_of_i_on_j ? j : i;
   normal[0] = normal[1] = normal[2] = 0.0;
-  const KK_FLOAT u = -ls_value(ni, par, normal);
+  const KK_FLOAT u =
+    watershed ? -ls_value_watershed(par, cand_seg(slot), normal) : -ls_value(ni, par, normal);
 
   const KK_FLOAT hsign = calc_force_of_i_on_j ? 1.0 : -1.0;
   const KK_FLOAT narea = calc_force_of_i_on_j ? area(i) : area(j);
