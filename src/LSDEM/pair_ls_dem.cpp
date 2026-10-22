@@ -657,11 +657,7 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
 
   // Tangent normal
   if (v_rel_t_mag > EPSILON) {
-    if (v_rel_t_mag != 0) {
-      v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
-    } else {
-      v_rel_t_mag_inv = 0.0;
-    }
+    v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
     tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
     tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
     tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
