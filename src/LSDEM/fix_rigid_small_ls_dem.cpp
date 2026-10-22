@@ -51,7 +51,7 @@ using namespace LSDEMExtra;
 
 enum {GLOBAL, DISTRIBUTED};
 enum {ARRAY, WATERSHED};
-enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS, SUBGRID_LS};
+enum {PARENT, FULL_BODY_LS, INITIAL_LS, PROCESS_GS, PREFORCE_LS, SUBGRID_LS, WATERSHED_LS};
 enum {RPARENT, RTAGMIN};
 
 static constexpr double EPSILON_VOL_DIFF = 1.0e-6; // 0.0001%
@@ -1064,8 +1064,19 @@ void FixRigidSmallLSDEM::process_levelsets()
   comm->forward_comm(this, 1);
   commflag_ls = PARENT;
 
+  // room to forward the watershed data of atoms to ghosts below
+  if (storage_mode == WATERSHED) comm_forward = MAX(comm_forward, comm_border);
+
   // resize buffers as necessary
   comm->init();
+
+  // Ghost node indices and watershed bins were set by the setup borders() call before
+  //   they were calculated above, push them to existing ghosts. Later border calls update new ghosts
+  if (storage_mode == WATERSHED) {
+    commflag_ls = WATERSHED_LS;
+    comm->forward_comm(this, comm_border);
+    commflag_ls = PARENT;
+  }
 
   // Ghost subgrids were already set by the setup borders() call before values were
   //   calculated above, push them to existing ghosts. Later border calls update new ghosts
@@ -1594,11 +1605,20 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 
 int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
 {
-  int i, j, k;
-  int m = 0;
-
   if (storage_mode != WATERSHED) return 0;
   if (!ls_read_flag) return 0;
+
+  return pack_watershed(n, list, buf);
+}
+
+/* ----------------------------------------------------------------------
+   pack the node index and, for distributed storage, the watershed bins of atoms
+------------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::pack_watershed(int n, int *list, double *buf)
+{
+  int i, j;
+  int m = 0;
 
   for (i = 0; i < n; i++) {
     j = list[i];
@@ -1629,11 +1649,20 @@ int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
 
 int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
 {
-  int i, last, flag;
-  std::size_t k;
-
   if (storage_mode != WATERSHED) return 0;
   if (!ls_read_flag) return 0;
+
+  return unpack_watershed(n, first, buf);
+}
+
+/* ----------------------------------------------------------------------
+   unpack the node index and, for distributed storage, the watershed bins of ghost atoms
+------------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::unpack_watershed(int n, int first, double *buf)
+{
+  int i, last;
+  std::size_t k;
 
   int m = 0;
   last = first + n;
@@ -1837,6 +1866,8 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
         m += bodysizeLS;
       }
     }
+  } else if (commflag_ls == WATERSHED_LS) {
+    m = pack_watershed(n, list, buf);
   } else {
     m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
   }
@@ -1912,6 +1943,8 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
         nghost_bodyLS++;
       }
     }
+  } else if (commflag_ls == WATERSHED_LS) {
+    unpack_watershed(n, first, buf);
   } else {
     FixRigidSmall::unpack_forward_comm(n, first, buf);
   }

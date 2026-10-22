@@ -153,6 +153,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // local methods
 
   void process_levelsets();
+  int pack_watershed(int, int *, double *);
+  int unpack_watershed(int, int, double *);
   void calculate_xcom();
   void copy_mol_data_to_bodies();
   void copy_in_data_to_bodies();
