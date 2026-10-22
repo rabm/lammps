@@ -1029,6 +1029,7 @@ void FixRigidSmallLSDEM::process_levelsets()
   }
 
   memory->destroy(temp_grid_values);
+  memory->destroy(global_node_bins);
   memory->destroy(grid_size_flat);
 
   // ------------------------------ //
