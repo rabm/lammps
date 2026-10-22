@@ -263,10 +263,13 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
       // a node may appear more than once with the same tag (periodic images)
       for (const Cand &other : seg.cand)
         if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
+      const int m = seg.cand.size();
+      if (c < seg.cand[seg.cmin].idx) seg.cmin = m;
+      if ((key >= 0) && ((seg.kmin < 0) || (c < seg.cand[seg.kmin].idx))) seg.kmin = m;
       seg.cand.push_back(cand);
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, 0, (key >= 0) ? 0 : -1, {cand}});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -330,15 +333,11 @@ void PairLSDEM::compute(int eflag, int vflag)
       // grains of equal volume choose whose nodes are used by their current positions,
       //   from the candidate with the lowest index, so the choice does not depend on list order
       const int ncand = seg.cand.size();
-      int c0 = seg.cand[0].idx;
-      for (int m = 1; m < ncand; m++) c0 = MIN(c0, seg.cand[m].idx);
+      const int c0 = seg.cand[seg.cmin].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
 
       if (watershed_flag) {
-        int first = -1;
-        for (int m = 0; m < ncand; m++)
-          if ((seg.cand[m].key >= 0) && ((first < 0) || (seg.cand[m].idx < seg.cand[first].idx)))
-            first = m;
+        const int first = seg.kmin;
         if (first < 0) continue;
         // the grid and watershed of the other grain are found through its body
         if (binfo[seg.cand[first].idx].bidx < 0)
