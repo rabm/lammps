@@ -28,12 +28,94 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 
 namespace LAMMPS_NS {
 
-class FixRigidSmallLSDEM : public FixRigidSmall {
+// what pair ls/dem and fix rigid/ls/dem use of fix rigid/small/ls/dem and its accelerated variants
+
+class FixRigidSmallLSDEMAccess {
+ public:
+  struct BodyLS {
+    // These are only needed by local bodies
+    int ilocal;            // index of owning atom, duplicate from Body
+    int file_id;           // integer id of file
+    double grid_vol;       // volume of LS grid
+    double node_area;      // area associated with each grid node
+
+    // These are needed by local + ghost bodies
+    int style;             // style of memory, GLOBAL or DISTRIBUTED
+    int grid_index;        // index of body's global memory
+    int grid_size[3];      // size of total grain grid
+    double grid_min[3];    // minimum values of total grain grid
+    double grid_scale;     // scale factor for grid values, only needed for GLOBAL
+    double grid_stride;    // the LS grid stride, assumed equal in all direction
+    double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
+    tagint tagmin;              // smallest tag of atom in the body
+  };
+
+  virtual ~FixRigidSmallLSDEMAccess() noexcept(false) {}
+  virtual int get_maxmol() = 0;
+  virtual BodyLS *get_bodyLS_array() = 0;
+  virtual int *get_atom2body_array() = 0;
+  virtual int get_storage_model() = 0;
+  virtual void get_grid_info(int, LSDEMExtra::GridInfo &) = 0;
+};
+
+// the LS-DEM part of fix rigid/small/ls/dem, on top of fix rigid/small (Base) or one of
+//   its accelerated variants
+
+template <class Base> class FixRigidSmallLSDEMT : public Base, public FixRigidSmallLSDEMAccess {
   friend class ComputeRigidLSDEMLocal;
 
+ protected:
+  typedef typename Base::Body Body;
+  using Base::atom;
+  using Base::comm;
+  using Base::displace;
+  using Base::domain;
+  using Base::eflags;
+  using Base::error;
+  using Base::force;
+  using Base::lmp;
+  using Base::memory;
+  using Base::modify;
+  using Base::update;
+  using Base::world;
+  using Base::atom2body;
+  using Base::body;
+  using Base::bodyown;
+  using Base::bodytag;
+  using Base::commflag;
+  using Base::extended;
+  using Base::grav_group_bit;
+  using Base::grow_body;
+  using Base::gvec;
+  using Base::id_gravity;
+  using Base::inpfile;
+  using Base::itensor_custom;
+  using Base::langflag;
+  using Base::mass_custom;
+  using Base::maxmol;
+  using Base::n_extra_attributes;
+  using Base::nbody;
+  using Base::nghost_body;
+  using Base::nlocal_body;
+  using Base::nmax_body;
+  using Base::onemols;
+  using Base::reinitflag;
+  using Base::reset_atom2body;
+  using Base::setupflag;
+  using Base::xcm_custom;
+  using Base::xcmimage;
+
  public:
-  FixRigidSmallLSDEM(class LAMMPS *, int, char **);
-  ~FixRigidSmallLSDEM() override;
+  using Base::comm_border;
+  using Base::comm_forward;
+  using Base::groupbit;
+  using Base::id;
+  using Base::maxexchange;
+  using Base::restart_file;
+  using Base::style;
+
+  FixRigidSmallLSDEMT(class LAMMPS *, int, char **);
+  ~FixRigidSmallLSDEMT() override;
   int setmask() override;
   void post_constructor() override;
   void init() override;
@@ -61,33 +143,16 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
 
   double memory_usage() override;
 
-  struct BodyLS {
-    // These are only needed by local bodies
-    int ilocal;            // index of owning atom, duplicate from Body
-    int file_id;           // integer id of file
-    double grid_vol;       // volume of LS grid
-    double node_area;      // area associated with each grid node
 
-    // These are needed by local + ghost bodies
-    int style;             // style of memory, GLOBAL or DISTRIBUTED
-    int grid_index;        // index of body's global memory
-    int grid_size[3];      // size of total grain grid
-    double grid_min[3];    // minimum values of total grain grid
-    double grid_scale;     // scale factor for grid values, only needed for GLOBAL
-    double grid_stride;    // the LS grid stride, assumed equal in all direction
-    double quatd2g[4];     // quaternion that rotates from diagonal to grid frame for each rigid body
-    tagint tagmin;              // smallest tag of atom in the body
-  };
-
-  inline int get_maxmol() { return maxmol; };
-  inline BodyLS* get_bodyLS_array() { return bodyLS; };
-  inline int* get_atom2body_array() { return atom2body; };
-  inline int get_storage_model() { return storage_mode; };
+  int get_maxmol() override { return maxmol; }
+  BodyLS *get_bodyLS_array() override { return bodyLS; }
+  int *get_atom2body_array() override { return atom2body; }
+  int get_storage_model() override { return storage_mode; }
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);
-  void get_grid_info(int, LSDEMExtra::GridInfo &);
+  void get_grid_info(int, LSDEMExtra::GridInfo &) override;
 
  protected:
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
@@ -168,6 +233,14 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void reset_atom2body_ghost();
   double get_ls_value_array(int, int, double*);
   double get_ls_value_watershed(int, int, int, double*, double*);
+};
+
+class FixRigidSmallLSDEM final : public FixRigidSmallLSDEMT<FixRigidSmall> {
+ public:
+  FixRigidSmallLSDEM(class LAMMPS *lmp, int narg, char **arg) :
+      FixRigidSmallLSDEMT<FixRigidSmall>(lmp, narg, arg)
+  {
+  }
 };
 
 }    // namespace LAMMPS_NS
