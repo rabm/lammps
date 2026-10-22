@@ -307,13 +307,16 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   // Array: find the closest node on each other grain for each node of the grain whose nodes
-  //   are used, in the order of the neighbor list, so the first of equally close nodes wins.
+  //   are used, of equally close nodes the one with the lowest atom index wins.
   //   Comparing squared distances (rsq) gives the same closest node as comparing r.
   //   Each pair of the closest node and a node with its tag (periodic images) in the
   //   neighbor list of a local atom is a contact.
-  // Watershed: find the bin of the node in the grid of each other grain once, from the first
-  //   candidate in the neighbor list of a local atom, each candidate owning that bin is a contact.
-  // The contacts are then evaluated in neighbor list order.
+  // Watershed: find the bin of the node in the grid of each other grain once, from the
+  //   candidate with the lowest atom index in the neighbor list of a local atom,
+  //   each candidate owning that bin is a contact.
+  // The contacts are then evaluated in the order of the atom indices of their pair.
+  // None of this depends on the order of the neighbor list, so pair ls/dem/kk with
+  //   a neighbor list built on the device gives the same results bit for bit.
 
   contacts.clear();
   wsbins.clear();
@@ -324,15 +327,19 @@ void PairLSDEM::compute(int eflag, int vflag)
     yitmp = x[irep][1];
     zitmp = x[irep][2];
     for (Seg &seg : segs) {
-      // grains of equal volume choose whose nodes are used by their current positions
-      const int c0 = seg.cand[0].idx;
-      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
+      // grains of equal volume choose whose nodes are used by their current positions,
+      //   from the candidate with the lowest index, so the choice does not depend on list order
       const int ncand = seg.cand.size();
+      int c0 = seg.cand[0].idx;
+      for (int m = 1; m < ncand; m++) c0 = MIN(c0, seg.cand[m].idx);
+      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
 
       if (watershed_flag) {
-        int first = 0;
-        while ((first < ncand) && (seg.cand[first].key < 0)) first++;
-        if (first == ncand) continue;
+        int first = -1;
+        for (int m = 0; m < ncand; m++)
+          if ((seg.cand[m].key >= 0) && ((first < 0) || (seg.cand[m].idx < seg.cand[first].idx)))
+            first = m;
+        if (first < 0) continue;
         // the grid and watershed of the other grain are found through its body
         if (binfo[seg.cand[first].idx].bidx < 0)
           error->one(FLERR,
@@ -346,7 +353,7 @@ void PairLSDEM::compute(int eflag, int vflag)
           wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
         const int ws = wsbins.size();
         wsbins.push_back(wb);
-        for (int m = first; m < ncand; m++) {
+        for (int m = 0; m < ncand; m++) {
           const Cand &cand = seg.cand[m];
           if (cand.key < 0) continue;
           const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
@@ -365,7 +372,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         delz = zitmp - x[c][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
-        if ((win < 0) || (rsq < minrsq)) {
+        if ((win < 0) || (rsq < minrsq) || ((rsq == minrsq) && (c < seg.cand[win].idx))) {
           minrsq = rsq;
           win = m;
         }
@@ -381,7 +388,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     }
   }
   std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
-    return a.key < b.key;
+    return (a.i < b.i) || ((a.i == b.i) && (a.j < b.j));
   });
 
   double x_local[3];
