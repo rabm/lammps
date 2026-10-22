@@ -558,15 +558,17 @@ void FixRigidLSDEM::init()
           for (auto currentbin : walkers[i]) {
 
 
+            // neighbors across a face of the grid do not exist, the bin index would wrap around
+            const int cell[3] = {currentbin % nx, (currentbin / nx) % ny, currentbin / (nx * ny)};
+            const int ncell[3] = {nx, ny, nz};
             for (int a = 0; a < dimension; a++) {
               if (a == 0) ns = 1;
               else if (a == 1) ns = nx;
               else ns = nx * ny;
               for (int sign = -1; sign <= 1; sign += 2) {
+                if ((cell[a] + sign < 0) || (cell[a] + sign >= ncell[a])) continue;
 
                 newbin = currentbin + sign * ns;
-
-                if (newbin < 0 || newbin >= nbin) continue;
                 if (temp_grid_values[newbin] > grid_stride[target_body]) continue;
                 if (temp_grid_values[newbin] < -rcell) continue;
 
@@ -609,14 +611,19 @@ void FixRigidLSDEM::init()
       // Create buffer (1st and 2nd neighbors of all bins)
       for (i = 0; i < max_node_index; i++) {
         for (const auto& currentbin : node_bins[i]) {
+          // bins of a node at a face of the grid have no buffer bins beyond that face
+          const int cx = currentbin % nx;
+          const int cy = (currentbin / nx) % ny;
+          const int cz = currentbin / (nx * ny);
           for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
               for (int dz = -1; dz <= 1; dz++) {
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 if (dimension == 2 && dz != 0) continue;
+                if ((cx + dx < 0) || (cx + dx >= nx) || (cy + dy < 0) || (cy + dy >= ny) ||
+                    (cz + dz < 0) || (cz + dz >= nz))
+                  continue;
                 newbin = currentbin + dx + dy * nx + dz * nx * ny;
-                if (newbin < 0 || newbin >= nbin)
-                  error->one(FLERR, "Bad bin index in watershed buffer creation");
                 if (bin_owners[newbin] != i)
                   node_buffer_bins[i].insert(newbin);
               }
