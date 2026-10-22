@@ -1665,3 +1665,31 @@ double FixRigidLSDEM::get_ls_value_array(int i, int j, double *normal)
 
   return dist;
 }
+
+/* ----------------------------------------------------------------------
+   grid of the grain of atom j as read by get_ls_value_array(),
+   for a copy of the level sets on the device by pair ls/dem/kk
+------------------------------------------------------------------------- */
+
+void FixRigidLSDEM::get_grid_info(int j, GridInfo &g)
+{
+  int jbody = body[j];
+
+  g.global = (grid_style[jbody] == GLOBAL) ? 1 : 0;
+  g.stride = grid_stride[jbody];
+  g.scale = grid_scale[jbody];
+  if (grid_style[jbody] == DISTRIBUTED) {
+    for (int k = 0; k < 3; k++) {
+      g.ngrid[k] = subgrid_size[k];
+      g.grid_min[k] = dist_grid_min[j][k];
+    }
+    g.values = dist_grid_values[j];
+  } else {
+    for (int k = 0; k < 3; k++) {
+      g.ngrid[k] = grid_size[jbody][k];
+      g.grid_min[k] = grid_min[jbody][k];
+    }
+    g.values = global_grids[grid_index[jbody]];
+  }
+  g.nvalues = g.ngrid[0] * g.ngrid[1] * g.ngrid[2];
+}

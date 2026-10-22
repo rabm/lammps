@@ -18,6 +18,18 @@
 
 namespace LSDEMExtra {
 
+  // level-set grid of the grain of a node with array storage, as read by get_ls_value()
+
+  struct GridInfo {
+    int global;               // 1 for a grid shared by grains, its values are scaled by scale
+    int ngrid[3];             // number of grid points in each dimension
+    double grid_min[3];       // lower corner of the grid in the grain frame
+    double stride;            // grid spacing
+    double scale;             // scale factor for the values of a shared grid
+    const double *values;     // grid values
+    int nvalues;              // number of grid values
+  };
+
   double smeared_heaviside_step(double);
   double compute_volume(int, int *, double, double *, double);
   double compute_surface_area(int, int *, double, double *);

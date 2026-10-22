@@ -21,6 +21,7 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 #define LMP_FIX_RIGID_SMALL_LS_DEM_H
 
 #include "fix_rigid_small.h"
+#include "ls_dem_extra.h"
 
 #include <map>
 #include <unordered_map>
@@ -86,6 +87,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
   int check_watershed_bin(int, int);
+  void get_grid_info(int, LSDEMExtra::GridInfo &);
 
  protected:
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
