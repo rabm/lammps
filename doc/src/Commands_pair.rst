@@ -207,7 +207,7 @@ parenthesis: g = GPU, i = INTEL, k = KOKKOS, o = OPENMP, t = OPT.
    * :doc:`lj/switch3/coulgauss/long (ko) <pair_lj_switch3_coulgauss_long>`
    * :doc:`lj96/cut (gko) <pair_lj96>`
    * :doc:`local/density (o) <pair_local_density>`
-   * :doc:`ls/dem <pair_ls_dem>`
+   * :doc:`ls/dem (k) <pair_ls_dem>`
    * :doc:`lubricate (o) <pair_lubricate>`
    * :doc:`lubricate/poly (o) <pair_lubricate>`
    * :doc:`lubricateU <pair_lubricateU>`

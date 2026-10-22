@@ -1,7 +1,10 @@
 .. index:: pair_style ls/dem
+.. index:: pair_style ls/dem/kk
 
 pair_style ls/dem command
 =========================
+
+Accelerator Variants: *ls/dem/kk*
 
 Syntax
 """"""
@@ -59,3 +62,5 @@ skin and prints a warning when it does so. The neighbor lists keep the pair
 cutoff plus skin. Watershed storage needs only the usual neighbor cutoff.
 With ``comm_modify mode multi`` the cutoff is not adjusted automatically
 and a warning gives the required value.
+
+.. include:: accel_styles.rst
