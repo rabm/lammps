@@ -194,7 +194,7 @@ void FixRigidLSDEM::init()
     error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
 
   if (fixlist2.size() == 1) {
-    auto fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+    auto fix_rigid_small = dynamic_cast<FixRigidSmallLSDEMAccess *>(fixlist2.front());
     if (storage_mode != fix_rigid_small->get_storage_model())
       error->all(FLERR, "Storage mode mismatch between fix rigid/ls/dem and fix rigid/small/ls/dem");
   }

@@ -93,7 +93,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   cut(nullptr), decayn1(nullptr), decayt1(nullptr), etan(nullptr),
   etan1(nullptr), etat(nullptr),  etat1(nullptr),kn(nullptr),
   knp(nullptr),kt(nullptr), mu(nullptr), fix_rigid(nullptr),
-  fix_rigid_small(nullptr)
+  fix_rigid_small(nullptr), fix_rigid_small_cpu(nullptr)
 {
   writedata = 1;
   single_enable = 0;
@@ -361,7 +361,7 @@ void PairLSDEM::compute(int eflag, int vflag)
                      tag[seg.cand[first].idx]);
         WsBin wb;
         if (seg.poff)
-          wb.bin = fix_rigid_small->get_bin(irep, seg.cand[first].idx, wb.xl);
+          wb.bin = fix_rigid_small_cpu->get_bin(irep, seg.cand[first].idx, wb.xl);
         else
           wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
         const int ws = wsbins.size();
@@ -369,7 +369,7 @@ void PairLSDEM::compute(int eflag, int vflag)
         for (int m = first; m < ncand; m++) {
           const Cand &cand = seg.cand[m];
           if (cand.key < 0) continue;
-          const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
+          const int owns = seg.poff ? fix_rigid_small_cpu->check_watershed_bin(wb.bin, cand.idx)
                                     : fix_rigid->check_watershed_bin(wb.bin, cand.idx);
           if (owns) add_contact(irep, cand, ws);
         }
@@ -506,7 +506,7 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   if (binfo[par].grp == 2)
     u = -fix_rigid->get_ls_value(ni, par, tmp_bin, normal, x_local);
   else if (binfo[par].grp == 1)
-    u = -fix_rigid_small->get_ls_value(ni, par, tmp_bin, normal, x_local);
+    u = -fix_rigid_small_cpu->get_ls_value(ni, par, tmp_bin, normal, x_local);
   else
     error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[par]);
 
@@ -1249,9 +1249,12 @@ void PairLSDEM::setup()
   igroup_small = -1;
   ws_small = -1;
   if (fixlist2.size() == 1) {
-    fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
-    groupbit_small = fix_rigid_small->groupbit;
-    igroup_small = fix_rigid_small->igroup;
+    fix_rigid_small = dynamic_cast<FixRigidSmallLSDEMAccess *>(fixlist2.front());
+    fix_rigid_small_cpu = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+    if (!fix_rigid_small_cpu && !kokkosable)
+      error->all(FLERR, "Fix {} requires pair ls/dem/kk", fixlist2.front()->style);
+    groupbit_small = fixlist2.front()->groupbit;
+    igroup_small = fixlist2.front()->igroup;
     ws_small = fix_rigid_small->get_storage_model();
   }
 
