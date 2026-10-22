@@ -192,9 +192,14 @@ void PairLSDEM::build_rep_segments()
   double *special_lj = force->special_lj;
   tagint *tag = atom->tag;
 
+  const int inum = list->inum;
   if ((int) rep_segs.size() < ntotal) rep_segs.resize(ntotal);
   for (int a = 0; a < ntotal; a++) rep_segs[a].clear();
 
+  // pairs in the neighbor lists of local atoms are numbered in the order of the lists,
+  //   which is the order the contacts are evaluated in, pairs of ghost atoms get -1
+
+  int ipair = 0;
   for (int ii = 0; ii < allnum; ii++) {
     const int i = ilist[ii];
     const BodyInfo &bi = binfo[i];
@@ -209,14 +214,15 @@ void PairLSDEM::build_rep_segments()
       const BodyInfo &bj = binfo[j];
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+      const int key = (ii < inum) ? ipair++ : -1;
       if (bi.vol != bj.vol) {
         if (bi.vol < bj.vol)
-          add_rep_candidate(i, bj.bID, bj.off, j, 0);
+          add_rep_candidate(i, bj.bID, bj.off, j, 0, key, 1);
         else
-          add_rep_candidate(j, bi.bID, bi.off, i, 0);
+          add_rep_candidate(j, bi.bID, bi.off, i, 0, key, 0);
       } else {
-        add_rep_candidate(i, bj.bID, bj.off, j, 1);
-        add_rep_candidate(j, bi.bID, bi.off, i, 1);
+        add_rep_candidate(i, bj.bID, bj.off, j, 1, key, 1);
+        add_rep_candidate(j, bi.bID, bi.off, i, 1, key, 0);
       }
     }
   }
@@ -224,15 +230,20 @@ void PairLSDEM::build_rep_segments()
 
 /* ---------------------------------------------------------------------- */
 
-void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie)
+void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, int key,
+                                  int rep_owns_pair)
 {
   std::vector<Seg> &segs = rep_segs[r];
+  const Cand cand = {c, key, rep_owns_pair};
   for (Seg &seg : segs)
     if ((seg.pbody == pbody) && (seg.poff == poff)) {
-      seg.cand.push_back(c);
+      // a node may appear more than once with the same tag (periodic images)
+      for (const Cand &other : seg.cand)
+        if (atom->tag[other.idx] == atom->tag[c]) seg.dup = 1;
+      seg.cand.push_back(cand);
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, {c}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -240,7 +251,6 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie)
 void PairLSDEM::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, inum, jnum, ibodyID, jbodyID;
-  tagint itag, jtag;
   double xitmp, yitmp, zitmp, delx, dely, delz, rsq, factor_lj, ivol, jvol;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
 
@@ -261,7 +271,6 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Compare squared distances against the squared cutoff so the closest-node
   // search avoids a sqrt for every neighbour pair (ordering is preserved).
   double maxcutsq = maxcut * maxcut;
-  int offset_i, offset_j;
 
   inum = list->inum;
   ilist = list->ilist;
@@ -276,11 +285,6 @@ void PairLSDEM::compute(int eflag, int vflag)
     binfo_lastbuild = neighbor->lastcall;
   }
 
-  // clear the closest-node buckets, keeping their capacity
-
-  if ((int) rep_buckets.size() < ntotal) rep_buckets.resize(ntotal);
-  for (int a = 0; a < ntotal; a++) rep_buckets[a].clear();
-
   // candidate nodes on each other grain only change when the neighbor list is rebuilt
 
   if ((watershed_flag == 0) &&
@@ -290,10 +294,13 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   // Find the closest node on each other grain for each node of the grain whose nodes are used,
-  //   in the order of the neighbor list, so the first of equally close nodes wins as before.
+  //   in the order of the neighbor list, so the first of equally close nodes wins.
   // Comparing squared distances (rsq) gives the same closest node as comparing r.
+  // Each pair of the closest node and a node with its tag (periodic images) in the neighbor
+  //   list of a local atom is a contact, these are then evaluated in neighbor list order.
 
   if (watershed_flag == 0) {
+    contacts.clear();
     for (int irep = 0; irep < ntotal; irep++) {
       std::vector<Seg> &segs = rep_segs[irep];
       if (segs.empty()) continue;
@@ -302,24 +309,36 @@ void PairLSDEM::compute(int eflag, int vflag)
       zitmp = x[irep][2];
       for (Seg &seg : segs) {
         // grains of equal volume choose whose nodes are used by their current positions
-        if (seg.tie && !use_nodes_of_i(irep, seg.cand[0], binfo[irep].vol, binfo[seg.cand[0]].vol))
-          continue;
-        int wtag = -1;
+        const int c0 = seg.cand[0].idx;
+        if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
+        int win = -1;
         double minrsq = 0.0;
-        for (int c : seg.cand) {
+        const int ncand = seg.cand.size();
+        for (int m = 0; m < ncand; m++) {
+          const int c = seg.cand[m].idx;
           delx = xitmp - x[c][0];
           dely = yitmp - x[c][1];
           delz = zitmp - x[c][2];
           rsq = delx * delx + dely * dely + delz * delz;
           if (rsq > maxcutsq) continue;
-          if ((wtag < 0) || (rsq < minrsq)) {
+          if ((win < 0) || (rsq < minrsq)) {
             minrsq = rsq;
-            wtag = (int) tag[c];
+            win = m;
           }
         }
-        if (wtag >= 0) rep_buckets[irep].push_back({seg.pbody, seg.poff, wtag, minrsq});
+        if (win < 0) continue;
+        if (seg.dup) {
+          const tagint wtag = tag[seg.cand[win].idx];
+          for (const Cand &cand : seg.cand)
+            if (tag[cand.idx] == wtag) add_contact(irep, cand);
+        } else {
+          add_contact(irep, seg.cand[win]);
+        }
       }
     }
+    std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
+      return a.key < b.key;
+    });
   }
 
   // NOTE: calc_force_of_j_on_i and calc_force_of_i_on_j now cause branching.
@@ -334,6 +353,15 @@ void PairLSDEM::compute(int eflag, int vflag)
   for (auto& my_map : saved_bins)
     my_map.clear();
 
+  // the array storage evaluates the contacts found above
+
+  if (watershed_flag == 0) {
+    x_local[0] = x_local[1] = x_local[2] = 0.0;
+    for (const Contact &ct : contacts) process_contact(ct.i, ct.j, ct.calc, -1, x_local);
+    if (vflag_fdotr) virial_fdotr_compute();
+    return;
+  }
+
   // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
@@ -342,9 +370,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
     ibodyID = bi.bID;
     ivol = bi.vol;
-    offset_i = bi.off;
 
-    itag = tag[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
 
@@ -360,8 +386,6 @@ void PairLSDEM::compute(int eflag, int vflag)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       jbodyID = bj.bID;
       jvol = bj.vol;
-      offset_j = bj.off;
-      jtag = tag[j];
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
@@ -371,70 +395,53 @@ void PairLSDEM::compute(int eflag, int vflag)
       calc_force_of_j_on_i = 0;
       calc_force_of_i_on_j = 0;
 
-      if (watershed_flag) {
-        // Use the nodes of the smallest grain.
-        if (use_nodes_of_i(i, j, ivol, jvol)) {
-          calc_force_of_i_on_j = 1;
-        } else {
-          calc_force_of_j_on_i = 1;
-        }
+      // Use the nodes of the smallest grain.
+      if (use_nodes_of_i(i, j, ivol, jvol)) {
+        calc_force_of_i_on_j = 1;
+      } else {
+        calc_force_of_j_on_i = 1;
+      }
 
-        if (calc_force_of_i_on_j) {
-          if (saved_bins[i].find(jbodyID) == saved_bins[i].end()) {
-            if (fix_rigid && (mask[j] & groupbit_large))
-              tmp_bin = fix_rigid->get_bin(i, j, x_local);
-            else if (fix_rigid_small && (mask[j] & groupbit_small))
-              tmp_bin = fix_rigid_small->get_bin(i, j, x_local);
-            else
-              error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-            saved_bins[i][jbodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
-          } else {
-            tmp_bin = std::get<0>(saved_bins[i][jbodyID]);
-            x_local[0] = std::get<1>(saved_bins[i][jbodyID]);
-            x_local[1] = std::get<2>(saved_bins[i][jbodyID]);
-            x_local[2] = std::get<3>(saved_bins[i][jbodyID]);
-          }
-          if (fix_rigid && (mask[j] & groupbit_large)) {
-            if (fix_rigid->check_watershed_bin(tmp_bin, j) == 0) continue;
-          } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-            if (fix_rigid_small->check_watershed_bin(tmp_bin, j) == 0) continue;
-          }
+      if (calc_force_of_i_on_j) {
+        if (saved_bins[i].find(jbodyID) == saved_bins[i].end()) {
+          if (fix_rigid && (mask[j] & groupbit_large))
+            tmp_bin = fix_rigid->get_bin(i, j, x_local);
+          else if (fix_rigid_small && (mask[j] & groupbit_small))
+            tmp_bin = fix_rigid_small->get_bin(i, j, x_local);
+          else
+            error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+          saved_bins[i][jbodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
         } else {
-          if (saved_bins[j].find(ibodyID) == saved_bins[j].end()) {
-            if (fix_rigid && (mask[i] & groupbit_large))
-              tmp_bin = fix_rigid->get_bin(j, i, x_local);
-            else if (fix_rigid_small && (mask[i] & groupbit_small))
-              tmp_bin = fix_rigid_small->get_bin(j, i, x_local);
-            else
-              error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-            saved_bins[j][ibodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
-          } else {
-            tmp_bin = std::get<0>(saved_bins[j][ibodyID]);
-            x_local[0] = std::get<1>(saved_bins[j][ibodyID]);
-            x_local[1] = std::get<2>(saved_bins[j][ibodyID]);
-            x_local[2] = std::get<3>(saved_bins[j][ibodyID]);
-          }
-          if (fix_rigid && (mask[i] & groupbit_large)) {
-            if (fix_rigid->check_watershed_bin(tmp_bin, i) == 0) continue;
-          } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-            if (fix_rigid_small->check_watershed_bin(tmp_bin, i) == 0) continue;
-          }
+          tmp_bin = std::get<0>(saved_bins[i][jbodyID]);
+          x_local[0] = std::get<1>(saved_bins[i][jbodyID]);
+          x_local[1] = std::get<2>(saved_bins[i][jbodyID]);
+          x_local[2] = std::get<3>(saved_bins[i][jbodyID]);
+        }
+        if (fix_rigid && (mask[j] & groupbit_large)) {
+          if (fix_rigid->check_watershed_bin(tmp_bin, j) == 0) continue;
+        } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+          if (fix_rigid_small->check_watershed_bin(tmp_bin, j) == 0) continue;
         }
       } else {
-
-        // Use the nodes of the smallest grain.
-        if (use_nodes_of_i(i, j, ivol, jvol)) {
-          // Grain i is smaller, use nodes of i and level set of j.
-          if (rep_winner(rep_buckets[i], jbodyID, offset_j) == (int) jtag) calc_force_of_i_on_j = 1;
+        if (saved_bins[j].find(ibodyID) == saved_bins[j].end()) {
+          if (fix_rigid && (mask[i] & groupbit_large))
+            tmp_bin = fix_rigid->get_bin(j, i, x_local);
+          else if (fix_rigid_small && (mask[i] & groupbit_small))
+            tmp_bin = fix_rigid_small->get_bin(j, i, x_local);
+          else
+            error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+          saved_bins[j][ibodyID] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
         } else {
-          // Grain j is smaller, use nodes of j and level set of i.
-          if (rep_winner(rep_buckets[j], ibodyID, offset_i) == (int) itag) calc_force_of_j_on_i = 1;
+          tmp_bin = std::get<0>(saved_bins[j][ibodyID]);
+          x_local[0] = std::get<1>(saved_bins[j][ibodyID]);
+          x_local[1] = std::get<2>(saved_bins[j][ibodyID]);
+          x_local[2] = std::get<3>(saved_bins[j][ibodyID]);
         }
-
-        tmp_bin = -1;
-        x_local[0] = 0.0;
-        x_local[1] = 0.0;
-        x_local[2] = 0.0;
+        if (fix_rigid && (mask[i] & groupbit_large)) {
+          if (fix_rigid->check_watershed_bin(tmp_bin, i) == 0) continue;
+        } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+          if (fix_rigid_small->check_watershed_bin(tmp_bin, i) == 0) continue;
+        }
       }
 
       // If no forces are calculated

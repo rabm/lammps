@@ -80,38 +80,49 @@ class PairLSDEM : public Pair {
   bigint binfo_lastbuild;
   void cache_body_info(int);
 
-  // closest node on each other grain, bucketed by the node of the grain whose nodes are used
-
-  struct RepEntry {
-    int pbody;
-    char poff;
-    int ctag;
-    double rsq;
-  };
-  std::vector<std::vector<RepEntry>> rep_buckets;
-
-  // tag of the closest node on grain (pbody, poff), or -1 which matches no atom
-  inline int rep_winner(const std::vector<RepEntry> &b, int pbody, int poff) const
-  {
-    for (const auto &e : b)
-      if ((e.pbody == pbody) && (e.poff == poff)) return e.ctag;
-    return -1;
-  }
-
   // neighbor nodes of a node on another grain (pbody, poff), rebuilt with the neighbor list
+  //   key: number of the pair in the neighbor lists of local atoms, -1 for ghost atoms
+  //   rep_owns_pair: the pair is in the neighbor list of the node (1) or of the candidate (0)
   //   tie: the grains have equal volume, so whose nodes are used is decided each step
+  //   dup: a candidate tag appears more than once (periodic images)
 
+  struct Cand {
+    int idx;
+    int key;
+    int rep_owns_pair;
+  };
   struct Seg {
     int pbody;
     char poff;
     char tie;
-    std::vector<int> cand;
+    char dup;
+    std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;
   bigint segs_lastbuild;
   void build_rep_segments();
+  void add_rep_candidate(int, int, int, int, int, int, int);
+
+  // contacts of the closest nodes, evaluated by process_contact() in the order of key
+  //   i is the atom whose neighbor list holds the pair, calc = 1 if i is the node used
+
+  struct Contact {
+    int i;
+    int j;
+    int calc;
+    int key;
+  };
+  std::vector<Contact> contacts;
+  inline void add_contact(int irep, const Cand &cand)
+  {
+    if (cand.key < 0) return;
+    if (cand.rep_owns_pair)
+      contacts.push_back({irep, cand.idx, 1, cand.key});
+    else
+      contacts.push_back({cand.idx, irep, 0, cand.key});
+  }
+
   void process_contact(int, int, int, int, double *);
-  void add_rep_candidate(int, int, int, int, int);
 
   void allocate();
   bool use_nodes_of_i(int, int, double, double) const;
