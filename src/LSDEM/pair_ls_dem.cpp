@@ -310,6 +310,12 @@ void PairLSDEM::compute(int eflag, int vflag)
         int first = 0;
         while ((first < ncand) && (seg.cand[first].key < 0)) first++;
         if (first == ncand) continue;
+        // the grid and watershed of the other grain are found through its body
+        if (binfo[seg.cand[first].idx].bidx < 0)
+          error->one(FLERR,
+                     "Atom {} cannot find atom that owns body, consider increasing the "
+                     "communication cutoff",
+                     tag[seg.cand[first].idx]);
         WsBin wb;
         if (seg.poff)
           wb.bin = fix_rigid_small->get_bin(irep, seg.cand[first].idx, wb.xl);
