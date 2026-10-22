@@ -119,6 +119,8 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
 
 PairLSDEM::~PairLSDEM()
 {
+  if (copymode) return;
+
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
