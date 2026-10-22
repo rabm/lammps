@@ -1559,13 +1559,13 @@ void FixRigidSmallKokkos<DeviceType>::operator()(TagSetXV<SETXFLAG>, const int i
 
   if constexpr(SETXFLAG) {
     if (triclinic == 0) {
-      d_x(i,0) = static_cast<KK_FLOAT>(static_cast<double>(delta[0]) + b.xcm[0] - xbox*xprd);
-      d_x(i,1) = static_cast<KK_FLOAT>(static_cast<double>(delta[1]) + b.xcm[1] - ybox*yprd);
-      d_x(i,2) = static_cast<KK_FLOAT>(static_cast<double>(delta[2]) + b.xcm[2] - zbox*zprd);
+      d_x(i,0) = static_cast<KK_FLOAT>(static_cast<double>(delta[0]) + (b.xcm[0] - xbox*xprd));
+      d_x(i,1) = static_cast<KK_FLOAT>(static_cast<double>(delta[1]) + (b.xcm[1] - ybox*yprd));
+      d_x(i,2) = static_cast<KK_FLOAT>(static_cast<double>(delta[2]) + (b.xcm[2] - zbox*zprd));
     } else {
-      d_x(i,0) = static_cast<KK_FLOAT>(static_cast<double>(delta[0]) + b.xcm[0] - xbox*xprd - ybox*xy - zbox*xz);
-      d_x(i,1) = static_cast<KK_FLOAT>(static_cast<double>(delta[1]) + b.xcm[1] - ybox*yprd - zbox*yz);
-      d_x(i,2) = static_cast<KK_FLOAT>(static_cast<double>(delta[2]) + b.xcm[2] - zbox*zprd);
+      d_x(i,0) = static_cast<KK_FLOAT>(static_cast<double>(delta[0]) + (b.xcm[0] - xbox*xprd - ybox*xy - zbox*xz));
+      d_x(i,1) = static_cast<KK_FLOAT>(static_cast<double>(delta[1]) + (b.xcm[1] - ybox*yprd - zbox*yz));
+      d_x(i,2) = static_cast<KK_FLOAT>(static_cast<double>(delta[2]) + (b.xcm[2] - zbox*zprd));
     }
   }
 
