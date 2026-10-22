@@ -152,7 +152,7 @@ class PairLSDEM : public Pair {
 
   void process_contact(int, int, int, int, double *);
 
-  void allocate();
+  virtual void allocate();
   bool use_nodes_of_i(int, int, double, double) const;
 };
 
