@@ -110,6 +110,7 @@ class PairLSDEM : public Pair {
   std::vector<std::vector<Seg>> rep_segs;
   bigint segs_lastbuild;
   void build_rep_segments();
+  void process_contact(int, int, int, int, double *);
   void add_rep_candidate(int, int, int, int, int);
 
   void allocate();

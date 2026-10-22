@@ -239,54 +239,28 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie)
 
 void PairLSDEM::compute(int eflag, int vflag)
 {
-  int i, j, ii, jj, inum, jnum, itype, jtype, ibody, jbody, ibodyID, jbodyID;
+  int i, j, ii, jj, inum, jnum, ibodyID, jbodyID;
   tagint itag, jtag;
-  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, delx, dely, delz, dr, evdwl;
-  double r, rsq, rinv, factor_lj, u, ivol, jvol, icomx, icomy, icomz, jcomx, jcomy, jcomz;
+  double xitmp, yitmp, zitmp, delx, dely, delz, rsq, factor_lj, ivol, jvol;
   int *ilist, *jlist, *numneigh, **firstneigh, calc_force_of_i_on_j, calc_force_of_j_on_i;
-  double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp, delvx, delvy, delvz, dot, smooth;
-  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
-  double normal[3], fn_mag, fpair[3], fpair_mag, contact_point[3], lever[3], torque_pair[3];
-  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], costheta, term1[3], term2;
-  double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
-  double normal_old[3], tangent_old[3], fs_mag_add, areai, areaj;
 
   // Currently require:
   //   Newton pair off.
   //   Exclude intramolecule interactions
   // In future, remove restrictions
 
-  evdwl = 0.0;
   if (eflag || vflag)
     ev_setup(eflag, vflag);
   else
     evflag = vflag_fdotr = 0;
 
-  // Node quantities
   double **x = atom->x;
-  double **v = atom->v; // This is the half-step, giving O(dt^2) accuracy for damping instead of O(dt).
-  double **f = atom->f;
-  double **torque = atom->torque;
-  double **n = atom->darray[index_ls_dem_n]; // Contact normal (to be update from previous time step)
-  double **fs = atom->darray[index_ls_dem_fs]; // Shear component of f (to be update from previous time step)
-  int *touch_id = atom->ivector[index_ls_dem_touch_id]; // Grain in contact with this node (to be update from previous time step)
-  double *fn1 = atom->dvector[index_ls_dem_fn1]; // Maxwell element force history (magnitude only, normal)
-  double *fs1 = atom->dvector[index_ls_dem_fs1]; // Maxwell element force history (magnitude only, shear)
-
   tagint *tag = atom->tag;
-  int *type = atom->type;
   int *mask = atom->mask;
-  int nlocal = atom->nlocal;
   double *special_lj = force->special_lj;
-  int newton_pair = force->newton_pair;
-  double dt = update->dt;
   // Compare squared distances against the squared cutoff so the closest-node
   // search avoids a sqrt for every neighbour pair (ordering is preserved).
   double maxcutsq = maxcut * maxcut;
-
-  // Grain quantities
-  double **grain_com = atom->xcom;
-  double **grain_omega = atom->omega;
   int offset_i, offset_j;
 
   inum = list->inum;
@@ -363,27 +337,12 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Only loop over local atoms to calculate forces
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
-    xitmp = x[i][0];
-    yitmp = x[i][1];
-    zitmp = x[i][2];
-    vxitmp = v[i][0];
-    vyitmp = v[i][1];
-    vzitmp = v[i][2];
-    itype = type[i];
     const BodyInfo &bi = binfo[i];
     if (bi.grp == 0)
       error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-    ibody = bi.bidx;
     ibodyID = bi.bID;
     ivol = bi.vol;
-    areai = bi.area;
     offset_i = bi.off;
-    icomx = grain_com[i][0];
-    icomy = grain_com[i][1];
-    icomz = grain_com[i][2];
-    iomegax = grain_omega[i][0];
-    iomegay = grain_omega[i][1];
-    iomegaz = grain_omega[i][2];
 
     itag = tag[i];
     jlist = firstneigh[i];
@@ -399,13 +358,10 @@ void PairLSDEM::compute(int eflag, int vflag)
       const BodyInfo &bj = binfo[j];
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      jbody = bj.bidx;
       jbodyID = bj.bID;
       jvol = bj.vol;
-      areaj = bj.area;
       offset_j = bj.off;
       jtag = tag[j];
-      jtype = type[j];
 
       // Figure out whether to use the nodes of grain i or j.
       // We use the nodes on the smaller grain since this will
@@ -484,401 +440,472 @@ void PairLSDEM::compute(int eflag, int vflag)
       // If no forces are calculated
       if (calc_force_of_i_on_j + calc_force_of_j_on_i == 0) continue;
 
-      // ghosts may not find bodytag if comm distance too small
-      if (ibody < 0)
-        error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[i]);
-      if (jbody < 0)
-        error->one(FLERR, "Atom {} cannot find atom that owns body, consider increasing the communication cutoff", tag[j]);
-
-      // Evaluate the level set, and assign the interaction direction based on the
-      // node-grain combination. Force magnitude and direction go i -> j by definition.
-      if (calc_force_of_i_on_j) { // Use node of i.
-        // Level set is by definition negative inside the particle,
-        // so swap the sign to get the overlap distance.
-        if (fix_rigid && (mask[j] & groupbit_large))
-          u = - fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
-        else if (fix_rigid_small && (mask[j] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(i, j, tmp_bin, normal, x_local);
-        else
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      } else { // Use node of j.
-        if (fix_rigid && (mask[i] & groupbit_large))
-          u = - fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
-        else if (fix_rigid_small && (mask[i] & groupbit_small))
-          u = - fix_rigid_small->get_ls_value(j, i, tmp_bin, normal, x_local);
-        else
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-      }
-
-      // Resolve the direction-dependent quantities once, so the rest of the contact
-      // path is free of calc_force_of_i_on_j branches. We always use the node on the
-      // chosen grain (ni), its stored history (fs_ni, n_ni, fn1[ni], fs1[ni]) and node
-      // area (narea), and the body it is touching (partner_body). The stored shear and
-      // normal vectors are kept in the node's own i->j frame, so when we use node j we
-      // flip their sign (hsign = -1) on both read and write.
-      const int ni = calc_force_of_i_on_j ? i : j;
-      const double hsign = calc_force_of_i_on_j ? 1.0 : -1.0;
-      const double narea = calc_force_of_i_on_j ? areai : areaj;
-      const int partner_body = calc_force_of_i_on_j ? jbodyID : ibodyID;
-      double *fs_ni = fs[ni];
-      double *n_ni = n[ni];
-
-      // No adhesion, cohesion, or ranged forces.
-      if (u <= 0) {
-        // Reset shear force if no contact
-        // If i and j are not a shear-interacting pair, it will skip the reset
-        if (touch_id[ni] == partner_body) {
-          touch_id[ni] = -1;
-          fs_ni[0] = 0.0;
-          fs_ni[1] = 0.0;
-          fs_ni[2] = 0.0;
-          n_ni[0] = 0.0;
-          n_ni[1] = 0.0;
-          n_ni[2] = 0.0;
-        }
-        // Skip force calculation
-        continue;
-      } else { // Physical contact!!
-        // These per-neighbour quantities are only needed once contact is
-        // confirmed, so they are loaded here instead of for every neighbour pair.
-        xjtmp = x[j][0];
-        yjtmp = x[j][1];
-        zjtmp = x[j][2];
-        vxjtmp = v[j][0];
-        vyjtmp = v[j][1];
-        vzjtmp = v[j][2];
-        jcomx = grain_com[j][0];
-        jcomy = grain_com[j][1];
-        jcomz = grain_com[j][2];
-        jomegax = grain_omega[j][0];
-        jomegay = grain_omega[j][1];
-        jomegaz = grain_omega[j][2];
-
-        // Compute contact point, correct normal if needed.
-        // The normal returned for node i points away from j, so it is negated to point
-        // i->j; for node j it already points i->j. After this, normal points i->j in
-        // both cases, and the contact point uses the chosen node's position.
-        if (calc_force_of_i_on_j) // Use node of i.
-          MathExtra::negate3(normal);
-        const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
-        const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
-        const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
-        contact_point[0] = npos0 - 0.5 * u * hsign * normal[0];
-        contact_point[1] = npos1 - 0.5 * u * hsign * normal[1];
-        contact_point[2] = npos2 - 0.5 * u * hsign * normal[2];
-      }
-
-      // Hoist the pairwise coefficients (constant for this i-j type pair) into
-      // locals. They are read several times below, so this avoids repeated
-      // two-level array indexing in the contact path.
-      const double knij = kn[itype][jtype];
-      const double ktij = kt[itype][jtype];
-      const double muij = mu[itype][jtype];
-      const double knpij = knp[itype][jtype];
-      const double etanij = etan[itype][jtype];
-      const double etatij = etat[itype][jtype];
-      const double etan1ij = etan1[itype][jtype];
-      const double decayn1ij = decayn1[itype][jtype];
-      const double etat1ij = etat1[itype][jtype];
-      const double decayt1ij = decayt1[itype][jtype];
-
-      ///////////////////
-      // Normal stress //
-      ///////////////////
-
-      // Elastic spring
-      // With positive penetration distance u
-      if (fabs(knpij) < EPSILON) {
-        fn_mag = knij * u;
-      } else {
-        fn_mag = knij * pow(u, knpij);
-      }
-
-      // Relative velocity at the grain surface at the half step t + 0.5*dt.
-      // Note: The velocity at the node due to an angular velocity of the grain around its
-      // centre of mass is already included, so the difference of linear velocities suffices.
-      v_rel[0] = vxitmp - vxjtmp;
-      v_rel[1] = vyitmp - vyjtmp;
-      v_rel[2] = vzitmp - vzjtmp;
-
-      // Relative velocity in normal direction with sign (positive for approach)
-      v_rel_n_mag = MathExtra::dot3(v_rel, normal);
-
-      // Viscous damping or dashpot (parallel)
-      if (etanij > 0.0) {
-        fn_mag += etanij * v_rel_n_mag;
-      }
-
-      // Maxwell arm (1st, parallel, only repulsive)
-      if (etan1ij > 0.0) { // preprocessing guarantees that decayn1 > 0 if etan1 > 0
-        fn1[ni] = decayn1ij * fn1[ni] + etan1ij * (1.0 - decayn1ij) * v_rel_n_mag;
-        fn_mag += fn1[ni];
-        // Maxwell arm (2nd)
-        //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
-        //fn_mag += fn2_mag[i]
-      }
-
-      // Only repulsive, do not allow tensile force without explicit bonding / cohesion
-      fn_mag = MAX(fn_mag, 0.0);
-
-      // The pair force vector should point j->i because of repulsion.
-      // With normal n (i->j), we have: F_{j on i} = f(ls_value) = - fn_mag * n.
-      fpair[0] = - fn_mag * normal[0];
-      fpair[1] = - fn_mag * normal[1];
-      fpair[2] = - fn_mag * normal[2];
-
-      ////////////////////
-      // Tangent stress //
-      ////////////////////
-
-      // Tangent force only exists if mu > 0 and kt > 0
-      //if ( (kt[itype][jtype] > 0) && (mu[itype][jtype] > 0) ){
-      // DvdH: Grains without friction are silly, so I took out this check.
-
-      // Check if the pair is valid for shear history calculation
-      // Initialise if no contact
-      if (touch_id[ni] == -1) {
-        touch_id[ni] = partner_body;
-      }
-      if (touch_id[ni] != partner_body) {
-        if (comm->me == 0) {
-          tagint node_tag = calc_force_of_i_on_j ? tag[i] : tag[j];
-          int node_body = calc_force_of_i_on_j ? ibodyID : jbodyID;
-          tagint partner_tag = calc_force_of_i_on_j ? tag[j] : tag[i];
-          error->warning(FLERR, "Shear history of node {} on grain {} penetrating node {} on {} cannot be computed at step {}",
-            node_tag, node_body, partner_tag, partner_body, update->ntimestep);
-        }
-      }
-
-      // Get old elastic shear stress and old node normal.
-      // The stored vectors are in the node's i->j frame; flip sign when using node j.
-      fs_tmp[0] = hsign * fs_ni[0];
-      fs_tmp[1] = hsign * fs_ni[1];
-      fs_tmp[2] = hsign * fs_ni[2];
-      normal_old[0] = hsign * n_ni[0];
-      normal_old[1] = hsign * n_ni[1];
-      normal_old[2] = hsign * n_ni[2];
-
-      // Adjust fs_tmp to account for rotation of the contact normal and plane.
-      if( MathExtra::lensq3(normal_old) > 0.0 ) { // len3 > 0, but without the sqrt
-        // Account for tilt. This is an exact correction over rotation of the normal
-        // from the previous to the current time step.
-        MathExtra::cross3(normal_old, normal, k); // n_old x n_new
-
-        // Account for spin. This is an approximation using the half-step angular
-        // velocities. We rotate about the OLD normal so that, together with the
-        // tilt, the additive reconstruction matches the spin-then-tilt rotation.
-        // spin_norm = dt*(omega_avg . n_old) = dt*|omega_sp| (signed).
-        spin_norm = 0.5*dt*(
-          (iomegax + jomegax)*normal_old[0] +
-          (iomegay + jomegay)*normal_old[1] +
-          (iomegaz + jomegaz)*normal_old[2]); // 0.5*dt*(omegai+omegaj) \dot n_old
-
-        // First Baker-Campbell-Hausdorff corrective term for the non-commutativity
-        // of the spin and tilt rotations: -0.5*|omega_sp|*dt*(n_old x (n_old x n_new)).
-        // The non-commutativity error dominates and only manifests itself in the tilt.
-        MathExtra::cross3(normal_old, k, term1); // n_old x (n_old x n_new)
-        double bch_coef = -0.5*fabs(spin_norm);
-        k[0] += spin_norm*normal_old[0] + bch_coef*term1[0];
-        k[1] += spin_norm*normal_old[1] + bch_coef*term1[1];
-        k[2] += spin_norm*normal_old[2] + bch_coef*term1[2];
-
-        // Applying the rotation with the unnormalised Rodrigues formula:
-        //   k already carries axis * sin(theta), so neither the axis nor the cross term needs normalising
-        //   and (1 - cos) / sin^2 = 1 / (1 + cos) avoids small-angle cancellation
-        //   fs_rot = fs cos + (k x fs) + k (k . fs) / (1 + cos), with cos = sqrt(1 - |k|^2)
-        double sinsq = MathExtra::lensq3(k);    // sin^2(theta) = |k|^2
-        if (sinsq > EPSILON * EPSILON) {        // Don't apply rotation if magnitude is tiny
-          costheta = sqrt(MAX(1.0 - sinsq, 0.0));
-          MathExtra::cross3(k, fs_tmp, term1);
-          term2 = MathExtra::dot3(k, fs_tmp) / (1.0 + costheta);
-          fs_tmp[0] = fs_tmp[0] * costheta + term1[0] + k[0] * term2;
-          fs_tmp[1] = fs_tmp[1] * costheta + term1[1] + k[1] * term2;
-          fs_tmp[2] = fs_tmp[2] * costheta + term1[2] + k[2] * term2;
-        }
-      }
-
-      // Relative velocity in tangential direction
-      v_rel_t[0] = v_rel[0] - v_rel_n_mag * normal[0];
-      v_rel_t[1] = v_rel[1] - v_rel_n_mag * normal[1];
-      v_rel_t[2] = v_rel[2] - v_rel_n_mag * normal[2];
-      v_rel_t_mag = MathExtra::len3(v_rel_t);
-      // We note that this way of calculating the shear velocity is an approximation.
-      // The error lies mainly in the fact that the velocity difference was computed
-      // between the surface nodes, meaning that there is a small arm length that has
-      // not been accounted for. As a consequence, this breaks objectivity since v_rel_t
-      // will increase with the rigid body rotation omega_b. The extra arm length does
-      // not unjustifiably increase v_rel_t in the absence of rigid body motion, since
-      // the surface can indeed be said to move at omega x R.
-
-      // Tangent normal
-      if (v_rel_t_mag > EPSILON) {
-        if (v_rel_t_mag != 0) {
-          v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
-        } else {
-          v_rel_t_mag_inv = 0.0;
-        }
-        tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
-        tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
-        tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
-      } else {
-        // Backup: Use old shear force direction as tangent.
-        double norm = MathExtra::len3(fs_tmp);
-        if (norm != 0) {
-          v_rel_t_mag_inv = 1.0 / norm;
-        } else {
-          v_rel_t_mag_inv = 0.0;
-        }
-        tangent[0] = fs_tmp[0] * v_rel_t_mag_inv;
-        tangent[1] = fs_tmp[1] * v_rel_t_mag_inv;
-        tangent[2] = fs_tmp[2] * v_rel_t_mag_inv;
-      }
-
-      // Elastic spring shear stress increment
-      shear_incr = ktij * v_rel_t_mag * dt;
-
-      // New elastic force
-      fs_tmp[0] -= shear_incr * tangent[0];
-      fs_tmp[1] -= shear_incr * tangent[1];
-      fs_tmp[2] -= shear_incr * tangent[2];
-      fs_mag_trial = MathExtra::len3(fs_tmp);
-
-      // Coulomb limit
-      fs_max = muij * fn_mag;
-
-      // Perfectly plastic Coulomb friction criterion
-      fs_mag = std::min(fs_max, fs_mag_trial);
-
-      // Final shear or tangential stress
-      if (fs_mag_trial > EPSILON){
-        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
-        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
-        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
-      }
-
-      // Update saved elastic shear stress and normal (back into the node's i->j frame)
-      fs_ni[0] = hsign * fs_tmp[0];
-      fs_ni[1] = hsign * fs_tmp[1];
-      fs_ni[2] = hsign * fs_tmp[2];
-      n_ni[0] = hsign * normal[0];
-      n_ni[1] = hsign * normal[1];
-      n_ni[2] = hsign * normal[2];
-
-      // Placeholder for viscous and viscoelastic stress components
-      fs_mag_add = 0.0;
-
-      // Viscous damping or dashpot (parallel, allowed in any direction)
-      if(etatij > 0) {
-        fs_mag_add += etatij * v_rel_t_mag;
-      }
-
-      // Maxwell arm (1st, parallel, only repulsive)
-      if (etan1ij > 0.0) { // preprocessing guarantees that decayt1 > 0 if etat1 > 0
-        // Get the old tangent vector
-        double norm = MathExtra::len3(fs_tmp);
-        if (norm != 0) {
-          v_rel_t_mag_inv = 1.0 / norm;
-        } else {
-          v_rel_t_mag_inv = 0.0;
-        }
-        tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
-        tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
-        tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
-        // The dot(t_old,t) part accounts for the in-plane rotation of the tangent force.
-        // When the shear direction reverses, it correctly preserves the direction of the old force.
-        // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
-        // We could track the full vector, but it would cost more memory (and accessing time)
-        fs1[ni] += decayt1ij * fs1[ni] * MathExtra::dot3(tangent_old, tangent)
-          + etat1ij * (1 - decayt1ij) * v_rel_t_mag; // v_rel_t_mag is always positive
-        fs_mag_add += fs1[ni];
-        // Maxwell arm (2nd)
-        // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
-        // fs_mag -= fs2_mag[i]
-      }
-
-      // Add potential viscous and viscoelastic components to shear stress (repulsive again)
-      fs_tmp[0] -= fs_mag_add * tangent[0];
-      fs_tmp[1] -= fs_mag_add * tangent[1];
-      fs_tmp[2] -= fs_mag_add * tangent[2];
-      // Update trial shear stress magnitude
-      fs_mag_trial = MathExtra::len3(fs_tmp);
-
-      // Re-apply plastic Coulomb friction criterion
-      fs_mag = std::min(fs_max, fs_mag_trial);
-
-      if (fs_mag > 0 && fs_mag_trial != 0) {
-        // Final shear or tangential stress
-        fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
-        fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
-        fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
-        // Add shear stress to the pair force stress
-        fpair[0] += fs_tmp[0];
-        fpair[1] += fs_tmp[1];
-        fpair[2] += fs_tmp[2];
-      }
-
-      //} // Check if kt > 0 and mu > 0
-
-      //////////////////////////////
-      // Total forces and torques //
-      //////////////////////////////
-
-      // Multiply by node area to make the force independent of discretisation (fpair was a stress)
-      fpair[0] *= narea;
-      fpair[1] *= narea;
-      fpair[2] *= narea;
-
-      // Force on grain i
-      f[i][0] += fpair[0];
-      f[i][1] += fpair[1];
-      f[i][2] += fpair[2];
-
-      if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
-        error->one(FLERR, "Bad force calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
-
-      // Lever arm on grain i
-      lever[0] = contact_point[0] - icomx;
-      lever[1] = contact_point[1] - icomy;
-      lever[2] = contact_point[2] - icomz;
-      // Account for PBCs
-      domain->minimum_image(FLERR, lever);
-
-      // Compute torque
-      MathExtra::cross3(lever, fpair, torque_pair);
-
-      // Apply torques on grain i
-      torque[i][0] += torque_pair[0];
-      torque[i][1] += torque_pair[1];
-      torque[i][2] += torque_pair[2];
-
-      if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
-        error->one(FLERR, "Bad torque calculated between atoms {} {} on bodies {} {} with overlap {} and normal {} {} {}\n", tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
-
-
-      // Mirror forces and torques on grain j
-      if (newton_pair || j < nlocal) { // Need to check this again if we end up enabling newton_pair
-        MathExtra::negate3(fpair); // Sign swap
-        f[j][0] += fpair[0];
-        f[j][1] += fpair[1];
-        f[j][2] += fpair[2];
-
-        lever[0] = contact_point[0] - jcomx;
-        lever[1] = contact_point[1] - jcomy;
-        lever[2] = contact_point[2] - jcomz;
-        domain->minimum_image(FLERR, lever);
-
-        MathExtra::cross3(lever, fpair, torque_pair);
-
-        torque[j][0] += torque_pair[0];
-        torque[j][1] += torque_pair[1];
-        torque[j][2] += torque_pair[2];
-      }
-
-      if (evflag) ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2], normal[0] * u, normal[1] * u, normal[2] * u);
+      process_contact(i, j, calc_force_of_i_on_j, tmp_bin, x_local);
     }
   }
 
   if (vflag_fdotr) virial_fdotr_compute();
+}
+
+/* ----------------------------------------------------------------------
+   contact model for one node of grain i (calc_force_of_i_on_j = 1) or of grain j (0)
+   touching the level set of the other grain, applies the force and torque to
+   atom i and, if it is a local atom, to atom j
+   tmp_bin and x_local are the watershed bin and grid position (tmp_bin = -1 for array)
+------------------------------------------------------------------------- */
+
+void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_bin,
+                                double *x_local)
+{
+  int itype, jtype, ibody, jbody, ibodyID, jbodyID;
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, evdwl, u;
+  double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp;
+  double icomx, icomy, icomz, jcomx, jcomy, jcomz;
+  double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
+  double normal[3], fn_mag, fpair[3], contact_point[3], lever[3], torque_pair[3];
+  double fs_tmp[3], fs_mag, fs_max, fs_mag_trial, k[3], costheta, term1[3], term2;
+  double tangent[3], shear_incr, v_rel[3], v_rel_t[3], v_rel_n_mag, v_rel_t_mag, v_rel_t_mag_inv;
+  double normal_old[3], tangent_old[3], fs_mag_add, areai, areaj;
+
+  double **x = atom->x;
+  double **v = atom->v;
+  double **f = atom->f;
+  double **torque = atom->torque;
+  double **n = atom->darray[index_ls_dem_n];
+  double **fs = atom->darray[index_ls_dem_fs];
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1];
+  double *fs1 = atom->dvector[index_ls_dem_fs1];
+  tagint *tag = atom->tag;
+  int *type = atom->type;
+  int *mask = atom->mask;
+  int nlocal = atom->nlocal;
+  int newton_pair = force->newton_pair;
+  double dt = update->dt;
+  double **grain_com = atom->xcom;
+  double **grain_omega = atom->omega;
+
+  evdwl = 0.0;
+  itype = type[i];
+  jtype = type[j];
+  xitmp = x[i][0];
+  yitmp = x[i][1];
+  zitmp = x[i][2];
+  vxitmp = v[i][0];
+  vyitmp = v[i][1];
+  vzitmp = v[i][2];
+  icomx = grain_com[i][0];
+  icomy = grain_com[i][1];
+  icomz = grain_com[i][2];
+  iomegax = grain_omega[i][0];
+  iomegay = grain_omega[i][1];
+  iomegaz = grain_omega[i][2];
+  ibody = binfo[i].bidx;
+  ibodyID = binfo[i].bID;
+  areai = binfo[i].area;
+  jbody = binfo[j].bidx;
+  jbodyID = binfo[j].bID;
+  areaj = binfo[j].area;
+
+  // ghosts may not find bodytag if comm distance too small
+  if (ibody < 0)
+    error->one(
+        FLERR,
+        "Atom {} cannot find atom that owns body, consider increasing the communication cutoff",
+        tag[i]);
+  if (jbody < 0)
+    error->one(
+        FLERR,
+        "Atom {} cannot find atom that owns body, consider increasing the communication cutoff",
+        tag[j]);
+
+  // Evaluate the level set, and assign the interaction direction based on the
+  // node-grain combination. Force magnitude and direction go i -> j by definition.
+  if (calc_force_of_i_on_j) {    // Use node of i.
+    // Level set is by definition negative inside the particle,
+    // so swap the sign to get the overlap distance.
+    if (fix_rigid && (mask[j] & groupbit_large))
+      u = -fix_rigid->get_ls_value(i, j, tmp_bin, normal, x_local);
+    else if (fix_rigid_small && (mask[j] & groupbit_small))
+      u = -fix_rigid_small->get_ls_value(i, j, tmp_bin, normal, x_local);
+    else
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
+  } else {    // Use node of j.
+    if (fix_rigid && (mask[i] & groupbit_large))
+      u = -fix_rigid->get_ls_value(j, i, tmp_bin, normal, x_local);
+    else if (fix_rigid_small && (mask[i] & groupbit_small))
+      u = -fix_rigid_small->get_ls_value(j, i, tmp_bin, normal, x_local);
+    else
+      error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+  }
+
+  // Resolve the direction-dependent quantities once, so the rest of the contact
+  // path is free of calc_force_of_i_on_j branches. We always use the node on the
+  // chosen grain (ni), its stored history (fs_ni, n_ni, fn1[ni], fs1[ni]) and node
+  // area (narea), and the body it is touching (partner_body). The stored shear and
+  // normal vectors are kept in the node's own i->j frame, so when we use node j we
+  // flip their sign (hsign = -1) on both read and write.
+  const int ni = calc_force_of_i_on_j ? i : j;
+  const double hsign = calc_force_of_i_on_j ? 1.0 : -1.0;
+  const double narea = calc_force_of_i_on_j ? areai : areaj;
+  const int partner_body = calc_force_of_i_on_j ? jbodyID : ibodyID;
+  double *fs_ni = fs[ni];
+  double *n_ni = n[ni];
+
+  // No adhesion, cohesion, or ranged forces.
+  if (u <= 0) {
+    // Reset shear force if no contact
+    // If i and j are not a shear-interacting pair, it will skip the reset
+    if (touch_id[ni] == partner_body) {
+      touch_id[ni] = -1;
+      fs_ni[0] = 0.0;
+      fs_ni[1] = 0.0;
+      fs_ni[2] = 0.0;
+      n_ni[0] = 0.0;
+      n_ni[1] = 0.0;
+      n_ni[2] = 0.0;
+    }
+    // Skip force calculation
+    return;
+  } else {    // Physical contact!!
+    // These per-neighbour quantities are only needed once contact is
+    // confirmed, so they are loaded here instead of for every neighbour pair.
+    xjtmp = x[j][0];
+    yjtmp = x[j][1];
+    zjtmp = x[j][2];
+    vxjtmp = v[j][0];
+    vyjtmp = v[j][1];
+    vzjtmp = v[j][2];
+    jcomx = grain_com[j][0];
+    jcomy = grain_com[j][1];
+    jcomz = grain_com[j][2];
+    jomegax = grain_omega[j][0];
+    jomegay = grain_omega[j][1];
+    jomegaz = grain_omega[j][2];
+
+    // Compute contact point, correct normal if needed.
+    // The normal returned for node i points away from j, so it is negated to point
+    // i->j; for node j it already points i->j. After this, normal points i->j in
+    // both cases, and the contact point uses the chosen node's position.
+    if (calc_force_of_i_on_j)    // Use node of i.
+      MathExtra::negate3(normal);
+    const double npos0 = calc_force_of_i_on_j ? xitmp : xjtmp;
+    const double npos1 = calc_force_of_i_on_j ? yitmp : yjtmp;
+    const double npos2 = calc_force_of_i_on_j ? zitmp : zjtmp;
+    contact_point[0] = npos0 - 0.5 * u * hsign * normal[0];
+    contact_point[1] = npos1 - 0.5 * u * hsign * normal[1];
+    contact_point[2] = npos2 - 0.5 * u * hsign * normal[2];
+  }
+
+  // Hoist the pairwise coefficients (constant for this i-j type pair) into
+  // locals. They are read several times below, so this avoids repeated
+  // two-level array indexing in the contact path.
+  const double knij = kn[itype][jtype];
+  const double ktij = kt[itype][jtype];
+  const double muij = mu[itype][jtype];
+  const double knpij = knp[itype][jtype];
+  const double etanij = etan[itype][jtype];
+  const double etatij = etat[itype][jtype];
+  const double etan1ij = etan1[itype][jtype];
+  const double decayn1ij = decayn1[itype][jtype];
+  const double etat1ij = etat1[itype][jtype];
+  const double decayt1ij = decayt1[itype][jtype];
+
+  ///////////////////
+  // Normal stress //
+  ///////////////////
+
+  // Elastic spring
+  // With positive penetration distance u
+  if (fabs(knpij) < EPSILON) {
+    fn_mag = knij * u;
+  } else {
+    fn_mag = knij * pow(u, knpij);
+  }
+
+  // Relative velocity at the grain surface at the half step t + 0.5*dt.
+  // Note: The velocity at the node due to an angular velocity of the grain around its
+  // centre of mass is already included, so the difference of linear velocities suffices.
+  v_rel[0] = vxitmp - vxjtmp;
+  v_rel[1] = vyitmp - vyjtmp;
+  v_rel[2] = vzitmp - vzjtmp;
+
+  // Relative velocity in normal direction with sign (positive for approach)
+  v_rel_n_mag = MathExtra::dot3(v_rel, normal);
+
+  // Viscous damping or dashpot (parallel)
+  if (etanij > 0.0) { fn_mag += etanij * v_rel_n_mag; }
+
+  // Maxwell arm (1st, parallel, only repulsive)
+  if (etan1ij > 0.0) {    // preprocessing guarantees that decayn1 > 0 if etan1 > 0
+    fn1[ni] = decayn1ij * fn1[ni] + etan1ij * (1.0 - decayn1ij) * v_rel_n_mag;
+    fn_mag += fn1[ni];
+    // Maxwell arm (2nd)
+    //fn2_mag[i] = decayn2[itype][jtype] * fh2_mag[i] + etan2[itype][jtype] * (1-decayn2[itype][jtype]) * MAX(v_rel_n_mag, 0.0);
+    //fn_mag += fn2_mag[i]
+  }
+
+  // Only repulsive, do not allow tensile force without explicit bonding / cohesion
+  fn_mag = MAX(fn_mag, 0.0);
+
+  // The pair force vector should point j->i because of repulsion.
+  // With normal n (i->j), we have: F_{j on i} = f(ls_value) = - fn_mag * n.
+  fpair[0] = -fn_mag * normal[0];
+  fpair[1] = -fn_mag * normal[1];
+  fpair[2] = -fn_mag * normal[2];
+
+  ////////////////////
+  // Tangent stress //
+  ////////////////////
+
+  // Tangent force only exists if mu > 0 and kt > 0
+  //if ( (kt[itype][jtype] > 0) && (mu[itype][jtype] > 0) ){
+  // DvdH: Grains without friction are silly, so I took out this check.
+
+  // Check if the pair is valid for shear history calculation
+  // Initialise if no contact
+  if (touch_id[ni] == -1) { touch_id[ni] = partner_body; }
+  if (touch_id[ni] != partner_body) {
+    if (comm->me == 0) {
+      tagint node_tag = calc_force_of_i_on_j ? tag[i] : tag[j];
+      int node_body = calc_force_of_i_on_j ? ibodyID : jbodyID;
+      tagint partner_tag = calc_force_of_i_on_j ? tag[j] : tag[i];
+      error->warning(FLERR,
+                     "Shear history of node {} on grain {} penetrating node {} on {} cannot be "
+                     "computed at step {}",
+                     node_tag, node_body, partner_tag, partner_body, update->ntimestep);
+    }
+  }
+
+  // Get old elastic shear stress and old node normal.
+  // The stored vectors are in the node's i->j frame; flip sign when using node j.
+  fs_tmp[0] = hsign * fs_ni[0];
+  fs_tmp[1] = hsign * fs_ni[1];
+  fs_tmp[2] = hsign * fs_ni[2];
+  normal_old[0] = hsign * n_ni[0];
+  normal_old[1] = hsign * n_ni[1];
+  normal_old[2] = hsign * n_ni[2];
+
+  // Adjust fs_tmp to account for rotation of the contact normal and plane.
+  if (MathExtra::lensq3(normal_old) > 0.0) {    // len3 > 0, but without the sqrt
+    // Account for tilt. This is an exact correction over rotation of the normal
+    // from the previous to the current time step.
+    MathExtra::cross3(normal_old, normal, k);    // n_old x n_new
+
+    // Account for spin. This is an approximation using the half-step angular
+    // velocities. We rotate about the OLD normal so that, together with the
+    // tilt, the additive reconstruction matches the spin-then-tilt rotation.
+    // spin_norm = dt*(omega_avg . n_old) = dt*|omega_sp| (signed).
+    spin_norm = 0.5 * dt *
+        ((iomegax + jomegax) * normal_old[0] + (iomegay + jomegay) * normal_old[1] +
+         (iomegaz + jomegaz) * normal_old[2]);    // 0.5*dt*(omegai+omegaj) \dot n_old
+
+    // First Baker-Campbell-Hausdorff corrective term for the non-commutativity
+    // of the spin and tilt rotations: -0.5*|omega_sp|*dt*(n_old x (n_old x n_new)).
+    // The non-commutativity error dominates and only manifests itself in the tilt.
+    MathExtra::cross3(normal_old, k, term1);    // n_old x (n_old x n_new)
+    double bch_coef = -0.5 * fabs(spin_norm);
+    k[0] += spin_norm * normal_old[0] + bch_coef * term1[0];
+    k[1] += spin_norm * normal_old[1] + bch_coef * term1[1];
+    k[2] += spin_norm * normal_old[2] + bch_coef * term1[2];
+
+    // Applying the rotation with the unnormalised Rodrigues formula:
+    //   k already carries axis * sin(theta), so neither the axis nor the cross term needs normalising
+    //   and (1 - cos) / sin^2 = 1 / (1 + cos) avoids small-angle cancellation
+    //   fs_rot = fs cos + (k x fs) + k (k . fs) / (1 + cos), with cos = sqrt(1 - |k|^2)
+    double sinsq = MathExtra::lensq3(k);    // sin^2(theta) = |k|^2
+    if (sinsq > EPSILON * EPSILON) {        // Don't apply rotation if magnitude is tiny
+      costheta = sqrt(MAX(1.0 - sinsq, 0.0));
+      MathExtra::cross3(k, fs_tmp, term1);
+      term2 = MathExtra::dot3(k, fs_tmp) / (1.0 + costheta);
+      fs_tmp[0] = fs_tmp[0] * costheta + term1[0] + k[0] * term2;
+      fs_tmp[1] = fs_tmp[1] * costheta + term1[1] + k[1] * term2;
+      fs_tmp[2] = fs_tmp[2] * costheta + term1[2] + k[2] * term2;
+    }
+  }
+
+  // Relative velocity in tangential direction
+  v_rel_t[0] = v_rel[0] - v_rel_n_mag * normal[0];
+  v_rel_t[1] = v_rel[1] - v_rel_n_mag * normal[1];
+  v_rel_t[2] = v_rel[2] - v_rel_n_mag * normal[2];
+  v_rel_t_mag = MathExtra::len3(v_rel_t);
+  // We note that this way of calculating the shear velocity is an approximation.
+  // The error lies mainly in the fact that the velocity difference was computed
+  // between the surface nodes, meaning that there is a small arm length that has
+  // not been accounted for. As a consequence, this breaks objectivity since v_rel_t
+  // will increase with the rigid body rotation omega_b. The extra arm length does
+  // not unjustifiably increase v_rel_t in the absence of rigid body motion, since
+  // the surface can indeed be said to move at omega x R.
+
+  // Tangent normal
+  if (v_rel_t_mag > EPSILON) {
+    if (v_rel_t_mag != 0) {
+      v_rel_t_mag_inv = 1.0 / v_rel_t_mag;
+    } else {
+      v_rel_t_mag_inv = 0.0;
+    }
+    tangent[0] = v_rel_t[0] * v_rel_t_mag_inv;
+    tangent[1] = v_rel_t[1] * v_rel_t_mag_inv;
+    tangent[2] = v_rel_t[2] * v_rel_t_mag_inv;
+  } else {
+    // Backup: Use old shear force direction as tangent.
+    double norm = MathExtra::len3(fs_tmp);
+    if (norm != 0) {
+      v_rel_t_mag_inv = 1.0 / norm;
+    } else {
+      v_rel_t_mag_inv = 0.0;
+    }
+    tangent[0] = fs_tmp[0] * v_rel_t_mag_inv;
+    tangent[1] = fs_tmp[1] * v_rel_t_mag_inv;
+    tangent[2] = fs_tmp[2] * v_rel_t_mag_inv;
+  }
+
+  // Elastic spring shear stress increment
+  shear_incr = ktij * v_rel_t_mag * dt;
+
+  // New elastic force
+  fs_tmp[0] -= shear_incr * tangent[0];
+  fs_tmp[1] -= shear_incr * tangent[1];
+  fs_tmp[2] -= shear_incr * tangent[2];
+  fs_mag_trial = MathExtra::len3(fs_tmp);
+
+  // Coulomb limit
+  fs_max = muij * fn_mag;
+
+  // Perfectly plastic Coulomb friction criterion
+  fs_mag = std::min(fs_max, fs_mag_trial);
+
+  // Final shear or tangential stress
+  if (fs_mag_trial > EPSILON) {
+    fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+    fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+    fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
+  }
+
+  // Update saved elastic shear stress and normal (back into the node's i->j frame)
+  fs_ni[0] = hsign * fs_tmp[0];
+  fs_ni[1] = hsign * fs_tmp[1];
+  fs_ni[2] = hsign * fs_tmp[2];
+  n_ni[0] = hsign * normal[0];
+  n_ni[1] = hsign * normal[1];
+  n_ni[2] = hsign * normal[2];
+
+  // Placeholder for viscous and viscoelastic stress components
+  fs_mag_add = 0.0;
+
+  // Viscous damping or dashpot (parallel, allowed in any direction)
+  if (etatij > 0) { fs_mag_add += etatij * v_rel_t_mag; }
+
+  // Maxwell arm (1st, parallel, only repulsive)
+  if (etan1ij > 0.0) {    // preprocessing guarantees that decayt1 > 0 if etat1 > 0
+    // Get the old tangent vector
+    double norm = MathExtra::len3(fs_tmp);
+    if (norm != 0) {
+      v_rel_t_mag_inv = 1.0 / norm;
+    } else {
+      v_rel_t_mag_inv = 0.0;
+    }
+    tangent_old[0] = fs_tmp[0] * v_rel_t_mag_inv;
+    tangent_old[1] = fs_tmp[1] * v_rel_t_mag_inv;
+    tangent_old[2] = fs_tmp[2] * v_rel_t_mag_inv;
+    // The dot(t_old,t) part accounts for the in-plane rotation of the tangent force.
+    // When the shear direction reverses, it correctly preserves the direction of the old force.
+    // However, when rotating towards the orthogonal direction, we inevitably lose some of the force.
+    // We could track the full vector, but it would cost more memory (and accessing time)
+    fs1[ni] += decayt1ij * fs1[ni] * MathExtra::dot3(tangent_old, tangent) +
+        etat1ij * (1 - decayt1ij) * v_rel_t_mag;    // v_rel_t_mag is always positive
+    fs_mag_add += fs1[ni];
+    // Maxwell arm (2nd)
+    // fs2_mag[i] = exps2*fs2_mag[i] + etat2[itype][jtype]*(1-exps2)*v_rel_t_mag;
+    // fs_mag -= fs2_mag[i]
+  }
+
+  // Add potential viscous and viscoelastic components to shear stress (repulsive again)
+  fs_tmp[0] -= fs_mag_add * tangent[0];
+  fs_tmp[1] -= fs_mag_add * tangent[1];
+  fs_tmp[2] -= fs_mag_add * tangent[2];
+  // Update trial shear stress magnitude
+  fs_mag_trial = MathExtra::len3(fs_tmp);
+
+  // Re-apply plastic Coulomb friction criterion
+  fs_mag = std::min(fs_max, fs_mag_trial);
+
+  if (fs_mag > 0 && fs_mag_trial != 0) {
+    // Final shear or tangential stress
+    fs_tmp[0] = fs_mag * (fs_tmp[0] / fs_mag_trial);
+    fs_tmp[1] = fs_mag * (fs_tmp[1] / fs_mag_trial);
+    fs_tmp[2] = fs_mag * (fs_tmp[2] / fs_mag_trial);
+    // Add shear stress to the pair force stress
+    fpair[0] += fs_tmp[0];
+    fpair[1] += fs_tmp[1];
+    fpair[2] += fs_tmp[2];
+  }
+
+  //} // Check if kt > 0 and mu > 0
+
+  //////////////////////////////
+  // Total forces and torques //
+  //////////////////////////////
+
+  // Multiply by node area to make the force independent of discretisation (fpair was a stress)
+  fpair[0] *= narea;
+  fpair[1] *= narea;
+  fpair[2] *= narea;
+
+  // Force on grain i
+  f[i][0] += fpair[0];
+  f[i][1] += fpair[1];
+  f[i][2] += fpair[2];
+
+  if (std::isnan(fpair[0]) || std::isnan(fpair[1]) || std::isnan(fpair[2]))
+    error->one(FLERR,
+               "Bad force calculated between atoms {} {} on bodies {} {} with overlap {} and "
+               "normal {} {} {}\n",
+               tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+
+  // Lever arm on grain i
+  lever[0] = contact_point[0] - icomx;
+  lever[1] = contact_point[1] - icomy;
+  lever[2] = contact_point[2] - icomz;
+  // Account for PBCs
+  domain->minimum_image(FLERR, lever);
+
+  // Compute torque
+  MathExtra::cross3(lever, fpair, torque_pair);
+
+  // Apply torques on grain i
+  torque[i][0] += torque_pair[0];
+  torque[i][1] += torque_pair[1];
+  torque[i][2] += torque_pair[2];
+
+  if (std::isnan(torque_pair[0]) || std::isnan(torque_pair[1]) || std::isnan(torque_pair[2]))
+    error->one(FLERR,
+               "Bad torque calculated between atoms {} {} on bodies {} {} with overlap {} and "
+               "normal {} {} {}\n",
+               tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
+
+  // Mirror forces and torques on grain j
+  if (newton_pair || j < nlocal) {    // Need to check this again if we end up enabling newton_pair
+    MathExtra::negate3(fpair);        // Sign swap
+    f[j][0] += fpair[0];
+    f[j][1] += fpair[1];
+    f[j][2] += fpair[2];
+
+    lever[0] = contact_point[0] - jcomx;
+    lever[1] = contact_point[1] - jcomy;
+    lever[2] = contact_point[2] - jcomz;
+    domain->minimum_image(FLERR, lever);
+
+    MathExtra::cross3(lever, fpair, torque_pair);
+
+    torque[j][0] += torque_pair[0];
+    torque[j][1] += torque_pair[1];
+    torque[j][2] += torque_pair[2];
+  }
+
+  if (evflag)
+    ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2],
+                 normal[0] * u, normal[1] * u, normal[2] * u);
 }
 
 /* ----------------------------------------------------------------------
