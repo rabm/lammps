@@ -109,11 +109,14 @@ CommKokkos::~CommKokkos()
 
 void CommKokkos::init()
 {
-  maxsend = BUFMIN;
-  maxrecv = BUFMIN;
+  // keep the buffers large enough for the swaps of the last borders() call, as CommBrick does:
+  //   a style may call comm->init() and then forward communication before the next borders()
 
-  grow_send_kokkos(maxsend+bufextra,0,Host);
-  grow_recv_kokkos(maxrecv,Host);
+  const int nsend = MAX(BUFMIN + bufextra, static_cast<int>(maxsend / BUFFACTOR));
+  const int nrecv = MAX(BUFMIN, static_cast<int>(maxrecv / BUFFACTOR));
+
+  grow_send_kokkos(nsend,0,Host);
+  grow_recv_kokkos(nrecv,Host);
 
   atomKK = (AtomKokkos *) atom;
   exchange_comm_legacy = lmp->kokkos->exchange_comm_legacy;
