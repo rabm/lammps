@@ -40,6 +40,7 @@
 #include <vector>
 
 static constexpr double EPSILON = 1e-12;
+static constexpr double BIG = 1.0e20;
 // default for "pair_style ls/dem auto": node-node cutoff = factor x largest node spacing
 static constexpr double AUTO_CUT_FACTOR = 2.0;
 
@@ -260,6 +261,22 @@ void PairLSDEM::build_rep_segments()
         add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
+
+  // largest bound of the candidates of each segment, they are nodes of one grain
+
+  std::vector<double> bound(ntotal, -2.0);
+  for (int r = 0; r < ntotal; r++)
+    for (Seg &seg : rep_segs[r]) {
+      double bmax = -1.0;
+      for (const Cand &cand : seg.cand) {
+        if (bound[cand.idx] < -1.5) bound[cand.idx] = atom_grid_bound(cand.idx);
+        bmax = MAX(bmax, bound[cand.idx]);
+      }
+      if (bmax < 0.0)
+        seg.bsq = -1.0;
+      else
+        seg.bsq = (bmax >= BIG) ? BIG : bmax * bmax;
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -281,7 +298,35 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
         std::swap(seg.cand.front(), seg.cand.back());
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, BIG, {cand}});
+}
+
+/* ----------------------------------------------------------------------
+   distance from the center of the grain of atom a beyond which its level set is positive,
+   BIG if the grid of the atom is not known
+------------------------------------------------------------------------- */
+
+double PairLSDEM::atom_grid_bound(int a)
+{
+  const BodyInfo &b = binfo[a];
+  if ((b.bidx < 0) || (b.grp == 0)) return BIG;
+  LSDEMExtra::GridInfo g;
+  if (b.grp == 2)
+    fix_rigid->get_grid_info(a, g);
+  else
+    fix_rigid_small->get_grid_info(a, g);
+
+  // shared grids and watershed tables are found by their values
+
+  const void *shared = nullptr;
+  if (g.global) shared = g.ws_table ? (const void *) g.ws_table : (const void *) g.values;
+  if (shared) {
+    auto it = gbound_cache.find(shared);
+    if (it == gbound_cache.end())
+      it = gbound_cache.emplace(shared, LSDEMExtra::grid_bound(g)).first;
+    return it->second;
+  }
+  return LSDEMExtra::grid_bound(g);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -336,6 +381,9 @@ void PairLSDEM::compute(int eflag, int vflag)
   //   depends on the order of the neighbor list, so pair ls/dem/kk with a neighbor list built
   //   on the device gives the same results bit for bit. It costs some time, so it is optional.
 
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+
   contacts.clear();
   wsbins.clear();
   for (int irep = 0; irep < ntotal; irep++) {
@@ -352,6 +400,17 @@ void PairLSDEM::compute(int eflag, int vflag)
       const int ncand = seg.cand.size();
       const int c0 = seg.cand[0].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
+
+      // a node beyond the bound of the grain of the candidates has no contact with it, unless
+      //   it touched that grain before and its shear history has to be reset
+      if (seg.bsq < BIG) {
+        double del[3] = {xitmp - grain_com[c0][0], yitmp - grain_com[c0][1],
+                         zitmp - grain_com[c0][2]};
+        domain->minimum_image(FLERR, del);
+        if ((del[0] * del[0] + del[1] * del[1] + del[2] * del[2] > seg.bsq) &&
+            (touch_id[irep] != binfo[c0].bID))
+          continue;
+      }
 
       if (watershed_flag) {
         int first = 0;
@@ -1271,6 +1330,7 @@ void PairLSDEM::setup()
   // the ghost atoms are recreated in each setup, so refill the body info at the next compute()
   binfo_lastbuild = -1;
   segs_lastbuild = -1;
+  gbound_cache.clear();
 
   int n = atom->ntypes;
   double maxcut2 = -1;

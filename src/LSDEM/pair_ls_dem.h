@@ -25,6 +25,8 @@ PairStyle(ls/dem,PairLSDEM);
 #include "fix_rigid_ls_dem.h"
 #include "fix_rigid_small_ls_dem.h"
 
+#include <unordered_map>
+
 namespace LAMMPS_NS {
 
 class PairLSDEM : public Pair {
@@ -98,17 +100,24 @@ class PairLSDEM : public Pair {
     int key;
     int rep_owns_pair;
   };
+  // bsq: square of the largest distance from the center of the grain of the candidates
+  //   at which their level set may be negative (-1: nowhere, BIG: not known)
   struct Seg {
     int pbody;
     char poff;
     char tie;
     char dup;
+    double bsq;
     std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;
   std::vector<char> has_image;
   bigint segs_lastbuild;
   void build_rep_segments();
+
+  // bounds of the level sets of the atoms, shared grids by their values
+  std::unordered_map<const void *, double> gbound_cache;
+  double atom_grid_bound(int);
   void add_rep_candidate(int, int, int, int, int, int, int);
 
   // watershed bin of a node in the grid of another grain and its grid position

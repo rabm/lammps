@@ -19,6 +19,7 @@
 #include "math_extra.h"
 #include "rigid_ls_dem_const.h"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -289,6 +290,43 @@ double get_ws_ls_value(int mybin, std::unordered_map<int, double> *mytable, std:
   if (mybuffer->find(mybin) != mybuffer->end())
     return mybuffer->at(mybin);
   return BIG;
+}
+
+/* ----------------------------------------------------------------------
+  Distance from the grain center beyond which the level set of a grid or of the watershed
+  bins of a node is positive: the farthest grid point whose value is not clearly positive
+  plus a cell diagonal, since the value at a node is interpolated from the corners of its
+  cell and is BIG outside the grid, -1 if no value is negative or close to zero
+-------------------------------------------------------------------------*/
+
+double grid_bound(const GridInfo &g)
+{
+  std::vector<std::pair<int, double>> points;
+  if (g.ws_table) {
+    for (const auto &e : *g.ws_table) points.emplace_back(e.first, e.second);
+    for (const auto &e : *g.ws_buffer) points.emplace_back(e.first, e.second);
+  } else {
+    for (int m = 0; m < g.nvalues; m++) points.emplace_back(m, g.values[m]);
+  }
+
+  double maxabs = 0.0;
+  for (const auto &p : points) maxabs = std::max(maxabs, fabs(p.second));
+
+  // a corner value above this limit cannot give a negative value by roundoff
+
+  const double limit = 1.0e-9 * maxabs;
+  const int ng0 = g.ngrid[0];
+  const int ng1 = g.ngrid[1];
+  double rmaxsq = -1.0;
+  for (const auto &p : points) {
+    if (p.second > limit) continue;
+    const double px = g.grid_min[0] + (p.first % ng0) * g.stride;
+    const double py = g.grid_min[1] + ((p.first / ng0) % ng1) * g.stride;
+    const double pz = g.grid_min[2] + (p.first / (ng0 * ng1)) * g.stride;
+    rmaxsq = std::max(rmaxsq, px * px + py * py + pz * pz);
+  }
+  if (rmaxsq < 0.0) return -1.0;
+  return (sqrt(rmaxsq) + sqrt(3.0) * g.stride) * (1.0 + 1.0e-6);
 }
 
 /* ----------------------------------------------------------------------

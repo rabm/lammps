@@ -40,6 +40,7 @@ namespace LSDEMExtra {
   double interpolate_LS_array(int, int, double *, int *, double *, int *, double[3], double);
   double interpolate_LS_watershed(int, int, std::unordered_map<int, double> *, std::unordered_map<int, double> *, int[3], double[3], int *, double[3], double);
   double get_ws_ls_value(int, std::unordered_map<int, double> *, std::unordered_map<int, double> *);
+  double grid_bound(const GridInfo &);
   int store_dist_array(int, int, int *, int *, double, double, double, double *, double *, double *, double *, double *, double *);
 }
 
