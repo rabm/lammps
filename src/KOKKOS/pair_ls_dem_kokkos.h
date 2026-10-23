@@ -105,8 +105,16 @@ struct PairLSDEMKernelsKokkos {
 
   Kokkos::View<int *, DeviceType> rep_atom, rep_kbeg, rep_kslot;
 
+  // marks of the current step instead of flags that are cleared at each step, so the work of a
+  //   step depends on its contacts, not on all candidates:
+  //   cand_on of a candidate that is a contact, rep_on of a node with one (seg_q: node of each
+  //   segment), atom_on of an atom with a force, kstamp of a key with a contact in kon
+  //   stamp: mark of the current step, 0 is no mark
+  Kokkos::View<int *, DeviceType> seg_q, rep_on, atom_on, kstamp;
+  int stamp;
+
   // force on atom i, torques on atoms i and j and virial of each contact that applied a force,
-  //   in the order the contacts were found, kon: index of the contact of each key, -1 for none
+  //   in the order the contacts were found, kon: index of the contact of each key marked in kstamp
 
   //   kij: atoms i and j of each contact, the virial is summed on the host in their order
 
@@ -201,6 +209,7 @@ class PairLSDEMKokkos : public PairLSDEM {
 
   // public so its device lambdas can be compiled for CUDA
   void build_segments();
+  void clear_marks();
 
  protected:
   typename AT::t_kkfloat_1d_3_lr x;
