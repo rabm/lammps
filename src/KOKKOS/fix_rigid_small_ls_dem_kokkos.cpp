@@ -18,9 +18,10 @@
 #include "atom_masks.h"
 #include "comm_kokkos.h"
 #include "error.h"
-#include "ls_dem_sort_kokkos.h"
 #include "math_extra_kokkos.h"
 #include "rigid_const.h"
+
+#include <Kokkos_NestedSort.hpp>
 
 using namespace LAMMPS_NS;
 using namespace RigidConst;
@@ -259,15 +260,14 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::upload_ls()
       batom(bstart(ibody) + Kokkos::atomic_fetch_add(&bcount(ibody), 1)) = i;
     }
   });
-  Kokkos::parallel_for(Range(0, nbody), KOKKOS_LAMBDA(const int ibody) {
+  typedef Kokkos::TeamPolicy<DeviceType> Team;
+  typedef typename Team::member_type TeamMember;
+  Kokkos::parallel_for(Team(nbody, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
+    const int ibody = t.league_rank();
     const int b = bstart(ibody);
-    auto less = [&](const int x, const int y) { return batom(b + x) < batom(b + y); };
-    auto swap = [&](const int x, const int y) {
-      const int t = batom(b + x);
-      batom(b + x) = batom(b + y);
-      batom(b + y) = t;
-    };
-    LSDEMKokkos::heap_sort(bstart(ibody + 1) - b, less, swap);
+    const int e = bstart(ibody + 1);
+    if (e - b > 1)
+      Kokkos::Experimental::sort_team(t, Kokkos::subview(batom, Kokkos::make_pair(b, e)));
   });
 }
 
