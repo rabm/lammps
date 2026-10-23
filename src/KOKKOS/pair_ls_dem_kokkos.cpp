@@ -23,19 +23,18 @@
 #include "fix_rigid_small_ls_dem.h"
 #include "force.h"
 #include "kokkos.h"
-#include "ls_dem_sort_kokkos.h"
 #include "memory_kokkos.h"
 #include "neigh_list_kokkos.h"
 #include "neigh_request.h"
 #include "neighbor.h"
 #include "update.h"
 
+#include <Kokkos_NestedSort.hpp>
 #include <Kokkos_UnorderedMap.hpp>
 #include <algorithm>
 #include <array>
 
 using namespace LAMMPS_NS;
-using LSDEMKokkos::heap_sort;
 
 static constexpr double EPSILON = 1e-12;
 static constexpr double EPS_TIE = 1.0e-12;
@@ -164,6 +163,8 @@ template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::build_segments()
 {
   typedef Kokkos::RangePolicy<DeviceType> Range;
+  typedef Kokkos::TeamPolicy<DeviceType> Team;
+  typedef typename Team::member_type TeamMember;
   typedef Kokkos::View<int *, DeviceType> IView;
   const int nlocal = atom->nlocal;
   const int ntotal = nlocal + atom->nghost;
@@ -336,29 +337,32 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     sortkey(a) = ((uint64_t) (2 * (uint32_t) d_bid(a) + d_off(a)) << 32) |
       (uint64_t) (uint32_t) d_tag(a);
   });
-  Kokkos::parallel_for(Range(0, ntotal), KOKKOS_LAMBDA(const int r) {
+  // one team sorts the candidates of a node, with the key and owner of each candidate packed
+  //   in one number that moves with it
+
+  IView cpack(Kokkos::view_alloc("pair:cpack", Kokkos::WithoutInitializing), MAX(ncand, 1));
+  Kokkos::parallel_for(Range(0, ncand), KOKKOS_LAMBDA(const int m) {
+    cpack(m) = 2 * cand_key(m) + cand_owns(m);
+  });
+  Kokkos::parallel_for(Team(ntotal, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
+    const int r = t.league_rank();
     const int b = rbeg(r);
-    const int n = rbeg(r + 1) - b;
-    if (n < 2) return;
-    auto less = [&](int x, int y) {
-      const int cx = cand_idx(b + x), cy = cand_idx(b + y);
+    const int e = rbeg(r + 1);
+    if (e - b < 2) return;
+    auto less = [=](const int cx, const int cy) {
       if (sortkey(cx) != sortkey(cy)) return sortkey(cx) < sortkey(cy);
       if (d_tag(cx) != d_tag(cy)) return d_tag(cx) < d_tag(cy);
       return cx < cy;
     };
-    auto swap = [&](int x, int y) {
-      int t = cand_idx(b + x);
-      cand_idx(b + x) = cand_idx(b + y);
-      cand_idx(b + y) = t;
-      t = cand_key(b + x);
-      cand_key(b + x) = cand_key(b + y);
-      cand_key(b + y) = t;
-      t = cand_owns(b + x);
-      cand_owns(b + x) = cand_owns(b + y);
-      cand_owns(b + y) = t;
-    };
-    heap_sort(n, less, swap);
+    Kokkos::Experimental::sort_by_key_team(t, Kokkos::subview(cand_idx, Kokkos::make_pair(b, e)),
+                                           Kokkos::subview(cpack, Kokkos::make_pair(b, e)), less);
   });
+  Kokkos::parallel_for(Range(0, ncand), KOKKOS_LAMBDA(const int m) {
+    const int owns = cpack(m) & 1;
+    cand_key(m) = (cpack(m) - owns) / 2;
+    cand_owns(m) = owns;
+  });
+  cpack = IView();
 
   // segments: the candidates of a node on one grain
 
@@ -479,17 +483,14 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       rep_kslot(kb + n++) = m;
       key_ij(cand_key(m)) = cand_owns(m) ? pack_ij(r, c) : pack_ij(c, r);
     }
-    auto ij = [&](int x) {
-      const int m = rep_kslot(kb + x);
-      return cand_owns(m) ? pack_ij(r, cand_idx(m)) : pack_ij(cand_idx(m), r);
-    };
-    auto less = [&](int x, int y) { return ij(x) < ij(y); };
-    auto swap = [&](int x, int y) {
-      const int t = rep_kslot(kb + x);
-      rep_kslot(kb + x) = rep_kslot(kb + y);
-      rep_kslot(kb + y) = t;
-    };
-    heap_sort(n, less, swap);
+  });
+  Kokkos::parallel_for(Team(nrep, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
+    const int q = t.league_rank();
+    const int kb = rep_kbeg(q);
+    const int ke = rep_kbeg(q + 1);
+    if (ke - kb < 2) return;
+    auto less = [=](const int x, const int y) { return key_ij(cand_key(x)) < key_ij(cand_key(y)); };
+    Kokkos::Experimental::sort_team(t, Kokkos::subview(rep_kslot, Kokkos::make_pair(kb, ke)), less);
   });
 
   // contacts of each local atom in the order of the atoms of their pair: 2 * key, + 1 if j
@@ -519,17 +520,13 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     gat_ent(gat_beg(i) + Kokkos::atomic_fetch_add(&gcnt(i), 1)) = 2 * key;
     if (j < nlocal) gat_ent(gat_beg(j) + Kokkos::atomic_fetch_add(&gcnt(j), 1)) = 2 * key + 1;
   });
-  Kokkos::parallel_for(Range(0, nlocal), KOKKOS_LAMBDA(const int a) {
+  Kokkos::parallel_for(Team(nlocal, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
+    const int a = t.league_rank();
     const int b = gat_beg(a);
-    auto less = [&](int x, int y) {
-      return key_ij(gat_ent(b + x) >> 1) < key_ij(gat_ent(b + y) >> 1);
-    };
-    auto swap = [&](int x, int y) {
-      const int t = gat_ent(b + x);
-      gat_ent(b + x) = gat_ent(b + y);
-      gat_ent(b + y) = t;
-    };
-    heap_sort(gat_beg(a + 1) - b, less, swap);
+    const int e = gat_beg(a + 1);
+    if (e - b < 2) return;
+    auto less = [=](const int x, const int y) { return key_ij(x >> 1) < key_ij(y >> 1); };
+    Kokkos::Experimental::sort_team(t, Kokkos::subview(gat_ent, Kokkos::make_pair(b, e)), less);
   });
 
   auto h_partner = Kokkos::create_mirror_view_and_copy(LMPHostType::memory_space(), d_partner);
