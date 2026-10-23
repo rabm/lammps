@@ -286,17 +286,20 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   if (nrec > MAXSMALLINT) error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
   ncand = nrec;
 
+  // a view that is too small is freed before the larger one is allocated, so both never
+  //   take device memory at the same time
+
   auto grow = [](IView &d, int n, const char *name) {
-    if ((int) d.extent(0) < MAX(n, 1))
+    if ((int) d.extent(0) < MAX(n, 1)) {
+      d = IView();
       d = IView(Kokkos::view_alloc(std::string(name), Kokkos::WithoutInitializing), MAX(n, 1));
+    }
   };
   grow(kern.cand_idx, ncand, "pair:cand_idx");
-  grow(kern.cand_key, ncand, "pair:cand_key");
-  grow(kern.cand_owns, ncand, "pair:cand_owns");
+  grow(kern.cand_pk, ncand, "pair:cand_pk");
   if (watershed_flag) grow(kern.cand_seg, ncand, "pair:cand_seg");
   auto cand_idx = kern.cand_idx;
-  auto cand_key = kern.cand_key;
-  auto cand_owns = kern.cand_owns;
+  auto cand_pk = kern.cand_pk;
   auto cand_seg = kern.cand_seg;
   const int ncand_ = ncand;
 
@@ -313,14 +316,12 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       if ((d_vol(i) <= d_vol(j)) && is_kept(ii, i, j)) {
         const int m = rbeg(i) + Kokkos::atomic_fetch_add(&rfill(i), 1);
         cand_idx(m) = j;
-        cand_key(m) = key;
-        cand_owns(m) = 1;
+        cand_pk(m) = 2 * key + 1;
       }
       if ((d_vol(i) >= d_vol(j)) && is_kept(ii, j, i)) {
         const int m = rbeg(j) + Kokkos::atomic_fetch_add(&rfill(j), 1);
         cand_idx(m) = i;
-        cand_key(m) = key;
-        cand_owns(m) = 0;
+        cand_pk(m) = 2 * key;
       }
     }
   });
@@ -337,13 +338,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     sortkey(a) = ((uint64_t) (2 * (uint32_t) d_bid(a) + d_off(a)) << 32) |
       (uint64_t) (uint32_t) d_tag(a);
   });
-  // one team sorts the candidates of a node, with the key and owner of each candidate packed
-  //   in one number that moves with it
-
-  IView cpack(Kokkos::view_alloc("pair:cpack", Kokkos::WithoutInitializing), MAX(ncand, 1));
-  Kokkos::parallel_for(Range(0, ncand), KOKKOS_LAMBDA(const int m) {
-    cpack(m) = 2 * cand_key(m) + cand_owns(m);
-  });
+  // one team sorts the candidates of a node, their key and owner move with them
   Kokkos::parallel_for(Team(ntotal, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
     const int r = t.league_rank();
     const int b = rbeg(r);
@@ -355,14 +350,8 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       return cx < cy;
     };
     Kokkos::Experimental::sort_by_key_team(t, Kokkos::subview(cand_idx, Kokkos::make_pair(b, e)),
-                                           Kokkos::subview(cpack, Kokkos::make_pair(b, e)), less);
+                                           Kokkos::subview(cand_pk, Kokkos::make_pair(b, e)), less);
   });
-  Kokkos::parallel_for(Range(0, ncand), KOKKOS_LAMBDA(const int m) {
-    const int owns = cpack(m) & 1;
-    cand_key(m) = (cpack(m) - owns) / 2;
-    cand_owns(m) = owns;
-  });
-  cpack = IView();
 
   // segments: the candidates of a node on one grain
 
@@ -415,8 +404,8 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     const int e = seg_cbeg(s + 1);
     int dup = 0, nkeyed = 0, kmin = -1;
     for (int m = b; m < e; m++) {
-      nkeyed += (cand_key(m) >= 0);
-      if ((cand_key(m) >= 0) && ((kmin < 0) || (cand_idx(m) < cand_idx(kmin)))) kmin = m;
+      nkeyed += (cand_pk(m) >= 0);
+      if ((cand_pk(m) >= 0) && ((kmin < 0) || (cand_idx(m) < cand_idx(kmin)))) kmin = m;
       Kokkos::atomic_max(&partner(cand_idx(m)), 1);
       if ((m > b) && (d_tag(cand_idx(m)) == d_tag(cand_idx(m - 1)))) dup = 1;
     }
@@ -455,7 +444,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   int nkslot = 0;
   Kokkos::parallel_scan(Range(0, nrep), KOKKOS_LAMBDA(const int q, int &upd, const bool fin) {
     int n = 0;
-    for (int m = rep_cbeg(q); m < rep_cbeg(q + 1); m++) n += (cand_key(m) >= 0);
+    for (int m = rep_cbeg(q); m < rep_cbeg(q + 1); m++) n += (cand_pk(m) >= 0);
     if (fin) rep_kbeg(q) = upd;
     upd += n;
     if (fin && (q == nrep_ - 1)) rep_kbeg(nrep_) = upd;
@@ -478,10 +467,10 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     const int kb = rep_kbeg(q);
     int n = 0;
     for (int m = rep_cbeg(q); m < rep_cbeg(q + 1); m++) {
-      if (cand_key(m) < 0) continue;
+      if (cand_pk(m) < 0) continue;
       const int c = cand_idx(m);
       rep_kslot(kb + n++) = m;
-      key_ij(cand_key(m)) = cand_owns(m) ? pack_ij(r, c) : pack_ij(c, r);
+      key_ij(cand_pk(m) >> 1) = (cand_pk(m) & 1) ? pack_ij(r, c) : pack_ij(c, r);
     }
   });
   Kokkos::parallel_for(Team(nrep, Kokkos::AUTO), KOKKOS_LAMBDA(const TeamMember &t) {
@@ -489,7 +478,9 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     const int kb = rep_kbeg(q);
     const int ke = rep_kbeg(q + 1);
     if (ke - kb < 2) return;
-    auto less = [=](const int x, const int y) { return key_ij(cand_key(x)) < key_ij(cand_key(y)); };
+    auto less = [=](const int x, const int y) {
+      return key_ij(cand_pk(x) >> 1) < key_ij(cand_pk(y) >> 1);
+    };
     Kokkos::Experimental::sort_team(t, Kokkos::subview(rep_kslot, Kokkos::make_pair(kb, ke)), less);
   });
 
@@ -1199,7 +1190,7 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
     seg_xl(3 * s + 2) = xl[2];
     KK_FLOAT val;
     for (int m = b; m < e; m++)
-      if ((cand_key(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) {
+      if ((cand_pk(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) {
         cand_on(m) = stamp;
         rep_on(seg_q(s)) = stamp;
       }
@@ -1228,11 +1219,11 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   if (sflag & 2) {
     const tagint wtag = tag(cand_idx(win));
     for (int m = b; m < e; m++)
-      if ((tag(cand_idx(m)) == wtag) && (cand_key(m) >= 0)) {
+      if ((tag(cand_idx(m)) == wtag) && (cand_pk(m) >= 0)) {
         cand_on(m) = stamp;
         rep_on(seg_q(s)) = stamp;
       }
-  } else if (cand_key(win) >= 0) {
+  } else if (cand_pk(win) >= 0) {
     cand_on(win) = stamp;
     rep_on(seg_q(s)) = stamp;
   }
@@ -1250,10 +1241,11 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMContact, const i
     const int slot = rep_kslot(k);
     if (cand_on(slot) != stamp) continue;
     const int c = cand_idx(slot);
-    if (cand_owns(slot))
-      contact(r, c, 1, cand_key(slot), slot);
+    const int pk = cand_pk(slot);
+    if (pk & 1)
+      contact(r, c, 1, pk >> 1, slot);
     else
-      contact(c, r, 0, cand_key(slot), slot);
+      contact(c, r, 0, pk >> 1, slot);
   }
 }
 

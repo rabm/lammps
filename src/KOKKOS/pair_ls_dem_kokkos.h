@@ -93,7 +93,8 @@ struct PairLSDEMKernelsKokkos {
 
   //   seg_kmin: slot of the candidate with a key and the lowest atom index
   Kokkos::View<int *, DeviceType> seg_rep, seg_flag, seg_cbeg, seg_kmin;
-  Kokkos::View<int *, DeviceType> cand_idx, cand_key, cand_owns, cand_on;
+  //   cand_pk: 2 * key, + 1 if the node holds the pair in its list (key -1: pair of a ghost)
+  Kokkos::View<int *, DeviceType> cand_idx, cand_pk, cand_on;
 
   // watershed storage: segment of each candidate, bin and grid position of the node of
   //   each segment in the grid of the other grain
