@@ -239,7 +239,6 @@ class PairLSDEMKokkos : public PairLSDEM {
   //   with their offset and number of watershed bins
 
   std::unordered_map<const void *, std::pair<bigint, int>> ggrid_offset;
-  std::unordered_map<const void *, double> gbound_cache;
   std::vector<double> h_ggrid;
   std::vector<int> h_gwkey;
 
