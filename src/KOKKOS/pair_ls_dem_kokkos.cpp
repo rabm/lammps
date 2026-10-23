@@ -74,6 +74,7 @@ PairLSDEMKokkos<DeviceType>::PairLSDEMKokkos(LAMMPS *lmp) : PairLSDEM(lmp)
   kern.flag = Kokkos::View<int *, DeviceType>("pair:flag", 3);
   kern.flag_tag = Kokkos::View<tagint *, DeviceType>("pair:flag_tag", 5);
   kern.ncontact = Kokkos::View<int, DeviceType>("pair:ncontact");
+  kern.stamp = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -442,6 +443,9 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     }
     if (r == 0) rep_cbeg(nrep_) = ncand_;
   });
+  grow(kern.seg_q, nseg, "pair:seg_q");
+  auto seg_q = kern.seg_q;
+  Kokkos::parallel_for(Range(0, nseg), KOKKOS_LAMBDA(const int s) { seg_q(s) = rrep(seg_rep(s)); });
   rrep = IView();
   rseg = IView();
   int nkslot = 0;
@@ -631,8 +635,15 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
 
   if ((int) kern.cand_on.extent(0) < MAX(ncand, 1))
     kern.cand_on = Kokkos::View<int *, DeviceType>("pair:cand_on", MAX(ncand, 1));
-  if ((int) kern.kon.extent(0) < MAX(nkey, 1))
+  if ((int) kern.kon.extent(0) < MAX(nkey, 1)) {
     kern.kon = Kokkos::View<int *, DeviceType>("pair:kon", MAX(nkey, 1));
+    kern.kstamp = Kokkos::View<int *, DeviceType>("pair:kstamp", MAX(nkey, 1));
+  }
+  if ((int) kern.rep_on.extent(0) < MAX(nrep, 1))
+    kern.rep_on = Kokkos::View<int *, DeviceType>("pair:rep_on", MAX(nrep, 1));
+  if ((int) kern.atom_on.extent(0) < MAX(nlocal, 1))
+    kern.atom_on = Kokkos::View<int *, DeviceType>("pair:atom_on", MAX(nlocal, 1));
+  clear_marks();
   if ((int) kern.kf.extent(0) < 3 * MAX(maxcontact, 1)) {
     kern.kf = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kf", 3 * MAX(maxcontact, 1));
     kern.kti = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kti", 3 * MAX(maxcontact, 1));
@@ -640,6 +651,18 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     kern.kv = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kv", 6 * MAX(maxcontact, 1));
     kern.kij = Kokkos::View<int *, DeviceType>("pair:kij", 2 * MAX(maxcontact, 1));
   }
+}
+
+/* ---------------------------------------------------------------------- */
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::clear_marks()
+{
+  Kokkos::deep_copy(kern.cand_on, 0);
+  Kokkos::deep_copy(kern.kstamp, 0);
+  Kokkos::deep_copy(kern.rep_on, 0);
+  Kokkos::deep_copy(kern.atom_on, 0);
+  kern.stamp = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -729,8 +752,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   kern.yz = domain->yz;
 
   Kokkos::deep_copy(kern.flag, 0);
-  if (ncand) Kokkos::deep_copy(Kokkos::subview(kern.cand_on, std::make_pair(0, ncand)), 0);
-  if (nkey) Kokkos::deep_copy(Kokkos::subview(kern.kon, std::make_pair(0, nkey)), -1);
+  if (kern.stamp == MAXSMALLINT) clear_marks();
+  kern.stamp++;
   Kokkos::deep_copy(kern.ncontact, 0);
 
   // closest nodes, then the contacts of each node in the order of their pairs (they share its
@@ -1179,7 +1202,10 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
     seg_xl(3 * s + 2) = xl[2];
     KK_FLOAT val;
     for (int m = b; m < e; m++)
-      if ((cand_key(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) cand_on(m) = 1;
+      if ((cand_key(m) >= 0) && ws_find(cand_idx(m), bin, 1, val)) {
+        cand_on(m) = stamp;
+        rep_on(seg_q(s)) = stamp;
+      }
     return;
   }
 
@@ -1205,9 +1231,13 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   if (sflag & 2) {
     const tagint wtag = tag(cand_idx(win));
     for (int m = b; m < e; m++)
-      if ((tag(cand_idx(m)) == wtag) && (cand_key(m) >= 0)) cand_on(m) = 1;
+      if ((tag(cand_idx(m)) == wtag) && (cand_key(m) >= 0)) {
+        cand_on(m) = stamp;
+        rep_on(seg_q(s)) = stamp;
+      }
   } else if (cand_key(win) >= 0) {
-    cand_on(win) = 1;
+    cand_on(win) = stamp;
+    rep_on(seg_q(s)) = stamp;
   }
 }
 
@@ -1217,10 +1247,11 @@ template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMContact, const int q) const
 {
+  if (rep_on(q) != stamp) return;
   const int r = rep_atom(q);
   for (int k = rep_kbeg(q); k < rep_kbeg(q + 1); k++) {
     const int slot = rep_kslot(k);
-    if (!cand_on(slot)) continue;
+    if (cand_on(slot) != stamp) continue;
     const int c = cand_idx(slot);
     if (cand_owns(slot))
       contact(r, c, 1, cand_key(slot), slot);
@@ -1505,6 +1536,9 @@ void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of
   }
 
   kon(key) = c;
+  kstamp(key) = stamp;
+  atom_on(i) = stamp;
+  if (j < nlocal) atom_on(j) = stamp;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1513,11 +1547,12 @@ template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMGather, const int a) const
 {
+  if (atom_on(a) != stamp) return;
   for (int m = gat_beg(a); m < gat_beg(a + 1); m++) {
     const int ent = gat_ent(m);
     const int key = ent >> 1;
+    if (kstamp(key) != stamp) continue;
     const int c = kon(key);
-    if (c < 0) continue;
     if (ent & 1) {
       f(a, 0) += -kf(3 * c);
       f(a, 1) += -kf(3 * c + 1);
