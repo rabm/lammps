@@ -181,16 +181,18 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   // body of each atom
 
   {
-    std::vector<double> h_vol(ntotal), h_area(ntotal);
+    std::vector<double> h_vol(ntotal), h_area(ntotal), h_gbound(ntotal);
     std::vector<int> h_bid(ntotal), h_bidx(ntotal), h_boff(ntotal);
     for (int a = 0; a < ntotal; a++) {
       const BodyInfo &b = binfo[a];
+      h_gbound[a] = b.radius;
       h_vol[a] = b.vol;
       h_area[a] = b.area;
       h_bid[a] = b.bID;
       h_bidx[a] = b.bidx;
       h_boff[a] = b.off;
     }
+    upload(kern.gbound, h_gbound, "pair:gbound");
     upload(kern.vol, h_vol, "pair:vol");
     upload(kern.area, h_area, "pair:area");
     upload(kern.bid, h_bid, "pair:bid");
@@ -622,6 +624,26 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       kern.seg_bin = Kokkos::View<int *, DeviceType>("pair:seg_bin", MAX(nseg, 1));
       kern.seg_xl = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_xl", 3 * MAX(nseg, 1));
     }
+  }
+
+  // largest bound of the candidates of each segment, they are nodes of one grain
+
+  if ((int) kern.seg_bsq.extent(0) < MAX(nseg, 1))
+    kern.seg_bsq = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_bsq", MAX(nseg, 1));
+  {
+    auto gbound = kern.gbound;
+    auto seg_bsq = kern.seg_bsq;
+    auto seg_cbeg = kern.seg_cbeg;
+    auto cand_idx = kern.cand_idx;
+    Kokkos::parallel_for(Range(0, nseg), KOKKOS_LAMBDA(const int s) {
+      KK_FLOAT bmax = -1.0;
+      for (int m = seg_cbeg(s); m < seg_cbeg(s + 1); m++)
+        bmax = (gbound(cand_idx(m)) > bmax) ? gbound(cand_idx(m)) : bmax;
+      if (bmax < 0.0)
+        seg_bsq(s) = -1.0;
+      else
+        seg_bsq(s) = (bmax >= BIG) ? BIG : bmax * bmax;
+    });
   }
 
   if ((int) kern.cand_on.extent(0) < MAX(ncand, 1))
@@ -1182,6 +1204,19 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   const int first = seg_kmin(s);
   if (first < 0) return;
   if ((sflag & 1) && !use_nodes_of_i(r, cand_idx(first))) return;
+
+  // a node beyond the bound of the grain of the candidates has no contact with it, unless
+  //   it touched that grain before and its shear history has to be reset
+
+  if (seg_bsq(s) < BIG) {
+    const int c0 = cand_idx(first);
+    KK_FLOAT dx = x(r, 0) - xcom(c0, 0);
+    KK_FLOAT dy = x(r, 1) - xcom(c0, 1);
+    KK_FLOAT dz = x(r, 2) - xcom(c0, 2);
+    minimum_image(dx, dy, dz);
+    if ((dx * dx + dy * dy + dz * dz > seg_bsq(s)) && (d_ivector(touch_row, r) != bid(c0)))
+      return;
+  }
 
   // watershed: the bin of the node in the grid of the other grain is found once, from that
   //   candidate, each candidate owning it is a contact
