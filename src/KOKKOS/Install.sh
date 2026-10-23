@@ -645,7 +645,6 @@ action pair_lennard_mdf_kokkos.cpp pair_lennard_mdf.cpp
 action pair_lennard_mdf_kokkos.h pair_lennard_mdf.h
 action pair_ls_dem_kokkos.cpp pair_ls_dem.cpp
 action pair_ls_dem_kokkos.h pair_ls_dem.h
-action ls_dem_sort_kokkos.h pair_ls_dem.h
 action pair_meam_kokkos.cpp pair_meam.cpp
 action pair_meam_kokkos.h pair_meam.h
 action pair_meam_ms_kokkos.cpp pair_meam_ms.cpp
