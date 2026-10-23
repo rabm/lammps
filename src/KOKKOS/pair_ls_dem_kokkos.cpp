@@ -27,6 +27,7 @@
 #include "neigh_list_kokkos.h"
 #include "neigh_request.h"
 #include "neighbor.h"
+#include "output.h"
 #include "update.h"
 
 #include <Kokkos_NestedSort.hpp>
@@ -73,6 +74,7 @@ PairLSDEMKokkos<DeviceType>::PairLSDEMKokkos(LAMMPS *lmp) : PairLSDEM(lmp)
   kern.flag = Kokkos::View<int *, DeviceType>("pair:flag", 3);
   kern.flag_tag = Kokkos::View<tagint *, DeviceType>("pair:flag_tag", 5);
   kern.ncontact = Kokkos::View<int, DeviceType>("pair:ncontact");
+  kern.maxu = Kokkos::View<KK_FLOAT, DeviceType>("pair:maxu");
   kern.stamp = 0;
 }
 
@@ -109,6 +111,7 @@ template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::init_style()
 {
   PairLSDEM::init_style();
+  Kokkos::deep_copy(kern.maxu, 0.0);
 
   // half neighbor list with ghost atoms built by KOKKOS, the contact keys do not depend
   //   on its order, see build_segments()
@@ -803,6 +806,16 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     k_vatom.sync_host();
   }
 
+  // largest overlap, copied from the device only on the steps it is checked
+
+  if (!overlap_warned && (overlap_limit > 0.0) &&
+      ((update->ntimestep == output->next_thermo) || (update->ntimestep == update->laststep))) {
+    KK_FLOAT h_maxu = 0.0;
+    Kokkos::deep_copy(h_maxu, kern.maxu);
+    maxoverlap = h_maxu;
+  }
+  check_overlap();
+
   if (vflag_fdotr) pair_virial_fdotr_compute(this);
 }
 
@@ -1292,6 +1305,7 @@ void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of
     }
     return;
   }
+  Kokkos::atomic_max(&maxu(), u);
 
   const KK_FLOAT nsign = calc_force_of_i_on_j ? -1.0 : 1.0;
   normal[0] *= nsign;
