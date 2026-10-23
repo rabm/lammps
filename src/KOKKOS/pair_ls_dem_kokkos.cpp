@@ -58,6 +58,37 @@ static void upload(ViewType &d, const std::vector<T> &h, const char *name)
   Kokkos::deep_copy(Kokkos::subview(d, std::make_pair((size_t) 0, n)), h_view);
 }
 
+/* ----------------------------------------------------------------------
+   distance from the grain center beyond which the level set of a grid is positive:
+   the farthest grid point whose value is not clearly positive plus a cell diagonal,
+   since the value at a node is interpolated from the corners of its cell,
+   n values with grid index idx(m), -1 if no value is negative or close to zero
+------------------------------------------------------------------------- */
+
+template <class Index>
+static double grid_bound(const LSDEMExtra::GridInfo &g, int n, const double *values, Index idx)
+{
+  double maxabs = 0.0;
+  for (int m = 0; m < n; m++) maxabs = MAX(maxabs, fabs(values[m]));
+
+  // a corner value above this limit cannot give a negative value by roundoff
+
+  const double limit = 1.0e-9 * maxabs;
+  const int ng0 = g.ngrid[0];
+  const int ng1 = g.ngrid[1];
+  double rmaxsq = -1.0;
+  for (int m = 0; m < n; m++) {
+    if (values[m] > limit) continue;
+    const int bin = idx(m);
+    const double px = g.grid_min[0] + (bin % ng0) * g.stride;
+    const double py = g.grid_min[1] + ((bin / ng0) % ng1) * g.stride;
+    const double pz = g.grid_min[2] + (bin / (ng0 * ng1)) * g.stride;
+    rmaxsq = MAX(rmaxsq, px * px + py * py + pz * pz);
+  }
+  if (rmaxsq < 0.0) return -1.0;
+  return (sqrt(rmaxsq) + sqrt(3.0) * g.stride) * (1.0 + 1.0e-6);
+}
+
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType>
@@ -150,6 +181,7 @@ void PairLSDEMKokkos<DeviceType>::setup()
   // the grids may be recreated in each setup, so copy them again at the next reneighboring
 
   ggrid_offset.clear();
+  gbound_cache.clear();
   h_ggrid.clear();
   h_gwkey.clear();
 }
@@ -532,12 +564,21 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   std::vector<int> h_gstyle(ntotal, -1), h_gngrid(3 * ntotal, 0);
   std::vector<int> h_gnws(ntotal, 0), h_dwkey;
   std::vector<bigint> h_goff(ntotal, 0);
+  std::vector<double> h_gbound(ntotal, BIG);
   int newglobal = 0;
   LSDEMExtra::GridInfo g;
 
   // watershed bins of a node ordered by bin, a bin of its table is not also taken from its buffer
 
   std::vector<std::pair<int, double>> wsbin;
+  auto all = [](int m) { return m; };
+
+  // bound of the watershed bins of a node stored from off in keys and values
+
+  auto ws_bound = [&](bigint off, int n, const std::vector<int> &keys,
+                      const std::vector<double> &values) {
+    return grid_bound(g, n, values.data() + off, [&](int m) { return keys[off + m] >> 1; });
+  };
   auto add_ws = [&](std::vector<int> &keys, std::vector<double> &values) {
     wsbin.clear();
     for (const auto &e : *g.ws_table) wsbin.emplace_back(e.first, e.second);
@@ -586,9 +627,15 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         }
         h_goff[a] = it->second.first;
         h_gnws[a] = it->second.second;
+        auto ib = gbound_cache.find(g.ws_table);
+        if (ib == gbound_cache.end())
+          ib = gbound_cache.emplace(g.ws_table, ws_bound(it->second.first, it->second.second,
+                                                         h_gwkey, h_ggrid)).first;
+        h_gbound[a] = ib->second;
       } else {
         h_goff[a] = h_dgrid.size();
         h_gnws[a] = add_ws(h_dwkey, h_dgrid);
+        h_gbound[a] = ws_bound(h_goff[a], h_gnws[a], h_dwkey, h_dgrid);
       }
       continue;
     }
@@ -600,9 +647,14 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         newglobal = 1;
       }
       h_goff[a] = it->second.first;
+      auto ib = gbound_cache.find(g.values);
+      if (ib == gbound_cache.end())
+        ib = gbound_cache.emplace(g.values, grid_bound(g, g.nvalues, g.values, all)).first;
+      h_gbound[a] = ib->second;
     } else {
       h_goff[a] = h_dgrid.size();
       h_dgrid.insert(h_dgrid.end(), g.values, g.values + g.nvalues);
+      h_gbound[a] = grid_bound(g, g.nvalues, g.values, all);
     }
   }
 
@@ -612,6 +664,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   upload(kern.gstride, h_gstride, "pair:gstride");
   upload(kern.gscale, h_gscale, "pair:gscale");
   upload(kern.goff, h_goff, "pair:goff");
+  upload(kern.gbound, h_gbound, "pair:gbound");
   upload(kern.dgrid, h_dgrid, "pair:dgrid");
   if (newglobal || (kern.ggrid.extent(0) == 0)) upload(kern.ggrid, h_ggrid, "pair:ggrid");
   if (watershed_flag) {
@@ -622,6 +675,26 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
       kern.seg_bin = Kokkos::View<int *, DeviceType>("pair:seg_bin", MAX(nseg, 1));
       kern.seg_xl = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_xl", 3 * MAX(nseg, 1));
     }
+  }
+
+  // largest bound of the candidates of each segment, they are nodes of one grain
+
+  if ((int) kern.seg_bsq.extent(0) < MAX(nseg, 1))
+    kern.seg_bsq = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_bsq", MAX(nseg, 1));
+  {
+    auto gbound = kern.gbound;
+    auto seg_bsq = kern.seg_bsq;
+    auto seg_cbeg = kern.seg_cbeg;
+    auto cand_idx = kern.cand_idx;
+    Kokkos::parallel_for(Range(0, nseg), KOKKOS_LAMBDA(const int s) {
+      KK_FLOAT bmax = -1.0;
+      for (int m = seg_cbeg(s); m < seg_cbeg(s + 1); m++)
+        bmax = (gbound(cand_idx(m)) > bmax) ? gbound(cand_idx(m)) : bmax;
+      if (bmax < 0.0)
+        seg_bsq(s) = -1.0;
+      else
+        seg_bsq(s) = (bmax >= BIG) ? BIG : bmax * bmax;
+    });
   }
 
   if ((int) kern.cand_on.extent(0) < MAX(ncand, 1))
@@ -1182,6 +1255,19 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMSelect, const in
   const int first = seg_kmin(s);
   if (first < 0) return;
   if ((sflag & 1) && !use_nodes_of_i(r, cand_idx(first))) return;
+
+  // a node beyond the bound of the grain of the candidates has no contact with it, unless
+  //   it touched that grain before and its shear history has to be reset
+
+  if (seg_bsq(s) < BIG) {
+    const int c0 = cand_idx(first);
+    KK_FLOAT dx = x(r, 0) - xcom(c0, 0);
+    KK_FLOAT dy = x(r, 1) - xcom(c0, 1);
+    KK_FLOAT dz = x(r, 2) - xcom(c0, 2);
+    minimum_image(dx, dy, dz);
+    if ((dx * dx + dy * dy + dz * dz > seg_bsq(s)) && (d_ivector(touch_row, r) != bid(c0)))
+      return;
+  }
 
   // watershed: the bin of the node in the grid of the other grain is found once, from that
   //   candidate, each candidate owning it is a contact

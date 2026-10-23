@@ -102,6 +102,12 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<int *, DeviceType> cand_seg, seg_bin;
   Kokkos::View<KK_FLOAT *, DeviceType> seg_xl;
 
+  // gbound: distance from the center of the grain of each candidate beyond which its level set
+  //   is positive, seg_bsq: square of the largest one of the candidates of each segment
+  //   (-1: no contact anywhere, BIG: not known)
+
+  Kokkos::View<KK_FLOAT *, DeviceType> gbound, seg_bsq;
+
   // nodes with segments and their candidates in the order of the atoms of their pair
 
   Kokkos::View<int *, DeviceType> rep_atom, rep_kbeg, rep_kslot;
@@ -233,6 +239,7 @@ class PairLSDEMKokkos : public PairLSDEM {
   //   with their offset and number of watershed bins
 
   std::unordered_map<const void *, std::pair<bigint, int>> ggrid_offset;
+  std::unordered_map<const void *, double> gbound_cache;
   std::vector<double> h_ggrid;
   std::vector<int> h_gwkey;
 
