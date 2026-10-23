@@ -305,6 +305,7 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Compare squared distances against the squared cutoff so the closest-node
   // search avoids a sqrt for every neighbour pair (ordering is preserved).
   double maxcutsq = maxcut * maxcut;
+  const int exact = exact_order;
 
   // body info of local and ghost atoms only changes when the neighbor list is rebuilt
 
@@ -347,7 +348,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       // grains of equal volume choose whose nodes are used by their current positions,
       //   from the first candidate, with the exact order the one with a key and the lowest
       //   index, a segment without a key has no contacts
-      if (exact_order && (seg.cand[0].key < 0)) continue;
+      if (exact && (seg.cand[0].key < 0)) continue;
       const int ncand = seg.cand.size();
       const int c0 = seg.cand[0].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
@@ -379,19 +380,34 @@ void PairLSDEM::compute(int eflag, int vflag)
         continue;
       }
 
+      // separate loops, so the check of the exact order costs no time in the other one
       int win = -1;
       double minrsq = 0.0;
-      for (int m = 0; m < ncand; m++) {
-        const int c = seg.cand[m].idx;
-        delx = xitmp - x[c][0];
-        dely = yitmp - x[c][1];
-        delz = zitmp - x[c][2];
-        rsq = delx * delx + dely * dely + delz * delz;
-        if (rsq > maxcutsq) continue;
-        if ((win < 0) || (rsq < minrsq) ||
-            (exact_order && (rsq == minrsq) && (c < seg.cand[win].idx))) {
-          minrsq = rsq;
-          win = m;
+      if (exact) {
+        for (int m = 0; m < ncand; m++) {
+          const int c = seg.cand[m].idx;
+          delx = xitmp - x[c][0];
+          dely = yitmp - x[c][1];
+          delz = zitmp - x[c][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+          if ((win < 0) || (rsq < minrsq) || ((rsq == minrsq) && (c < seg.cand[win].idx))) {
+            minrsq = rsq;
+            win = m;
+          }
+        }
+      } else {
+        for (int m = 0; m < ncand; m++) {
+          const int c = seg.cand[m].idx;
+          delx = xitmp - x[c][0];
+          dely = yitmp - x[c][1];
+          delz = zitmp - x[c][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+          if ((win < 0) || (rsq < minrsq)) {
+            minrsq = rsq;
+            win = m;
+          }
         }
       }
       if (win < 0) continue;
