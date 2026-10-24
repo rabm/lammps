@@ -211,6 +211,40 @@ void PairLSDEM::build_rep_segments()
   auto segkey = [](int r, int bid, int off) {
     return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
   };
+
+  // level-set bound of the grain of each atom, the largest one of its nodes here
+  //   (see LSDEMExtra::grid_bound()), so it is the same for all candidates of a segment
+
+  std::vector<double> bound(ntotal);
+  {
+    std::unordered_map<int, double> grain_bound;
+    for (int a = 0; a < ntotal; a++) {
+      bound[a] = atom_grid_bound(a);
+      auto it = grain_bound.emplace(binfo[a].bID, bound[a]).first;
+      it->second = MAX(it->second, bound[a]);
+    }
+    for (int a = 0; a < ntotal; a++) bound[a] = grain_bound[binfo[a].bID];
+  }
+
+  // a node farther from the center of the other grain than its bound plus the skin cannot reach
+  //   it before the next reneighboring, since nodes and centers move less than half the skin,
+  //   so that segment would be skipped at each step (see compute()) and is not built,
+  //   unless the node still has shear history with that grain
+
+  double **x = atom->x;
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  const double skin = neighbor->skin;
+  auto near = [&](int r, int c) {
+    const double bnd = bound[c];
+    if ((bnd >= BIG) || (touch_id[r] == binfo[c].bID)) return true;
+    if (bnd < 0.0) return false;
+    double del[3] = {x[r][0] - grain_com[c][0], x[r][1] - grain_com[c][1],
+                     x[r][2] - grain_com[c][2]};
+    domain->minimum_image(FLERR, del);
+    return del[0] * del[0] + del[1] * del[1] + del[2] * del[2] <= (bnd + skin) * (bnd + skin);
+  };
+
   std::unordered_set<uint64_t> live;
   for (int ii = 0; ii < allnum; ii++) {
     const int i = ilist[ii];
@@ -227,8 +261,8 @@ void PairLSDEM::build_rep_segments()
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       if (ii >= inum) continue;
-      if (bi.vol <= bj.vol) live.insert(segkey(i, bj.bID, bj.off));
-      if (bi.vol >= bj.vol) live.insert(segkey(j, bi.bID, bi.off));
+      if ((bi.vol <= bj.vol) && near(i, j)) live.insert(segkey(i, bj.bID, bj.off));
+      if ((bi.vol >= bj.vol) && near(j, i)) live.insert(segkey(j, bi.bID, bi.off));
     }
   }
 
@@ -253,29 +287,27 @@ void PairLSDEM::build_rep_segments()
       if (special_lj[sbmask(j)] == 0) continue;
       j &= NEIGHMASK;
       const BodyInfo &bj = binfo[j];
+      const int sij = (bi.vol <= bj.vol) && near(i, j);
+      const int sji = (bi.vol >= bj.vol) && near(j, i);
+      if (!sij && !sji) continue;
       const int key = (ii < inum) ? ipair++ : -1;
       const int tie = (bi.vol == bj.vol);
-      if ((bi.vol <= bj.vol) && live.count(segkey(i, bj.bID, bj.off)))
+      if (sij && live.count(segkey(i, bj.bID, bj.off)))
         add_rep_candidate(i, bj.bID, bj.off, j, tie, key, 1);
-      if ((bi.vol >= bj.vol) && live.count(segkey(j, bi.bID, bi.off)))
+      if (sji && live.count(segkey(j, bi.bID, bi.off)))
         add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
 
-  // largest bound of the candidates of each segment, they are nodes of one grain
+  // bound of the grain of the candidates of each segment
 
-  std::vector<double> bound(ntotal, -2.0);
   for (int r = 0; r < ntotal; r++)
     for (Seg &seg : rep_segs[r]) {
-      double bmax = -1.0;
-      for (const Cand &cand : seg.cand) {
-        if (bound[cand.idx] < -1.5) bound[cand.idx] = atom_grid_bound(cand.idx);
-        bmax = MAX(bmax, bound[cand.idx]);
-      }
-      if (bmax < 0.0)
+      const double bnd = bound[seg.cand[0].idx];
+      if (bnd < 0.0)
         seg.bsq = -1.0;
       else
-        seg.bsq = (bmax >= BIG) ? BIG : bmax * bmax;
+        seg.bsq = (bnd >= BIG) ? BIG : bnd * bnd;
     }
 }
 
