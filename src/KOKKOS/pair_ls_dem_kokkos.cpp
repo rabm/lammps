@@ -213,19 +213,64 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   Kokkos::Array<double, 4> sp;
   for (int k = 0; k < 4; k++) sp[k] = force->special_lj[k];
 
+  // a node farther from the center of the other grain than its bound plus the skin cannot reach
+  //   it before the next reneighboring, since nodes and centers move less than half the skin,
+  //   so that segment would be skipped at each step (see TagPairLSDEMSelect) and is not built,
+  //   unless the node still has shear history with that grain
+
+  atomKK->sync(execution_space, X_MASK | XCOM_MASK | IVECTOR_MASK);
+  auto d_x = atomKK->k_x.view<DeviceType>();
+  auto d_xcom = atomKK->k_xcom.view<DeviceType>();
+  auto d_ivector = atomKK->k_ivector.template view<DeviceType>();
+  auto d_gbound = kern.gbound;
+  const int touch_row = index_ls_dem_touch_id;
+  const KK_FLOAT skin = neighbor->skin;
+  const Kernels box = kern;
+  auto near = [=] KOKKOS_FUNCTION (int r, int c) {
+    const KK_FLOAT bnd = d_gbound(c);
+    if ((bnd >= BIG) || (d_ivector(touch_row, r) == d_bid(c))) return true;
+    if (bnd < 0.0) return false;
+    KK_FLOAT dx = d_x(r, 0) - d_xcom(c, 0);
+    KK_FLOAT dy = d_x(r, 1) - d_xcom(c, 1);
+    KK_FLOAT dz = d_x(r, 2) - d_xcom(c, 2);
+    box.minimum_image(dx, dy, dz);
+    return dx * dx + dy * dy + dz * dz <= (bnd + skin) * (bnd + skin);
+  };
+
+  // segment of node i on the grain of j and of node j on the grain of i
+
+  auto seg_ij = [=] KOKKOS_FUNCTION (int i, int j) { return (d_vol(i) <= d_vol(j)) && near(i, j); };
+  auto seg_ji = [=] KOKKOS_FUNCTION (int i, int j) { return (d_vol(i) >= d_vol(j)) && near(j, i); };
+
   auto segkey = [] KOKKOS_FUNCTION (int r, int bid, int off) {
     return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
   };
 
-  // pairs of each atom without excluded pairs, those of local atoms are numbered in
-  //   the order of the list (their key), which is only used to find their contact
+  // pairs of each atom without excluded pairs and with a segment, those of local atoms are
+  //   numbered in the order of the list (their key), which is only used to find their contact
+  //   pseg: 1 if a pair has the segment of i on the grain of j, + 2 if that of j on the grain of i
 
+  Kokkos::View<unsigned char **, DeviceType> pseg(
+      Kokkos::view_alloc("pair:pseg", Kokkos::WithoutInitializing), d_neighbors.extent(0),
+      d_neighbors.extent(1));
   IView pbeg(Kokkos::view_alloc("pair:pbeg", Kokkos::WithoutInitializing), allnum + 1);
+  Kokkos::parallel_for(Range(0, allnum), KOKKOS_LAMBDA(const int ii) {
+    const int i = d_ilist(ii);
+    for (int jj = 0; jj < d_numneigh(i); jj++) {
+      int j = d_neighbors(i, jj);
+      unsigned char fl = 0;
+      if (sp[(j >> SBBITS) & 3] != 0.0) {
+        j &= NEIGHMASK;
+        fl = (seg_ij(i, j) ? 1 : 0) | (seg_ji(i, j) ? 2 : 0);
+      }
+      pseg(i, jj) = fl;
+    }
+  });
   bigint npair = 0;
   Kokkos::parallel_scan(Range(0, allnum), KOKKOS_LAMBDA(const int ii, bigint &upd, const bool fin) {
     const int i = d_ilist(ii);
     int n = 0;
-    for (int jj = 0; jj < d_numneigh(i); jj++) n += (sp[(d_neighbors(i, jj) >> SBBITS) & 3] != 0.0);
+    for (int jj = 0; jj < d_numneigh(i); jj++) n += (pseg(i, jj) != 0);
     if (fin) pbeg(ii) = upd;
     upd += n;
   }, npair);
@@ -248,14 +293,12 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     Kokkos::parallel_reduce(Range(0, inum), KOKKOS_LAMBDA(const int ii, int &fail) {
       const int i = d_ilist(ii);
       for (int jj = 0; jj < d_numneigh(i); jj++) {
-        int j = d_neighbors(i, jj);
-        if (sp[(j >> SBBITS) & 3] == 0.0) continue;
-        j &= NEIGHMASK;
-        if (d_vol(i) <= d_vol(j)) {
+        const int j = d_neighbors(i, jj) & NEIGHMASK;
+        if (pseg(i, jj) & 1) {
           fail += live.insert(segkey(i, d_bid(j), d_off(j))).failed();
           kept(i) = 1;
         }
-        if (d_vol(i) >= d_vol(j)) {
+        if (pseg(i, jj) & 2) {
           fail += live.insert(segkey(j, d_bid(i), d_off(i))).failed();
           kept(j) = 1;
         }
@@ -274,11 +317,9 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   Kokkos::parallel_for(Range(0, allnum), KOKKOS_LAMBDA(const int ii) {
     const int i = d_ilist(ii);
     for (int jj = 0; jj < d_numneigh(i); jj++) {
-      int j = d_neighbors(i, jj);
-      if (sp[(j >> SBBITS) & 3] == 0.0) continue;
-      j &= NEIGHMASK;
-      if ((d_vol(i) <= d_vol(j)) && is_kept(ii, i, j)) Kokkos::atomic_inc(&rbeg(i));
-      if ((d_vol(i) >= d_vol(j)) && is_kept(ii, j, i)) Kokkos::atomic_inc(&rbeg(j));
+      const int j = d_neighbors(i, jj) & NEIGHMASK;
+      if ((pseg(i, jj) & 1) && is_kept(ii, i, j)) Kokkos::atomic_inc(&rbeg(i));
+      if ((pseg(i, jj) & 2) && is_kept(ii, j, i)) Kokkos::atomic_inc(&rbeg(j));
     }
   });
   bigint nrec = 0;
@@ -313,17 +354,18 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     const int i = d_ilist(ii);
     int n = 0;
     for (int jj = 0; jj < d_numneigh(i); jj++) {
-      int j = d_neighbors(i, jj);
-      if (sp[(j >> SBBITS) & 3] == 0.0) continue;
-      j &= NEIGHMASK;
+      const int j = d_neighbors(i, jj) & NEIGHMASK;
+      const int sij = pseg(i, jj) & 1;
+      const int sji = pseg(i, jj) & 2;
+      if (!sij && !sji) continue;
       const int key = (ii < inum) ? pbeg(ii) + n : -1;
       n++;
-      if ((d_vol(i) <= d_vol(j)) && is_kept(ii, i, j)) {
+      if (sij && is_kept(ii, i, j)) {
         const int m = rbeg(i) + Kokkos::atomic_fetch_add(&rfill(i), 1);
         cand_idx(m) = j;
         cand_pk(m) = 2 * key + 1;
       }
-      if ((d_vol(i) >= d_vol(j)) && is_kept(ii, j, i)) {
+      if (sji && is_kept(ii, j, i)) {
         const int m = rbeg(j) + Kokkos::atomic_fetch_add(&rfill(j), 1);
         cand_idx(m) = i;
         cand_pk(m) = 2 * key;
@@ -331,6 +373,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     }
   });
   rfill = IView();
+  pseg = decltype(pseg)();
 
   // candidates of each node sorted by grain, offset, tag and atom index (unique),
   //   so the images of a node with the same tag are next to each other;
@@ -702,6 +745,22 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   const int nlocal = atom->nlocal;
   const int ntotal = nlocal + atom->nghost;
 
+  // box for the minimum image, also used to build the segments
+
+  kern.triclinic = domain->triclinic;
+  kern.xperiodic = domain->xperiodic;
+  kern.yperiodic = domain->yperiodic;
+  kern.zperiodic = domain->zperiodic;
+  kern.xprd = domain->xprd;
+  kern.yprd = domain->yprd;
+  kern.zprd = domain->zprd;
+  kern.xprd_half = domain->xprd_half;
+  kern.yprd_half = domain->yprd_half;
+  kern.zprd_half = domain->zprd_half;
+  kern.xy = domain->xy;
+  kern.xz = domain->xz;
+  kern.yz = domain->yz;
+
   // body info and candidate nodes only change when the neighbor list is rebuilt
 
   if ((neighbor->lastcall != segs_lastbuild) || ((int) binfo.size() < ntotal)) {
@@ -750,19 +809,6 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   kern.vflag_either = vflag_either;
   kern.vflag_atom = vflag_atom;
   kern.watershed = watershed_flag;
-  kern.triclinic = domain->triclinic;
-  kern.xperiodic = domain->xperiodic;
-  kern.yperiodic = domain->yperiodic;
-  kern.zperiodic = domain->zperiodic;
-  kern.xprd = domain->xprd;
-  kern.yprd = domain->yprd;
-  kern.zprd = domain->zprd;
-  kern.xprd_half = domain->xprd_half;
-  kern.yprd_half = domain->yprd_half;
-  kern.zprd_half = domain->zprd_half;
-  kern.xy = domain->xy;
-  kern.xz = domain->xz;
-  kern.yz = domain->yz;
 
   Kokkos::deep_copy(kern.flag, 0);
   if (kern.stamp == MAXSMALLINT) clear_marks();
