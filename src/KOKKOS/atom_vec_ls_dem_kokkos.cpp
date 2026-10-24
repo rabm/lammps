@@ -50,8 +50,11 @@ void AtomVecLSDEMKokkos::init()
 
 void AtomVecLSDEMKokkos::grow(int n)
 {
+  // grow by a quarter: each grow syncs all per-atom arrays to the device and back,
+  //   so growing by 1 % made create_atoms of many atoms sync them hundreds of times
+
   auto DELTA = LMP_KOKKOS_AV_DELTA;
-  int step = MAX(DELTA,nmax*0.01);
+  int step = MAX(DELTA,nmax/4);
   if (n == 0) nmax += step;
   else nmax = n;
   atom->nmax = nmax;
