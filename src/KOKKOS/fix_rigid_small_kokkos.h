@@ -188,6 +188,7 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   IntView1D d_atom2body;
   ImageIntView1D d_xcmimage;
   View2D d_displace, d_vatom, d_langextra;
+  View2D d_cvatom;    // per-atom centroid virial, device only (not migrated)
 
   // extended-particle per-atom data (tied DualViews), only allocated when the
   // body contains finite-size particles (sphere/ellipsoid/line/tri/dipole).
