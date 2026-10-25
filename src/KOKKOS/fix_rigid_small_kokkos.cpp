@@ -915,7 +915,11 @@ void FixRigidSmallKokkos<DeviceType>::initial_integrate(int vflag)
 
   // the per-atom virial is a dual view grown in grow_arrays(), so the plain
   // base-class array must not be allocated (alloc = 0)
+  // v_init() with alloc = 0 raises maxcvatom without growing cvatom, so keep
+  // the old value; set_xv_kokkos() grows the host cvatom itself
+  int maxcvatom_old = maxcvatom;
   v_init(vflag,0);
+  maxcvatom = maxcvatom_old;
 
   // forward communicate updated info of all bodies
 
@@ -1408,15 +1412,6 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
 {
   Kokkos::Profiling::pushRegion("rigid/small set_xv");
 
-  // The per-atom centroid virial (cvatom) is filled on the host by the base
-  // Fix::v_tally and has no tied device buffer, so the device set_xv kernel
-  // cannot accumulate it without dereferencing a host pointer on the device.
-  // Refuse rather than crash on GPU / silently corrupt.  The global and the
-  // ordinary per-atom virial (d_vatom) are fully supported.
-  if (cvflag_atom)
-    error->all(FLERR,"fix rigid/small/kk does not support the per-atom centroid "
-               "stress (e.g. compute centroid/stress/atom); use the non-Kokkos style");
-
   this->xprd = domain->xprd;
   this->yprd = domain->yprd;
   this->zprd = domain->zprd;
@@ -1478,6 +1473,18 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
     Kokkos::deep_copy(d_vatom, 0.0);
     k_vatom.modify_device();
   }
+  // The per-atom centroid virial is summed on the device in d_cvatom and copied
+  // to the host cvatom after each half.  Like the host cvatom it is not moved
+  // with the atoms, since it is only needed between set_xv() and set_v().
+  if (evflag && cvflag_atom) {
+    if ((int) d_cvatom.extent(0) < nlocal) Kokkos::resize(d_cvatom, atom->nmax, 9);
+    if (setxflag) Kokkos::deep_copy(d_cvatom, 0.0);
+    if (maxcvatom < nlocal) {
+      maxcvatom = atom->nmax;
+      memory->destroy(cvatom);
+      memory->create(cvatom, maxcvatom, 9, "fix:cvatom");
+    }
+  }
   copymode = 1;
   if (setxflag) {
     Kokkos::parallel_reduce("fix rigid/small setxv", Kokkos::RangePolicy<DeviceType, TagSetXV<1>>(0, nlocal), *this, ev);
@@ -1496,6 +1503,12 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
       // d_vatom aliases the host vatom[] buffer (tied DualView); flush to host
       k_vatom.modify_device();
       k_vatom.sync_host();
+    }
+    if (cvflag_atom && nlocal > 0) {
+      Kokkos::View<double**, Kokkos::LayoutRight, LMPHostType,
+                   Kokkos::MemoryTraits<Kokkos::Unmanaged>> h_cvatom(cvatom[0], nlocal, 9);
+      Kokkos::deep_copy(h_cvatom, Kokkos::subview(d_cvatom, std::make_pair(0, nlocal),
+                                                  Kokkos::ALL()));
     }
   }
   atomKK->modified(execution_space, datamask_modify);
@@ -3266,11 +3279,21 @@ void FixRigidSmallKokkos<DeviceType>::copy_body_device(){
 template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 void FixRigidSmallKokkos<DeviceType>::v_tally(EV_FLOAT &ev, int i, double vtot[6], double r[3], double f[3], double center[3]) const{
-  // the centroid (r, f, center) arguments are only needed for the per-atom
-  // centroid virial, which is unsupported on the device and rejected up front
-  // in set_xv_kokkos(); here we only tally the global / ordinary per-atom virial
-  (void) r; (void) f; (void) center;
   v_tally(ev, i, vtot);
+
+  // per-atom centroid virial, same order of terms as Fix::v_tally()
+  if (cvflag_atom) {
+    const double ri0[3] = {r[0]-center[0], r[1]-center[1], r[2]-center[2]};
+    d_cvatom(i,0) += ri0[0]*f[0];
+    d_cvatom(i,1) += ri0[1]*f[1];
+    d_cvatom(i,2) += ri0[2]*f[2];
+    d_cvatom(i,3) += ri0[0]*f[1];
+    d_cvatom(i,4) += ri0[0]*f[2];
+    d_cvatom(i,5) += ri0[1]*f[2];
+    d_cvatom(i,6) += ri0[1]*f[0];
+    d_cvatom(i,7) += ri0[2]*f[0];
+    d_cvatom(i,8) += ri0[2]*f[1];
+  }
 }
 
 template<class DeviceType>
