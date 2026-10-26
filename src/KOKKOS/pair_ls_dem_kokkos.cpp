@@ -717,7 +717,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     kern.kf = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kf", 3 * MAX(maxcontact, 1));
     kern.kti = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kti", 3 * MAX(maxcontact, 1));
     kern.ktj = Kokkos::View<KK_FLOAT *, DeviceType>("pair:ktj", 3 * MAX(maxcontact, 1));
-    kern.kv = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kv", 6 * MAX(maxcontact, 1));
+    kern.kv = Kokkos::View<KK_FLOAT *, DeviceType>("pair:kv", 12 * MAX(maxcontact, 1));
     kern.kij = Kokkos::View<int *, DeviceType>("pair:kij", 2 * MAX(maxcontact, 1));
   }
 }
@@ -867,7 +867,7 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       auto h_kij = Kokkos::create_mirror_view_and_copy(
           LMPHostType::memory_space(), Kokkos::subview(kern.kij, std::make_pair(0, 2 * nc)));
       auto h_kv = Kokkos::create_mirror_view_and_copy(
-          LMPHostType::memory_space(), Kokkos::subview(kern.kv, std::make_pair(0, 6 * nc)));
+          LMPHostType::memory_space(), Kokkos::subview(kern.kv, std::make_pair(0, 12 * nc)));
       std::vector<int> order(nc);
       for (int c = 0; c < nc; c++) order[c] = c;
       std::sort(order.begin(), order.end(), [&](int a, int b) {
@@ -875,9 +875,9 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
           ((h_kij(2 * a) == h_kij(2 * b)) && (h_kij(2 * a + 1) < h_kij(2 * b + 1)));
       });
       for (const int c : order) {
-        for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
+        for (int n = 0; n < 6; n++) virial[n] += h_kv(12 * c + n);
         if (h_kij(2 * c + 1) < nlocal)
-          for (int n = 0; n < 6; n++) virial[n] += 0.5 * h_kv(6 * c + n);
+          for (int n = 0; n < 6; n++) virial[n] += h_kv(12 * c + 6 + n);
       }
     }
   }
@@ -1618,18 +1618,28 @@ void PairLSDEMKernelsKokkos<DeviceType>::contact(int i, int j, int calc_force_of
     ktj(3 * c + 2) = torque_pair[2];
   }
 
-  // virial of ev_tally_xyz() with the force on j if j is local, else on i
+  // virial of the contact split at the contact point as in pair ls/dem: (x_i - contact point)
+  //   x F for node i and (contact point - x_j) x F for node j, with F the force on i
 
   if (vflag_either) {
-    const KK_FLOAT delx = normal[0] * u;
-    const KK_FLOAT dely = normal[1] * u;
-    const KK_FLOAT delz = normal[2] * u;
-    kv(6 * c) = delx * fpair[0];
-    kv(6 * c + 1) = dely * fpair[1];
-    kv(6 * c + 2) = delz * fpair[2];
-    kv(6 * c + 3) = delx * fpair[1];
-    kv(6 * c + 4) = delx * fpair[2];
-    kv(6 * c + 5) = dely * fpair[2];
+    const KK_FLOAT dix = x(i, 0) - contact_point[0];
+    const KK_FLOAT diy = x(i, 1) - contact_point[1];
+    const KK_FLOAT diz = x(i, 2) - contact_point[2];
+    const KK_FLOAT djx = contact_point[0] - x(j, 0);
+    const KK_FLOAT djy = contact_point[1] - x(j, 1);
+    const KK_FLOAT djz = contact_point[2] - x(j, 2);
+    kv(12 * c) = dix * kf(3 * c);
+    kv(12 * c + 1) = diy * kf(3 * c + 1);
+    kv(12 * c + 2) = diz * kf(3 * c + 2);
+    kv(12 * c + 3) = dix * kf(3 * c + 1);
+    kv(12 * c + 4) = dix * kf(3 * c + 2);
+    kv(12 * c + 5) = diy * kf(3 * c + 2);
+    kv(12 * c + 6) = djx * kf(3 * c);
+    kv(12 * c + 7) = djy * kf(3 * c + 1);
+    kv(12 * c + 8) = djz * kf(3 * c + 2);
+    kv(12 * c + 9) = djx * kf(3 * c + 1);
+    kv(12 * c + 10) = djx * kf(3 * c + 2);
+    kv(12 * c + 11) = djy * kf(3 * c + 2);
   }
 
   kon(key) = c;
@@ -1665,8 +1675,10 @@ void PairLSDEMKernelsKokkos<DeviceType>::operator()(TagPairLSDEMGather, const in
       torque(a, 1) += kti(3 * c + 1);
       torque(a, 2) += kti(3 * c + 2);
     }
-    if (vflag_atom)
-      for (int n = 0; n < 6; n++) vatom(a, n) += 0.5 * kv(6 * c + n);
+    if (vflag_atom) {
+      const int off = (ent & 1) ? 12 * c + 6 : 12 * c;
+      for (int n = 0; n < 6; n++) vatom(a, n) += kv(off + n);
+    }
   }
 }
 
