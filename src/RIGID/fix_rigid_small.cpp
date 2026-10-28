@@ -79,6 +79,7 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   stores_ids = 1;
   centroidstressflag = CENTROID_AVAIL;
   n_extra_attributes = 0;
+  extra_extent = 0;
 
   // perform initial allocation of atom-based arrays
   // register with Atom class
@@ -644,15 +645,21 @@ void FixRigidSmall::setup(int vflag)
   const int nlocal = atom->nlocal;
 
   // error if maxextent > comm->cutghost
+  //   if extra_extent is set, error if maxextent + extra_extent > cutghost
   // NOTE: could just warn if an override flag set
   // NOTE: this could fail for comm multi mode if user sets a wrong cutoff
   //       for atom types in rigid bodies - need a more careful test
   // must check here, not in init, b/c neigh/comm values set after fix init
 
   double cutghost = MAX(neighbor->cutneighmax,comm->cutghostuser);
-  if (maxextent > cutghost)
-    error->all(FLERR, Error::NOLASTLINE,
-               "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
+  if (maxextent + extra_extent > cutghost) {
+    if (extra_extent > 0)
+      error->all(FLERR, Error::NOLASTLINE,
+                 "Rigid body extent {} + extra_extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent, extra_extent);
+    else
+      error->all(FLERR, Error::NOLASTLINE,
+                 "Rigid body extent {} > ghost atom cutoff - use comm_modify cutoff", maxextent);
+  }
 
   if (langflag && (nlocal_body > maxlang)) {
     memory->destroy(langextra);

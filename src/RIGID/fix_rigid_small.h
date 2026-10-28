@@ -104,6 +104,7 @@ class FixRigidSmall : public Fix {
   int nlinear;         // total # of linear rigid bodies
   tagint maxmol;       // max mol-ID
   double maxextent;    // furthest distance from body owner to body atom
+  double extra_extent; // extra distance beyond maxextent
 
   Body *body;         // list of rigid bodies, owned and ghost
   int nlocal_body;    // # of owned rigid bodies

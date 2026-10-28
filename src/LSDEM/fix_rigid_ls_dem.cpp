@@ -263,59 +263,6 @@ void FixRigidLSDEM::init()
     }
   }
 
-  // grain extent: twice the largest distance of a node from the centroid of its body,
-  //   the nodes of a body can be on several ranks, so the centroids and the maximum are reduced
-
-  double grain_extent = 0.0;
-  {
-    double **xatom = atom->x;
-    imageint *image = atom->image;
-    int nlocal_atoms = atom->nlocal;
-    double unwrap[3];
-    std::vector<double> csum(4 * nbody, 0.0), call(4 * nbody, 0.0);
-    for (int i = 0; i < nlocal_atoms; i++) {
-      if (!(atom->mask[i] & groupbit) || (body[i] < 0)) continue;
-      domain->unmap(xatom[i], image[i], unwrap);
-      for (int d = 0; d < 3; d++) csum[4 * body[i] + d] += unwrap[d];
-      csum[4 * body[i] + 3] += 1.0;
-    }
-    MPI_Allreduce(csum.data(), call.data(), 4 * nbody, MPI_DOUBLE, MPI_SUM, world);
-
-    double rmaxsq = 0.0, rmaxsq_all = 0.0;
-    for (int i = 0; i < nlocal_atoms; i++) {
-      if (!(atom->mask[i] & groupbit) || (body[i] < 0)) continue;
-      const double *c = &call[4 * body[i]];
-      domain->unmap(xatom[i], image[i], unwrap);
-      double del[3];
-      for (int d = 0; d < 3; d++) del[d] = unwrap[d] - c[d] / c[3];
-      rmaxsq = MAX(rmaxsq, MathExtra::lensq3(del));
-    }
-    MPI_Allreduce(&rmaxsq, &rmaxsq_all, 1, MPI_DOUBLE, MPI_MAX, world);
-    grain_extent = 2.0 * sqrt(rmaxsq_all);
-  }
-
-  // atoms of a contact partner find the atom that owns their body through the ghost atoms,
-  //   so the communication cutoff must reach the pair cutoff plus the grain extent;
-  //   set it if the user did not give one with comm_modify cutoff, otherwise warn if it is too short
-
-  if (grain_extent > 0.0) {
-    double need = maxcut + grain_extent;
-    if (comm->cutghostuser == 0.0) {
-      comm->cutghostuser = need;
-      if (comm->me == 0)
-        utils::logmesg(lmp,
-                       "fix {}: auto communication cutoff = {:.8g} (grain extent {:.8g} + pair "
-                       "cutoff {:.8g})\n",
-                       style, need, grain_extent, maxcut);
-    } else if ((comm->cutghostuser < need) && (comm->me == 0)) {
-      error->warning(
-          FLERR,
-          "Fix {} communication cutoff {:.8g} is shorter than the grain extent "
-          "{:.8g} plus the pair cutoff {:.8g}, so atoms may not find the atom that owns their body",
-          style, comm->cutghostuser, grain_extent, maxcut);
-    }
-  }
-
   // ------------------------------ //
   // Allocate memory for level sets //
   // ------------------------------ //
