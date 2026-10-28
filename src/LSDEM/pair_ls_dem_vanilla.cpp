@@ -66,7 +66,7 @@ PairLSDEMVanilla::~PairLSDEMVanilla()
 
 void PairLSDEMVanilla::compute(int eflag, int vflag)
 {
-  int i, j, i2, j2, ii, jj, allnum, inum, jnum, ibody, jbody, ibodyID, jbodyID, jbodyID2;
+  int i, j, i2, j2, ii, jj, allnum, inum, jnum, ibody, jbody, ibodyID, jbodyID;
   int maxbodyID_i, maxbodyID_j, offset_i, offset_j, tmp_bin;
   int *ilist, *jlist, *numneigh, **firstneigh;
   double rsq, delx, dely, delz, xitmp, yitmp, zitmp, ivol, jvol, x_local[3];
@@ -113,6 +113,12 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
+  std::unordered_map<long, int> use_i_map;
+  use_i_map.reserve(static_cast<size_t>(4) * allnum);
+  long ibodykey, jbodykey;
+  int use_i;
+  long stride = 2 * MAX(maxbodyID_large, maxbodyID_small) + 2;
+
   // Loop over local + ghost atoms to find closest neighbors
   if (watershed_flag == 0) {
 
@@ -122,21 +128,29 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
     for (ii = 0; ii < allnum; ii++) {
       // Loop through local nodes
       i = ilist[ii];
-      xitmp = x[i][0];
-      yitmp = x[i][1];
-      zitmp = x[i][2];
+
       if (fix_rigid && (mask[i] & groupbit_large)) {
+        ibody = mybody_large[i];
         ibodyID = mybody_large[i];
         maxbodyID_i = maxbodyID_large;
+        ivol = grain_vol[ibody];
         offset_i = 0;
       } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
+        ibody = mybody_small[i];
         ibodyID = (int) molecule[i]; // could also use bodytag
         maxbodyID_i = maxbodyID_small;
+        ivol = bodyLS[ibody].grid_vol;
         offset_i = 1;
       } else {
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
       }
+
       itag = tag[i];
+      xitmp = x[i][0];
+      yitmp = x[i][1];
+      zitmp = x[i][2];
+      ibodykey = 2 * ibodyID + offset_i;
+
       jlist = firstneigh[i];
       jnum = numneigh[i];
 
@@ -145,35 +159,51 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         if (special_lj[sbmask(j)] == 0) continue;
         j &= NEIGHMASK;
 
+        delx = xitmp - x[j][0];
+        dely = yitmp - x[j][1];
+        delz = zitmp - x[j][2];
+        rsq = delx * delx + dely * dely + delz * delz;
+        if (rsq > maxcutsq) continue;
+
         if (fix_rigid && (mask[j] & groupbit_large)) {
+          jbody = mybody_large[j];
           jbodyID = mybody_large[j];
           maxbodyID_j = maxbodyID_large;
+          jvol = grain_vol[jbody];
           offset_j = 0;
         } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
+          jbody = mybody_small[j];
           jbodyID = (int) molecule[j];
           maxbodyID_j = maxbodyID_small;
+          jvol = bodyLS[jbody].grid_vol;
           offset_j = 1;
         } else {
           error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
         }
 
         jtag = tag[j];
+        jbodykey = 2 * jbodyID + offset_j;
+        key = stride * ibodykey + jbodykey;
 
-        delx = xitmp - x[j][0];
-        dely = yitmp - x[j][1];
-        delz = zitmp - x[j][2];
-        rsq = delx * delx + dely * dely + delz * delz;
-
-        if (rsq > maxcutsq) continue;
-
-        key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
-        if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first) {
-          min_distances[key] = std::make_pair(rsq, std::make_pair(i, j));
+        if (use_i_map.find(key) != use_i_map.end()) {
+          use_i = use_i_map[key];
+        } else {
+          use_i = use_nodes_of_i(i, j, ivol, jvol);
+          use_i_map[key] = use_i;
+          key = stride * jbodykey + ibodykey;
+          use_i_map[key] = 1 - use_i;
         }
 
-        key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
-        if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first) {
-          min_distances[key] = std::make_pair(rsq, std::make_pair(i, j));
+        if (use_i) {
+          // node i probes body j
+          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+          if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first)
+            min_distances[key] = std::make_pair(rsq, std::make_pair(i, j));
+        } else {
+          // node j probes body i
+          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
+          if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first)
+            min_distances[key] = std::make_pair(rsq, std::make_pair(j, i));
         }
       }
     }
@@ -186,52 +216,50 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
 
       if (fix_rigid && (mask[i] & groupbit_large)) {
         ibody = mybody_large[i];
-        ivol = grain_vol[ibody];
       } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
         ibody = mybody_small[i];
-        ivol = bodyLS[ibody].grid_vol;
       }
 
       if (fix_rigid && (mask[j] & groupbit_large)) {
         jbody = mybody_large[j];
-        jvol = grain_vol[jbody];
       } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
         jbody = mybody_small[j];
-        jvol = bodyLS[jbody].grid_vol;
       }
 
-      if (use_nodes_of_i(i, j, ivol, jvol)) {
-        i2 = i;
-        j2 = j;
-      } else {
-        i2 = j;
-        j2 = i;
-      }
-
-      process_contact(i2, j2, -1, x_local);
+      process_contact(i, j, -1, x_local);
     }
   } else {
     std::unordered_set<long> found_watershed;
-    std::vector<std::unordered_map<int, std::tuple<int, double, double, double>>> saved_bins;
+    std::vector<std::unordered_map<long, std::tuple<int, double, double, double>>> saved_bins;
     int ntotal = atom->nlocal + atom->nghost;
     saved_bins.resize(ntotal);
+    long jbodykey2;
 
     for (ii = 0; ii < allnum; ii++) {
       // Loop through local nodes
       i = ilist[ii];
       if (fix_rigid && (mask[i] & groupbit_large)) {
         ibody = mybody_large[i];
+        maxbodyID_i = maxbodyID_large;
         ibodyID = mybody_large[i];
         ivol = grain_vol[ibody];
+        offset_i = 0;
       } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
         ibody = mybody_small[i];
+        maxbodyID_i = maxbodyID_small;
         ibodyID = (int) molecule[i];
         ivol = bodyLS[ibody].grid_vol;
+        offset_i = 1;
       } else {
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
       }
 
       itag = tag[i];
+      xitmp = x[i][0];
+      yitmp = x[i][1];
+      zitmp = x[i][2];
+      ibodykey = 2 * ibodyID + offset_i;
+
       jlist = firstneigh[i];
       jnum = numneigh[i];
 
@@ -239,6 +267,12 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         j = jlist[jj];
         if (special_lj[sbmask(j)] == 0) continue;
         j &= NEIGHMASK;
+
+        delx = xitmp - x[j][0];
+        dely = yitmp - x[j][1];
+        delz = zitmp - x[j][2];
+        rsq = delx * delx + dely * dely + delz * delz;
+        if (rsq > maxcutsq) continue;
 
         if (fix_rigid && (mask[j] & groupbit_large)) {
           jbody = mybody_large[j];
@@ -256,35 +290,47 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
           error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
         }
 
-        if (use_nodes_of_i(i, j, ivol, jvol)) {
+        jbodykey = 2 * jbodyID + offset_j;
+        key = stride * ibodykey + jbodykey;
+
+        if (use_i_map.find(key) != use_i_map.end()) {
+          use_i = use_i_map[key];
+        } else {
+          use_i = use_nodes_of_i(i, j, ivol, jvol);
+          use_i_map[key] = use_i;
+          key = stride * jbodykey + ibodykey;
+          use_i_map[key] = 1 - use_i;
+        }
+
+        if (use_i) {
           i2 = i;
           j2 = j;
-          jbodyID2 = jbodyID;
-          key = 2 * (maxbodyID_j * itag + jbodyID2) + offset_j;
+          jbodykey2 = jbodykey;
+          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
         } else {
           i2 = j;
           j2 = i;
-          jbodyID2 = ibodyID;
-          key = 2 * (maxbodyID_i * tag[j] + jbodyID2) + offset_i;
+          jbodykey2 = ibodykey;
+          key = 2 * (maxbodyID_i * tag[j] + ibodyID) + offset_i;
         }
 
         // Skip if we've already found the watershed for atom i2 on j2's body
         if (found_watershed.find(key) != found_watershed.end()) continue;
 
         // Check if I already calculated bin for atom i2 on j2's body
-        if (saved_bins[i2].find(jbodyID2) == saved_bins[i2].end()) {
+        if (saved_bins[i2].find(jbodykey2) == saved_bins[i2].end()) {
           if (fix_rigid && (mask[j2] & groupbit_large))
             tmp_bin = fix_rigid->get_bin(i2, j2, x_local);
           else if (fix_rigid_small && (mask[j2] & groupbit_small))
             tmp_bin = fix_rigid_small->get_bin(i2, j2, x_local);
           else
             error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-          saved_bins[i2][jbodyID2] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
+          saved_bins[i2][jbodykey2] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
         } else {
-          tmp_bin = std::get<0>(saved_bins[i2][jbodyID2]);
-          x_local[0] = std::get<1>(saved_bins[i2][jbodyID2]);
-          x_local[1] = std::get<2>(saved_bins[i2][jbodyID2]);
-          x_local[2] = std::get<3>(saved_bins[i2][jbodyID2]);
+          tmp_bin = std::get<0>(saved_bins[i2][jbodykey2]);
+          x_local[0] = std::get<1>(saved_bins[i2][jbodykey2]);
+          x_local[1] = std::get<2>(saved_bins[i2][jbodykey2]);
+          x_local[2] = std::get<3>(saved_bins[i2][jbodykey2]);
         }
 
         // Check if j2 owns this watershed bin
