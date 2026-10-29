@@ -26,6 +26,8 @@ PairStyle(ls/dem/vanilla,PairLSDEMVanilla);
 #include "fix_rigid_ls_dem.h"
 #include "fix_rigid_small_ls_dem.h"
 
+#include <unordered_set>
+
 namespace LAMMPS_NS {
 
 class PairLSDEMVanilla : public PairLSDEM {
@@ -40,6 +42,7 @@ class PairLSDEMVanilla : public PairLSDEM {
   double *node_area;
   FixRigidSmallLSDEM::BodyLS *bodyLS;
 
+  std::vector<std::unordered_set<int>> checked_bins;
 
   void process_contact(int, int, int, double *);
 };

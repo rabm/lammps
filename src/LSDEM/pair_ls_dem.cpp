@@ -410,7 +410,7 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
                                 double *x_local)
 {
   int itype, jtype, ibody, jbody, ibodyID, jbodyID;
-  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, evdwl, u;
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, u;
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp;
   double icomx, icomy, icomz, jcomx, jcomy, jcomz;
   double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
@@ -436,7 +436,6 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
   double **grain_com = atom->xcom;
   double **grain_omega = atom->omega;
 
-  evdwl = 0.0;
   itype = type[i];
   jtype = type[j];
   xitmp = x[i][0];
@@ -829,6 +828,31 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
                tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
 #endif
 
+  // Virial of the contact split at the contact point: node i gets (x_i - contact point) x F
+  //   and node j gets (contact point - x_j) x F, with F the force on i, each on the rank that
+  //   owns it. The sum is (x_i - x_j) x F, as the constraint virial of the rigid fixes uses the
+  //   atom positions, and per grain the centroid stress sums to the contact point stress.
+  if (evflag) {
+    const double deli[3] = {x[i][0] - contact_point[0], x[i][1] - contact_point[1],
+                            x[i][2] - contact_point[2]};
+    const double delj[3] = {contact_point[0] - x[j][0], contact_point[1] - x[j][1],
+                            contact_point[2] - x[j][2]};
+    const double vi[6] = {deli[0] * fpair[0], deli[1] * fpair[1], deli[2] * fpair[2],
+                          deli[0] * fpair[1], deli[0] * fpair[2], deli[1] * fpair[2]};
+    const double vj[6] = {delj[0] * fpair[0], delj[1] * fpair[1], delj[2] * fpair[2],
+                          delj[0] * fpair[1], delj[0] * fpair[2], delj[1] * fpair[2]};
+    if (vflag_global) {
+      for (int n = 0; n < 6; n++) virial[n] += vi[n];
+      if (j < nlocal)
+        for (int n = 0; n < 6; n++) virial[n] += vj[n];
+    }
+    if (vflag_atom) {
+      for (int n = 0; n < 6; n++) vatom[i][n] += vi[n];
+      if (j < nlocal)
+        for (int n = 0; n < 6; n++) vatom[j][n] += vj[n];
+    }
+  }
+
   // Mirror forces and torques on grain j
   if (newton_pair || j < nlocal) {    // Need to check this again if we end up enabling newton_pair
     MathExtra::negate3(fpair);        // Sign swap
@@ -847,10 +871,6 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
     torque[j][1] += torque_pair[1];
     torque[j][2] += torque_pair[2];
   }
-
-  if (evflag)
-    ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2],
-                 normal[0] * u, normal[1] * u, normal[2] * u);
 }
 
 /* ----------------------------------------------------------------------
@@ -1079,7 +1099,10 @@ void PairLSDEM::init_style()
                      maxcut, auto_cut_factor, spacing);
   }
 
-  neighbor->add_request(this, NeighConst::REQ_GHOST);
+  if (watershed_flag == 0)
+    neighbor->add_request(this, NeighConst::REQ_GHOST);
+  else
+    neighbor->add_request(this);
 }
 
 /* ----------------------------------------------------------------------

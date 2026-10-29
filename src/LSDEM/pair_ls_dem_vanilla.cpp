@@ -66,7 +66,7 @@ PairLSDEMVanilla::~PairLSDEMVanilla()
 
 void PairLSDEMVanilla::compute(int eflag, int vflag)
 {
-  int i, j, i2, j2, ii, jj, allnum, inum, jnum, ibody, jbody, ibodyID, jbodyID;
+  int i, j, i2, j2, ii, jj, inum, jnum, ibody, jbody, ibodyID, jbodyID;
   int maxbodyID_i, maxbodyID_j, offset_i, offset_j, tmp_bin;
   int *ilist, *jlist, *numneigh, **firstneigh;
   double rsq, delx, dely, delz, xitmp, yitmp, zitmp, ivol, jvol, x_local[3];
@@ -92,7 +92,18 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
   int nlocal = atom->nlocal;
   double maxcutsq = maxcut * maxcut;
 
-  int maxbodyID_large, maxbodyID_small;
+
+  // body info of local and ghost atoms only changes when the neighbor list is rebuilt
+
+  int ntotal = atom->nlocal + atom->nghost;
+  if ((neighbor->lastcall != binfo_lastbuild) || ((int) binfo.size() < ntotal)) {
+    cache_body_info(ntotal);
+    binfo_lastbuild = neighbor->lastcall;
+    checked_bins.assign(ntotal, {});
+  }
+
+  int maxbodyID_large = 0;
+  int maxbodyID_small = 0;
   double *grain_vol;
   if (fix_rigid) { // How is nbody updated during fix pour?
     mybody_large = fix_rigid->get_body_array();
@@ -108,20 +119,17 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
   }
 
   inum = list->inum;
-  allnum = inum + list->gnum;
   ilist = list->ilist;
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
-  std::unordered_map<long, int> use_i_map;
-  use_i_map.reserve(static_cast<size_t>(4) * allnum);
   long ibodykey, jbodykey;
-  int use_i;
-  long stride = 2 * MAX(maxbodyID_large, maxbodyID_small) + 2;
+  long maxbodyID = MAX(maxbodyID_small, maxbodyID_large);
 
   // Loop over local + ghost atoms to find closest neighbors
   if (watershed_flag == 0) {
 
+    int allnum = inum + list->gnum;
     std::unordered_map<long, std::pair<double, std::pair<int, int>>> min_distances;
     min_distances.reserve(static_cast<size_t>(4) * allnum);
 
@@ -129,27 +137,17 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
       // Loop through local nodes
       i = ilist[ii];
 
-      if (fix_rigid && (mask[i] & groupbit_large)) {
-        ibody = mybody_large[i];
-        ibodyID = mybody_large[i];
-        maxbodyID_i = maxbodyID_large;
-        ivol = grain_vol[ibody];
-        offset_i = 0;
-      } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-        ibody = mybody_small[i];
-        ibodyID = (int) molecule[i]; // could also use bodytag
-        maxbodyID_i = maxbodyID_small;
-        ivol = bodyLS[ibody].grid_vol;
-        offset_i = 1;
-      } else {
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      }
+      if (binfo[i].bidx < 0) continue;
+
+      ivol = binfo[i].vol;
+      ibodyID = binfo[i].bID;
+      offset_i = binfo[i].off;
 
       itag = tag[i];
       xitmp = x[i][0];
       yitmp = x[i][1];
       zitmp = x[i][2];
-      ibodykey = 2 * ibodyID + offset_i;
+      //ibodykey = 2 * ibodyID + offset_i;
 
       jlist = firstneigh[i];
       jnum = numneigh[i];
@@ -159,49 +157,28 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         if (special_lj[sbmask(j)] == 0) continue;
         j &= NEIGHMASK;
 
+        if (binfo[j].bidx < 0) continue;
+
         delx = xitmp - x[j][0];
         dely = yitmp - x[j][1];
         delz = zitmp - x[j][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
 
-        if (fix_rigid && (mask[j] & groupbit_large)) {
-          jbody = mybody_large[j];
-          jbodyID = mybody_large[j];
-          maxbodyID_j = maxbodyID_large;
-          jvol = grain_vol[jbody];
-          offset_j = 0;
-        } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-          jbody = mybody_small[j];
-          jbodyID = (int) molecule[j];
-          maxbodyID_j = maxbodyID_small;
-          jvol = bodyLS[jbody].grid_vol;
-          offset_j = 1;
-        } else {
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
-        }
+        jvol = binfo[j].vol;
+        jbodyID = binfo[j].bID;
+        offset_j = binfo[j].off;
 
         jtag = tag[j];
-        jbodykey = 2 * jbodyID + offset_j;
-        key = stride * ibodykey + jbodykey;
 
-        if (use_i_map.find(key) != use_i_map.end()) {
-          use_i = use_i_map[key];
-        } else {
-          use_i = use_nodes_of_i(i, j, ivol, jvol);
-          use_i_map[key] = use_i;
-          key = stride * jbodykey + ibodykey;
-          use_i_map[key] = 1 - use_i;
-        }
-
-        if (use_i) {
+        if (use_nodes_of_i(i, j, ivol, jvol)) {
           // node i probes body j
-          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+          key = 2 * (maxbodyID * itag + jbodyID) + offset_j;
           if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first)
             min_distances[key] = std::make_pair(rsq, std::make_pair(i, j));
         } else {
           // node j probes body i
-          key = 2 * (maxbodyID_i * jtag + ibodyID) + offset_i;
+          key = 2 * (maxbodyID * jtag + ibodyID) + offset_i;
           if (min_distances.find(key) == min_distances.end() || rsq < min_distances[key].first)
             min_distances[key] = std::make_pair(rsq, std::make_pair(j, i));
         }
@@ -214,45 +191,27 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
       i = entry.second.second.first;
       j = entry.second.second.second;
 
-      if (fix_rigid && (mask[i] & groupbit_large)) {
-        ibody = mybody_large[i];
-      } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-        ibody = mybody_small[i];
-      }
-
-      if (fix_rigid && (mask[j] & groupbit_large)) {
-        jbody = mybody_large[j];
-      } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-        jbody = mybody_small[j];
-      }
+      if (i >= nlocal && j >= nlocal) continue;
 
       process_contact(i, j, -1, x_local);
     }
   } else {
     std::unordered_set<long> found_watershed;
     std::vector<std::unordered_map<long, std::tuple<int, double, double, double>>> saved_bins;
+    int j2large;
     int ntotal = atom->nlocal + atom->nghost;
     saved_bins.resize(ntotal);
     long jbodykey2;
 
-    for (ii = 0; ii < allnum; ii++) {
+    for (ii = 0; ii < inum; ii++) {
       // Loop through local nodes
       i = ilist[ii];
-      if (fix_rigid && (mask[i] & groupbit_large)) {
-        ibody = mybody_large[i];
-        maxbodyID_i = maxbodyID_large;
-        ibodyID = mybody_large[i];
-        ivol = grain_vol[ibody];
-        offset_i = 0;
-      } else if (fix_rigid_small && (mask[i] & groupbit_small)) {
-        ibody = mybody_small[i];
-        maxbodyID_i = maxbodyID_small;
-        ibodyID = (int) molecule[i];
-        ivol = bodyLS[ibody].grid_vol;
-        offset_i = 1;
-      } else {
-        error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-      }
+
+      if (binfo[i].bidx < 0) continue;
+
+      ivol = binfo[i].vol;
+      ibodyID = binfo[i].bID;
+      offset_i = binfo[i].off;
 
       itag = tag[i];
       xitmp = x[i][0];
@@ -268,63 +227,42 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         if (special_lj[sbmask(j)] == 0) continue;
         j &= NEIGHMASK;
 
+        if (binfo[j].bidx < 0) continue;
+
         delx = xitmp - x[j][0];
         dely = yitmp - x[j][1];
         delz = zitmp - x[j][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
 
-        if (fix_rigid && (mask[j] & groupbit_large)) {
-          jbody = mybody_large[j];
-          jbodyID = mybody_large[j];
-          jvol = grain_vol[jbody];
-          maxbodyID_j = maxbodyID_large;
-          offset_j = 0;
-        } else if (fix_rigid_small && (mask[j] & groupbit_small)) {
-          jbody = mybody_small[j];
-          jbodyID = (int) molecule[j];
-          jvol = bodyLS[jbody].grid_vol;
-          maxbodyID_j = maxbodyID_small;
-          offset_j = 1;
-        } else {
-          error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[i]);
-        }
+        jvol = binfo[j].vol;
+        jbodyID = binfo[j].bID;
+        offset_j = binfo[j].off;
 
         jbodykey = 2 * jbodyID + offset_j;
-        key = stride * ibodykey + jbodykey;
 
-        if (use_i_map.find(key) != use_i_map.end()) {
-          use_i = use_i_map[key];
-        } else {
-          use_i = use_nodes_of_i(i, j, ivol, jvol);
-          use_i_map[key] = use_i;
-          key = stride * jbodykey + ibodykey;
-          use_i_map[key] = 1 - use_i;
-        }
-
-        if (use_i) {
+        if (use_nodes_of_i(i, j, ivol, jvol)) {
           i2 = i;
           j2 = j;
           jbodykey2 = jbodykey;
-          key = 2 * (maxbodyID_j * itag + jbodyID) + offset_j;
+          key = 2 * (maxbodyID * itag + jbodyID) + offset_j;
         } else {
           i2 = j;
           j2 = i;
           jbodykey2 = ibodykey;
-          key = 2 * (maxbodyID_i * tag[j] + ibodyID) + offset_i;
+          key = 2 * (maxbodyID * tag[j] + ibodyID) + offset_i;
         }
 
         // Skip if we've already found the watershed for atom i2 on j2's body
         if (found_watershed.find(key) != found_watershed.end()) continue;
 
+        j2large = binfo[j2].grp == 2;
+
         // Check if I already calculated bin for atom i2 on j2's body
         if (saved_bins[i2].find(jbodykey2) == saved_bins[i2].end()) {
-          if (fix_rigid && (mask[j2] & groupbit_large))
-            tmp_bin = fix_rigid->get_bin(i2, j2, x_local);
-          else if (fix_rigid_small && (mask[j2] & groupbit_small))
-            tmp_bin = fix_rigid_small->get_bin(i2, j2, x_local);
-          else
-            error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
+          if (j2large) tmp_bin = fix_rigid->get_bin(i2, j2, x_local);
+          else tmp_bin = fix_rigid_small->get_bin(i2, j2, x_local);
+
           saved_bins[i2][jbodykey2] = std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
         } else {
           tmp_bin = std::get<0>(saved_bins[i2][jbodykey2]);
@@ -334,10 +272,13 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
         }
 
         // Check if j2 owns this watershed bin
-        if (fix_rigid && (mask[j2] & groupbit_large)) {
-          if (fix_rigid->check_watershed_bin(tmp_bin, j2) == 0) continue;
-        } else if (fix_rigid_small && (mask[j2] & groupbit_small)) {
-          if (fix_rigid_small->check_watershed_bin(tmp_bin, j2) == 0) continue;
+        if (checked_bins[j2].find(tmp_bin) == checked_bins[j2].end()) {
+          if (j2large) {
+            if (fix_rigid->check_watershed_bin(tmp_bin, j2) ==   0) continue;
+          } else {
+            if (fix_rigid_small->check_watershed_bin(tmp_bin, j2) == 0) continue;
+          }
+          checked_bins[j2].insert(tmp_bin);
         }
 
         found_watershed.insert(key);
@@ -359,7 +300,7 @@ void PairLSDEMVanilla::compute(int eflag, int vflag)
 void PairLSDEMVanilla::process_contact(int i, int j, int tmp_bin, double *x_local)
 {
   int itype, jtype, ibody, jbody, ibodyID, jbodyID;
-  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, evdwl, u;
+  double xitmp, yitmp, zitmp, xjtmp, yjtmp, zjtmp, u;
   double vxitmp, vyitmp, vzitmp, vxjtmp, vyjtmp, vzjtmp;
   double icomx, icomy, icomz, jcomx, jcomy, jcomz;
   double iomegax, iomegay, iomegaz, jomegax, jomegay, jomegaz, spin_norm;
@@ -387,7 +328,6 @@ void PairLSDEMVanilla::process_contact(int i, int j, int tmp_bin, double *x_loca
   double **grain_com = atom->xcom;
   double **grain_omega = atom->omega;
 
-  evdwl = 0.0;
   itype = type[i];
   jtype = type[j];
   xitmp = x[i][0];
@@ -755,6 +695,31 @@ void PairLSDEMVanilla::process_contact(int i, int j, int tmp_bin, double *x_loca
                tag[i], tag[j], ibody, jbody, u, normal[0], normal[1], normal[2]);
 #endif
 
+  // Virial of the contact split at the contact point: node i gets (x_i - contact point) x F
+  //   and node j gets (contact point - x_j) x F, with F the force on i, each on the rank that
+  //   owns it. The sum is (x_i - x_j) x F, as the constraint virial of the rigid fixes uses the
+  //   atom positions, and per grain the centroid stress sums to the contact point stress.
+  if (evflag) {
+    const double deli[3] = {x[i][0] - contact_point[0], x[i][1] - contact_point[1],
+                            x[i][2] - contact_point[2]};
+    const double delj[3] = {contact_point[0] - x[j][0], contact_point[1] - x[j][1],
+                            contact_point[2] - x[j][2]};
+    const double vi[6] = {deli[0] * fpair[0], deli[1] * fpair[1], deli[2] * fpair[2],
+                          deli[0] * fpair[1], deli[0] * fpair[2], deli[1] * fpair[2]};
+    const double vj[6] = {delj[0] * fpair[0], delj[1] * fpair[1], delj[2] * fpair[2],
+                          delj[0] * fpair[1], delj[0] * fpair[2], delj[1] * fpair[2]};
+    if (vflag_global) {
+      for (int n = 0; n < 6; n++) virial[n] += vi[n];
+      if (j < nlocal)
+        for (int n = 0; n < 6; n++) virial[n] += vj[n];
+    }
+    if (vflag_atom) {
+      for (int n = 0; n < 6; n++) vatom[i][n] += vi[n];
+      if (j < nlocal)
+        for (int n = 0; n < 6; n++) vatom[j][n] += vj[n];
+    }
+  }
+
   // Mirror forces and torques on grain j
   if (newton_pair || j < nlocal) {    // Need to check this again if we end up enabling newton_pair
     MathExtra::negate3(fpair);        // Sign swap
@@ -773,8 +738,4 @@ void PairLSDEMVanilla::process_contact(int i, int j, int tmp_bin, double *x_loca
     torque[j][1] += torque_pair[1];
     torque[j][2] += torque_pair[2];
   }
-
-  if (evflag)
-    ev_tally_xyz(i, j, nlocal, force->newton_pair, evdwl, 0.0, fpair[0], fpair[1], fpair[2],
-                 normal[0] * u, normal[1] * u, normal[2] * u);
 }
