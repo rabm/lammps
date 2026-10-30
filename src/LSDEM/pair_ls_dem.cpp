@@ -43,6 +43,8 @@ static constexpr double EPSILON = 1e-12;
 static constexpr double BIG = 1.0e20;
 // default for "pair_style ls/dem auto": node-node cutoff = factor x largest node spacing
 static constexpr double AUTO_CUT_FACTOR = 2.0;
+// neighbor skin without a neighbor command = factor x largest node spacing
+static constexpr double AUTO_SKIN_FACTOR = 1.0;
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -1255,6 +1257,20 @@ void PairLSDEM::init_style()
                      "pair ls/dem: auto node-node cutoff = {:.8g} ({:g} x largest node "
                      "spacing {:.8g})\n",
                      maxcut, auto_cut_factor, spacing);
+  }
+
+  // without a neighbor command the skin is the default of the units, which knows nothing of
+  //   the grains: much larger than the node spacing it fills the neighbor list with pairs that
+  //   never touch, much smaller it rebuilds the list nearly every step; so the skin is then the
+  //   largest node spacing, before Neighbor::init() uses it
+
+  if (!neighbor->skinflag && (spacing > 0.0)) {
+    neighbor->skin = AUTO_SKIN_FACTOR * spacing;
+    if (comm->me == 0)
+      utils::logmesg(lmp,
+                     "pair ls/dem: auto neighbor skin = {:.8g} ({:g} x largest node spacing "
+                     "{:.8g}), set it with the neighbor command\n",
+                     neighbor->skin, AUTO_SKIN_FACTOR, spacing);
   }
 
   // get fix data

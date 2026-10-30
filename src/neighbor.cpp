@@ -124,6 +124,7 @@ Neighbor::Neighbor(LAMMPS *lmp) :
   pgsize = 100000;
   oneatom = 2000;
   binsizeflag = 0;
+  skinflag = 0;
   build_once = 0;
   cluster_check = 0;
   ago = -1;
@@ -2731,6 +2732,7 @@ void Neighbor::set(int narg, char **arg)
 
   skin = utils::numeric(FLERR, arg[0], false, lmp);
   if (skin < 0.0) error->all(FLERR, Error::ARGZERO, "Invalid neighbor argument: {}", arg[0]);
+  skinflag = 1;
 
   if (strcmp(arg[1], "nsq") == 0) style = Neighbor::NSQ;
   else if (strcmp(arg[1], "bin") == 0) style = Neighbor::BIN;

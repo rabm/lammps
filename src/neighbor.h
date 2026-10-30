@@ -36,6 +36,7 @@ class Neighbor : protected Pointers {
   int build_once;      // 1 if only build lists once per run
 
   double skin;                    // skin distance
+  int skinflag;                   // 1 if the skin was set by the neighbor command
   double cutneighmin;             // min neighbor cutoff for all type pairs
   double cutneighmax;             // max neighbor cutoff for all type pairs
   double cutneighmaxsq;           // cutneighmax squared

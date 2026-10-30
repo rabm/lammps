@@ -304,6 +304,9 @@ void Update::set_units(const char *style)
   delete[] unit_style;
   unit_style = utils::strdup(style);
 
+  // the skin is the default of the units again, styles may replace it (see Neighbor::skinflag)
+  neighbor->skinflag = 0;
+
   // check if timestep was changed from default value
   if (!dt_default && (comm->me == 0)) {
     error->warning(FLERR, "Changing timestep from {:.6} to {:.6} due to changing units to {}",
