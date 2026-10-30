@@ -547,7 +547,7 @@ void FixRigidLSDEM::init()
                 if ((cell[a] + sign < 0) || (cell[a] + sign >= ncell[a])) continue;
 
                 newbin = currentbin + sign * ns;
-                if (temp_grid_values[newbin] > WS_OUTER * stride_file) continue;
+                if (temp_grid_values[newbin] > ws_outer(dimension) * stride_file) continue;
                 if (temp_grid_values[newbin] < -rcell * stride_file) continue;
 
                 // if unvisited, add walker
