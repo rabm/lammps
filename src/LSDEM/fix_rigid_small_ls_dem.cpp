@@ -1041,17 +1041,20 @@ void FixRigidSmallLSDEM::process_levelsets()
   comm->forward_comm(this, 1);
   commflag_ls = PARENT;
 
-  // room to forward the watershed data of atoms to ghosts below
-  if (storage_mode == WATERSHED) comm_forward = MAX(comm_forward, comm_border);
-
   // resize buffers as necessary
   comm->init();
 
   // Ghost node indices and watershed bins were set by the setup borders() call before
   //   they were calculated above, push them to existing ghosts. Later border calls update new ghosts
+  // The forward comm buffers keep their size until the next borders() call, so the bins of
+  //   distributed watershed nodes are sent in chunks that fit in this fix's forward comm size
   if (storage_mode == WATERSHED) {
+    ws_chunk_size = MAX((comm_forward - 4) / 2, 1);
+    int nchunk = 1;
+    if (distributed_flag) nchunk = MAX((nmax_distributed + ws_chunk_size - 1) / ws_chunk_size, 1);
     commflag_ls = WATERSHED_LS;
-    comm->forward_comm(this, comm_border);
+    for (ws_chunk = 0; ws_chunk < nchunk; ws_chunk++)
+      comm->forward_comm(this, 4 + 2 * ws_chunk_size);
     commflag_ls = PARENT;
   }
 
@@ -1621,6 +1624,74 @@ int FixRigidSmallLSDEM::pack_watershed(int n, int *list, double *buf)
 }
 
 /* ----------------------------------------------------------------------
+   pack the node index and, for distributed storage, chunk ws_chunk of the
+   watershed bins of atoms, owned bins first, then buffer bins
+------------------------------------------------------------------------- */
+
+int FixRigidSmallLSDEM::pack_watershed_chunk(int n, int *list, double *buf)
+{
+  int m = 0;
+  const std::size_t lo = (std::size_t) ws_chunk * ws_chunk_size;
+  const std::size_t hi = lo + ws_chunk_size;
+
+  for (int i = 0; i < n; i++) {
+    const int j = list[i];
+    buf[m++] = ubuf(node_index[j]).d;
+    buf[m++] = ubuf(atom_grid_style[j]).d;
+    if (atom_grid_style[j] != DISTRIBUTED) continue;
+
+    buf[m++] = (double) dist_ws_tables[j].size();
+    buf[m++] = (double) dist_ws_buffers[j].size();
+    std::size_t k = 0;
+    for (const auto &bin_pair : dist_ws_tables[j]) {
+      if (k >= hi) break;
+      if (k++ < lo) continue;
+      buf[m++] = ubuf(bin_pair.first).d;
+      buf[m++] = bin_pair.second;
+    }
+    for (const auto &buffer_pair : dist_ws_buffers[j]) {
+      if (k >= hi) break;
+      if (k++ < lo) continue;
+      buf[m++] = ubuf(buffer_pair.first).d;
+      buf[m++] = buffer_pair.second;
+    }
+  }
+  return m;
+}
+
+/* ----------------------------------------------------------------------
+   unpack the node index and chunk ws_chunk of the watershed bins of ghost atoms
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
+{
+  int m = 0;
+  const std::size_t lo = (std::size_t) ws_chunk * ws_chunk_size;
+
+  for (int i = first; i < first + n; i++) {
+    node_index[i] = (int) ubuf(buf[m++]).i;
+    atom_grid_style[i] = (int) ubuf(buf[m++]).i;
+    if (atom_grid_style[i] != DISTRIBUTED) continue;
+
+    const std::size_t n_table = (std::size_t) buf[m++];
+    const std::size_t n_buffer = (std::size_t) buf[m++];
+    if (ws_chunk == 0) {
+      dist_ws_tables[i].clear();
+      dist_ws_buffers[i].clear();
+    }
+    const std::size_t hi = MIN(lo + ws_chunk_size, n_table + n_buffer);
+    for (std::size_t k = lo; k < hi; k++) {
+      const int bin = (int) ubuf(buf[m++]).i;
+      const double value = buf[m++];
+      if (k < n_table)
+        dist_ws_tables[i].insert(std::make_pair(bin, value));
+      else
+        dist_ws_buffers[i].insert(std::make_pair(bin, value));
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
    unpack values for border communication at re-neighboring
 ------------------------------------------------------------------------- */
 
@@ -1844,7 +1915,7 @@ int FixRigidSmallLSDEM::pack_forward_comm(int n, int *list, double *buf,
       }
     }
   } else if (commflag_ls == WATERSHED_LS) {
-    m = pack_watershed(n, list, buf);
+    m = pack_watershed_chunk(n, list, buf);
   } else {
     m = FixRigidSmall::pack_forward_comm(n, list, buf, 0, nullptr);
   }
@@ -1921,7 +1992,7 @@ void FixRigidSmallLSDEM::unpack_forward_comm(int n, int first, double *buf)
       }
     }
   } else if (commflag_ls == WATERSHED_LS) {
-    unpack_watershed(n, first, buf);
+    unpack_watershed_chunk(n, first, buf);
   } else {
     FixRigidSmall::unpack_forward_comm(n, first, buf);
   }
