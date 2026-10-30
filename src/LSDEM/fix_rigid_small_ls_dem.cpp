@@ -898,7 +898,7 @@ void FixRigidSmallLSDEM::process_levelsets()
                 if ((cell[a] + sign < 0) || (cell[a] + sign >= ncell[a])) continue;
 
                 newbin = currentbin + sign * ns;
-                if (temp_grid_values[newbin] > gridfile_data[gridfile].stride) continue;
+                if (temp_grid_values[newbin] > WS_OUTER * gridfile_data[gridfile].stride) continue;
                 // rcell is a number of cells, the level set values are distances in the grid file
                 if (temp_grid_values[newbin] < -rcell * gridfile_data[gridfile].stride) continue;
 
