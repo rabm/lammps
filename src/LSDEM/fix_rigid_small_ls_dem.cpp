@@ -278,6 +278,10 @@ void FixRigidSmallLSDEM::init()
           error->all(FLERR, "Grid file {} has two different memory styles across molecules", gridfile);
       }
 
+      // the scales give the finest grid stride below, which sets the depth of the watershed
+      //   and the size of the distributed grids, without them both were only two cells
+      gridfile_data[gridfile].scales.push_back(onemol->grid_scale);
+
       if (onemol->grid_style == GLOBAL)
         global_flag = 1;
       else if (onemol->grid_style == DISTRIBUTED)
