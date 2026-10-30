@@ -114,9 +114,11 @@ void PairLSDEMKokkos<DeviceType>::init_style()
   Kokkos::deep_copy(kern.maxu, 0.0);
 
   // half neighbor list with ghost atoms built by KOKKOS, the contact keys do not depend
-  //   on its order, see build_segments()
+  //   on its order, see build_segments(); pair ls/dem leaves out the ghost atoms for watershed
+  //   storage, but the device build of the segments needs them for both storages
 
   auto request = neighbor->find_request(this);
+  request->enable_ghost();
   request->set_kokkos_host(std::is_same_v<DeviceType, LMPHostType> &&
                            !std::is_same_v<DeviceType, LMPDeviceType>);
   request->set_kokkos_device(std::is_same_v<DeviceType, LMPDeviceType>);
