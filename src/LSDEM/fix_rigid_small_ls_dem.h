@@ -55,6 +55,7 @@ class FixRigidSmallLSDEMAccess {
   virtual BodyLS *get_bodyLS_array() = 0;
   virtual int *get_atom2body_array() = 0;
   virtual int get_storage_model() = 0;
+  virtual bool grains_by_molecule() = 0;
   virtual void get_grid_info(int, LSDEMExtra::GridInfo &) = 0;
 };
 
@@ -108,6 +109,7 @@ template <class Base> class FixRigidSmallLSDEMT : public Base, public FixRigidSm
  public:
   using Base::comm_border;
   using Base::comm_forward;
+  using Base::customflag;
   using Base::extra_extent;
   using Base::groupbit;
   using Base::id;
@@ -149,6 +151,7 @@ template <class Base> class FixRigidSmallLSDEMT : public Base, public FixRigidSm
   BodyLS *get_bodyLS_array() override { return bodyLS; }
   int *get_atom2body_array() override { return atom2body; }
   int get_storage_model() override { return storage_mode; }
+  bool grains_by_molecule() override { return customflag == 0; }
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);

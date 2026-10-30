@@ -53,6 +53,7 @@ class FixRigidLSDEM : public FixRigid {
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
   inline int get_storage_model() { return storage_mode; };
+  inline bool grains_by_molecule() { return molecule_bodies; };
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
@@ -61,6 +62,7 @@ class FixRigidLSDEM : public FixRigid {
 
  protected:
   int ls_read_flag, global_flag, distributed_flag, storage_mode;
+  bool molecule_bodies;    // true if each grain is one molecule ID
   char *id_fix;
   int index_ls_dem_touch_id;
   int read_quat;

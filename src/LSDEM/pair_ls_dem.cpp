@@ -1296,6 +1296,25 @@ void PairLSDEM::init_style()
     ws_small = fix_rigid_small->get_storage_model();
   }
 
+  // node pairs within one grain never interact, so leave them out of the neighbor list,
+  //   which saves building and looping over them; this needs every grain to be one molecule
+
+  bool by_molecule = true;
+  if (fix_rigid && !fix_rigid->grains_by_molecule()) by_molecule = false;
+  if (fix_rigid_small && !fix_rigid_small->grains_by_molecule()) by_molecule = false;
+  if (by_molecule && atom->molecule_flag) {
+    bool excluded = false;
+    for (int m = 0; m < neighbor->nex_mol; m++)
+      if (neighbor->ex_mol_intra[m] && (neighbor->ex_mol_group[m] == 0)) excluded = true;
+    if (!excluded) {
+      neighbor->modify_params("exclude molecule/intra all");
+      if (comm->me == 0)
+        utils::logmesg(lmp,
+                       "Pair ls/dem: node pairs within one grain are left out of the "
+                       "neighbor list\n");
+    }
+  }
+
   if (ws_large != -1 && ws_small != -1)
     if (ws_large != ws_small)
       error->all(FLERR, "Must use same storage option for rigid/ls/dem and rigid/small/ls/dem");

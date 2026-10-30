@@ -62,6 +62,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 {
   maxcut = -1;
   ls_read_flag = 0;
+  molecule_bodies = (strcmp(arg[3], "molecule") == 0);
 
   global_flag = 0;
   distributed_flag = 0;
