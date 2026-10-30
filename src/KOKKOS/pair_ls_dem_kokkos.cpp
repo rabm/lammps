@@ -1050,6 +1050,10 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nv
 
   const int global = gstyle(j);
   const KK_FLOAT *mygrid = global ? (ggrid.data() + goff(j)) : (dgrid.data() + goff(j));
+  // shared grids hold the values of the grid file, distributed ones the scaled values,
+  //   the stride must be in the same units as the values
+  const KK_FLOAT vscale = global ? gscale(j) : 1.0;
+  const KK_FLOAT vstride = stride / vscale;
   KK_FLOAT dist;
 
   if ((ix0 < 0 || ix0 >= (ng0 - 1)) || (ix1 < 0 || ix1 >= (ng1 - 1)) ||
@@ -1057,7 +1061,7 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nv
     dist = BIG;
   } else {
     const KK_FLOAT ls000 = mygrid[mybin];
-    if (ls000 > 2.0 * stride) {
+    if (ls000 > 2.0 * vstride) {
       dist = ls000;
     } else {
       const KK_FLOAT ls100 = mygrid[mybin + 1];
@@ -1105,7 +1109,7 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value(int i, int j, KK_FLOAT *nv
     }
   }
 
-  return ls_global_frame(j, dist, nvec);
+  return ls_global_frame(j, dist, nvec, vscale);
 }
 
 /* ----------------------------------------------------------------------
@@ -1148,7 +1152,10 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value_watershed(int j, int s, KK
   xl[1] = seg_xl(3 * s + 1);
   xl[2] = seg_xl(3 * s + 2);
   const int mybin = seg_bin(s);
-  const KK_FLOAT stride = gstride(j);
+  // the watershed tables of both styles hold the values of the grid file, so they are compared
+  //   with the stride of the grid file and scaled afterwards
+  const KK_FLOAT vscale = gscale(j);
+  const KK_FLOAT vstride = gstride(j) / vscale;
 
   const int ng0 = gngrid(3 * j);
   const int ng1 = gngrid(3 * j + 1);
@@ -1164,7 +1171,7 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value_watershed(int j, int s, KK
     dist = BIG;
   } else if (!ws_find(j, mybin, 1, ls000)) {
     dist = BIG;
-  } else if (ls000 > 2.0 * stride) {
+  } else if (ls000 > 2.0 * vstride) {
     dist = ls000;
   } else if (ws_find(j, mybin + 1, 0, ls100) && ws_find(j, mybin + ng0, 0, ls010) &&
              ws_find(j, mybin + 1 + ng0, 0, ls110)) {
@@ -1212,21 +1219,22 @@ KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_value_watershed(int j, int s, KK
     }
   }
 
-  return ls_global_frame(j, dist, nvec);
+  return ls_global_frame(j, dist, nvec, vscale);
 }
 
 /* ----------------------------------------------------------------------
-   level set of a shared grid scaled to grain j and the normal rotated back to the global frame
+   level set scaled to grain j and the normal rotated back to the global frame
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 KK_FLOAT PairLSDEMKernelsKokkos<DeviceType>::ls_global_frame(int j, KK_FLOAT dist,
-                                                              KK_FLOAT *nvec) const
+                                                              KK_FLOAT *nvec,
+                                                              KK_FLOAT vscale) const
 {
-  // values of a shared grid are not scaled
+  // stored values are scaled by vscale to the size of grain j
 
-  if (gstyle(j)) dist *= gscale(j);
+  dist *= vscale;
 
   // rotate the normal back to the global frame, it is only used for a contact (dist < 0)
 
