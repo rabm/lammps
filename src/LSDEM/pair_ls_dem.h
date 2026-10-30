@@ -49,6 +49,12 @@ class PairLSDEM : public Pair {
  protected:
   double auto_node_spacing();
 
+  // deepest overlap whose contacts the cutoff can still find (see init_style()), the overlap
+  //   that is reported, the deepest overlap found so far on this processor, and whether it was
+  double overlap_det, overlap_limit, maxoverlap;
+  int overlap_warned;
+  void check_overlap();
+
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
 
   int groupbit_small, groupbit_large;

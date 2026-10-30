@@ -27,6 +27,7 @@
 #include "molecule.h"
 #include "neigh_list.h"
 #include "neighbor.h"
+#include "output.h"
 #include "update.h"
 #include "utils.h"
 #include <algorithm>
@@ -99,6 +100,8 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   auto_cut_factor = AUTO_CUT_FACTOR;
+  overlap_det = overlap_limit = maxoverlap = 0.0;
+  overlap_warned = 0;
   binfo_lastbuild = -1;
   segs_lastbuild = -1;
 }
@@ -396,6 +399,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     }
   }
 
+  check_overlap();
   if (vflag_fdotr) virial_fdotr_compute();
 }
 
@@ -510,6 +514,7 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
     // Skip force calculation
     return;
   } else {    // Physical contact!!
+    maxoverlap = MAX(maxoverlap, u);
     // These per-neighbour quantities are only needed once contact is
     // confirmed, so they are loaded here instead of for every neighbour pair.
     xjtmp = x[j][0];
@@ -1079,8 +1084,8 @@ void PairLSDEM::init_style()
 
   // resolve an "auto" cutoff before Pair::init() calls init_one(), so it sets the neighbor cutoff
 
+  const double spacing = auto_node_spacing();
   if (cutoff_auto) {
-    double spacing = auto_node_spacing();
     if (spacing <= 0.0)
       error->all(FLERR,
                  "Pair ls/dem cutoff auto found no grains to estimate the node spacing "
@@ -1168,10 +1173,48 @@ void PairLSDEM::init_style()
       error->all(FLERR, "No atoms may be in both groups fix rigid/ls/dem or fix rigid/small/ls/dem");
   }
 
+  // a node at depth u inside a grain only has a contact while a node of that grain is within
+  //   the cutoff, on a flat surface its nearest node is up to h = spacing / sqrt(2) to the side,
+  //   so contacts are found while u < sqrt(cutoff^2 - h^2); deeper overlaps lose contacts and
+  //   grains can pass through each other; the warning comes half a node spacing before that
+
+  const double hside = spacing / MY_SQRT2;
+  overlap_det = overlap_limit = 0.0;
+  if ((spacing > 0.0) && (maxcut > hside)) {
+    overlap_det = sqrt(maxcut * maxcut - hside * hside);
+    overlap_limit = overlap_det - 0.5 * spacing;
+  }
+  maxoverlap = 0.0;
+  overlap_warned = 0;
+
   if (watershed_flag == 0)
     neighbor->add_request(this, NeighConst::REQ_GHOST);
   else
     neighbor->add_request(this);
+}
+
+/* ----------------------------------------------------------------------
+   warn once per run if a contact is deeper than the pair cutoff can follow,
+   checked on thermo output steps and the last step of a run
+------------------------------------------------------------------------- */
+
+void PairLSDEM::check_overlap()
+{
+  if (overlap_warned || (overlap_limit <= 0.0)) return;
+  if ((update->ntimestep != output->next_thermo) && (update->ntimestep != update->laststep))
+    return;
+
+  double maxall = 0.0;
+  MPI_Allreduce(&maxoverlap, &maxall, 1, MPI_DOUBLE, MPI_MAX, world);
+  if (maxall <= overlap_limit) return;
+  overlap_warned = 1;
+  if (comm->me == 0)
+    error->warning(FLERR,
+                   "Pair ls/dem overlap {:.6g} by step {} is close to the deepest overlap {:.6g} "
+                   "that the cutoff {:.6g} can follow, deeper overlaps lose contacts and grains "
+                   "may pass through each other: use stiffer contacts, a smaller load or "
+                   "timestep, or a larger cutoff",
+                   maxall, update->ntimestep, overlap_det, maxcut);
 }
 
 /* ----------------------------------------------------------------------
