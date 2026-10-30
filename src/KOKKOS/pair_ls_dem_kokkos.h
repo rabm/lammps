@@ -192,7 +192,7 @@ struct PairLSDEMKernelsKokkos {
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
-  KK_FLOAT ls_global_frame(int, KK_FLOAT, KK_FLOAT *) const;
+  KK_FLOAT ls_global_frame(int, KK_FLOAT, KK_FLOAT *, KK_FLOAT) const;
 
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
