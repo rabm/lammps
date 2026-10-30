@@ -134,6 +134,12 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   std::vector<std::unordered_map<int, double>> dist_ws_tables;
   std::vector<std::unordered_map<int, double>> dist_ws_buffers;
 
+  // distributed watershed bins of all atoms in a fixed order while they are pushed to ghosts
+  //   in setup, a relayed ghost resends chunks of its maps whose order changes as bins arrive
+
+  std::vector<std::vector<std::pair<int, double>>> ws_flat;
+  std::vector<std::size_t> ws_ntable;
+
   // LS grid file data
 
   struct LSData {
