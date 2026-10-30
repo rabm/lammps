@@ -1052,10 +1052,23 @@ void FixRigidSmallLSDEM::process_levelsets()
     ws_chunk_size = MAX((comm_forward - 4) / 2, 1);
     int nchunk = 1;
     if (distributed_flag) nchunk = MAX((nmax_distributed + ws_chunk_size - 1) / ws_chunk_size, 1);
+    if (distributed_flag) {
+      const int nall = atom->nlocal + atom->nghost;
+      ws_flat.assign(nall, {});
+      ws_ntable.assign(nall, 0);
+      for (i = 0; i < nlocal; i++) {
+        if (atom_grid_style[i] != DISTRIBUTED) continue;
+        ws_ntable[i] = dist_ws_tables[i].size();
+        ws_flat[i].assign(dist_ws_tables[i].begin(), dist_ws_tables[i].end());
+        ws_flat[i].insert(ws_flat[i].end(), dist_ws_buffers[i].begin(), dist_ws_buffers[i].end());
+      }
+    }
     commflag_ls = WATERSHED_LS;
     for (ws_chunk = 0; ws_chunk < nchunk; ws_chunk++)
       comm->forward_comm(this, 4 + 2 * ws_chunk_size);
     commflag_ls = PARENT;
+    std::vector<std::vector<std::pair<int, double>>>().swap(ws_flat);
+    std::vector<std::size_t>().swap(ws_ntable);
   }
 
   // Ghost subgrids were already set by the setup borders() call before values were
@@ -1632,7 +1645,6 @@ int FixRigidSmallLSDEM::pack_watershed_chunk(int n, int *list, double *buf)
 {
   int m = 0;
   const std::size_t lo = (std::size_t) ws_chunk * ws_chunk_size;
-  const std::size_t hi = lo + ws_chunk_size;
 
   for (int i = 0; i < n; i++) {
     const int j = list[i];
@@ -1640,20 +1652,13 @@ int FixRigidSmallLSDEM::pack_watershed_chunk(int n, int *list, double *buf)
     buf[m++] = ubuf(atom_grid_style[j]).d;
     if (atom_grid_style[j] != DISTRIBUTED) continue;
 
-    buf[m++] = (double) dist_ws_tables[j].size();
-    buf[m++] = (double) dist_ws_buffers[j].size();
-    std::size_t k = 0;
-    for (const auto &bin_pair : dist_ws_tables[j]) {
-      if (k >= hi) break;
-      if (k++ < lo) continue;
-      buf[m++] = ubuf(bin_pair.first).d;
-      buf[m++] = bin_pair.second;
-    }
-    for (const auto &buffer_pair : dist_ws_buffers[j]) {
-      if (k >= hi) break;
-      if (k++ < lo) continue;
-      buf[m++] = ubuf(buffer_pair.first).d;
-      buf[m++] = buffer_pair.second;
+    const auto &flat = ws_flat[j];
+    buf[m++] = (double) ws_ntable[j];
+    buf[m++] = (double) (flat.size() - ws_ntable[j]);
+    const std::size_t hi = MIN(lo + ws_chunk_size, flat.size());
+    for (std::size_t k = lo; k < hi; k++) {
+      buf[m++] = ubuf(flat[k].first).d;
+      buf[m++] = flat[k].second;
     }
   }
   return m;
@@ -1678,11 +1683,14 @@ void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
     if (ws_chunk == 0) {
       dist_ws_tables[i].clear();
       dist_ws_buffers[i].clear();
+      ws_flat[i].clear();
+      ws_ntable[i] = n_table;
     }
     const std::size_t hi = MIN(lo + ws_chunk_size, n_table + n_buffer);
     for (std::size_t k = lo; k < hi; k++) {
       const int bin = (int) ubuf(buf[m++]).i;
       const double value = buf[m++];
+      ws_flat[i].emplace_back(bin, value);
       if (k < n_table)
         dist_ws_tables[i].insert(std::make_pair(bin, value));
       else
