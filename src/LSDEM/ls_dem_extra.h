@@ -18,9 +18,13 @@
 
 namespace LSDEMExtra {
 
-  // a grid cell has points up to its diagonal (< 2 strides) below the value at its lower corner,
-  //   so the watershed keeps cells with a lower corner up to 2 strides outside the surface
-  static constexpr double WS_OUTER = 2.0;
+  // a grid cell has points up to its diagonal (sqrt(dimension) strides) from its lower corner and a
+  //   level set changes by at most the distance, so the watershed keeps cells with a lower corner
+  //   up to sqrt(dimension) strides outside the surface
+  inline double ws_outer(int dimension)
+  {
+    return (dimension == 2) ? 1.4142135623730951 : 1.7320508075688772;
+  }
 
   double smeared_heaviside_step(double);
   double compute_volume(int, int *, double, double *, double);
