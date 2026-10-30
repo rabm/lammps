@@ -125,6 +125,10 @@ struct PairLSDEMKernelsKokkos {
   Kokkos::View<int, DeviceType> ncontact;
   typename AT::t_kkacc_1d_6 vatom;
 
+  // largest overlap of the contacts in this run, see PairLSDEM::check_overlap()
+
+  Kokkos::View<KK_FLOAT, DeviceType> maxu;
+
   // contacts of each local atom in the order of the atoms of their pair:
   //   2 * key, + 1 if the atom is j
 
