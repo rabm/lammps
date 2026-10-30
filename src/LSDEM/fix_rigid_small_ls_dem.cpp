@@ -2434,10 +2434,12 @@ double FixRigidSmallLSDEM::get_ls_value_watershed(int i, int j, int currentbin, 
     mybuffer = &global_ws_buffers[gj][ni_j];
   }
 
-  double dist = interpolate_LS_watershed(dim, currentbin, mytable, mybuffer, ngrid, x_local, ix, normal, bodyLS[jbody].grid_stride);
-
-  // Grain-stored grid values are shared and un-scaled, so apply scaling
-  if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+  // The watershed tables of both styles hold the values of the grid file, so they are compared
+  //   with the stride of the grid file and scaled afterwards
+  const double scale = bodyLS[jbody].grid_scale;
+  double dist = interpolate_LS_watershed(dim, currentbin, mytable, mybuffer, ngrid, x_local, ix,
+                                         normal, bodyLS[jbody].grid_stride / scale);
+  dist *= scale;
 
   // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
@@ -2478,10 +2480,12 @@ if (bodyLS[jbody].style == DISTRIBUTED) {
   }
 
   int dim = domain->dimension;
-  double jstride = bodyLS[jbody].grid_stride;
+  // Global grids hold the values of the grid file, distributed ones the scaled values,
+  //   the stride must be in the same units as the values
+  const double scale = (bodyLS[jbody].style == GLOBAL) ? bodyLS[jbody].grid_scale : 1.0;
+  double jstride = bodyLS[jbody].grid_stride / scale;
   double dist = interpolate_LS_array(dim, currentbin, mygrid, ngrid, x_local, ix, normal, jstride);
-
-  if (bodyLS[jbody].style == GLOBAL) dist *= bodyLS[jbody].grid_scale;
+  dist *= scale;
 
   // Rotate normal back to global coordinates, it is only used for a contact (dist < 0)
   double **grain_quat = atom->quat;
