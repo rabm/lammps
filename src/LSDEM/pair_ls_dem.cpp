@@ -1176,13 +1176,13 @@ void PairLSDEM::init_style()
   // a node at depth u inside a grain only has a contact while a node of that grain is within
   //   the cutoff, on a flat surface its nearest node is up to h = spacing / sqrt(2) to the side,
   //   so contacts are found while u < sqrt(cutoff^2 - h^2); deeper overlaps lose contacts and
-  //   grains can pass through each other; the warning comes half a node spacing before that
+  //   grains can pass through each other; the warning comes a quarter node spacing before that
 
   const double hside = spacing / MY_SQRT2;
   overlap_det = overlap_limit = 0.0;
   if ((spacing > 0.0) && (maxcut > hside)) {
     overlap_det = sqrt(maxcut * maxcut - hside * hside);
-    overlap_limit = overlap_det - 0.5 * spacing;
+    overlap_limit = overlap_det - 0.25 * spacing;
   }
   maxoverlap = 0.0;
   overlap_warned = 0;
