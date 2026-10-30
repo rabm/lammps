@@ -245,14 +245,7 @@ void FixRigidSmallLSDEM::init()
 
   read_quat = 0;
   if (inpfile) {
-    for (int i = 0; i < nlocal_body; i++)
-      mass_custom[i] = -1;
-
     read_infile();
-
-    for (int i = 0; i < nlocal_body; i++)
-      if (mass_custom[i] == -1)
-        error->one(FLERR, "Must define all bodies in infile for ls/dem");
   } else {
     Molecule *onemol;
     int *grid_index = atom->grid_index;
@@ -474,6 +467,7 @@ void FixRigidSmallLSDEM::copy_in_data_to_bodies()
       for (int j = 0; j < data.bodies.size(); j++) {
         if (data.bodies[j] == myid) {
           bodyLS[ibody].file_id = data.id;
+          bodyLS[ibody].style = data.style;
           bodyLS[ibody].grid_scale = data.scales[j];
         }
       }
@@ -1419,13 +1413,17 @@ void FixRigidSmallLSDEM::write_restart_file(const char *file)
     buf[i][19] = (body[i].image >> IMG2BITS) - IMGMAX;
 
     // LSDEM quantities
+
+    double qgrid[4];
+    MathExtra::quatquat(body[i].quat, bodyLS[i].quatd2g, qgrid);
+
     buf[i][20] = (double) bodyLS[i].style;
     buf[i][21] = bodyLS[i].grid_scale;
     buf[i][22] = (double) bodyLS[i].file_id;
-    buf[i][23] = body[i].quat[0];
-    buf[i][24] = body[i].quat[1];
-    buf[i][25] = body[i].quat[2];
-    buf[i][26] = body[i].quat[3];
+    buf[i][23] = qgrid[0];
+    buf[i][24] = qgrid[1];
+    buf[i][25] = qgrid[2];
+    buf[i][26] = qgrid[3];
   }
 
   // write one chunk of rigid body info per proc to file
@@ -2098,6 +2096,10 @@ void FixRigidSmallLSDEM::read_infile()
   for (int i = 0; i < nlocal; i++)
     if (bodyown[i] >= 0) hash[atom->molecule[i]] = bodyown[i];
 
+  // check for missing/duplicate body definitions
+  for (int i = 0; i < nlocal_body; i++)
+    mass_custom[i] = -1;
+
   if (comm->me == 0) {
     fp = fopen(inpfile,"r");
     if (fp == nullptr)
@@ -2113,7 +2115,7 @@ void FixRigidSmallLSDEM::read_infile()
   }
   MPI_Bcast(&nlines, 1, MPI_INT, 0, world);
 
-  if (nlines == 0) return;
+  if (nlines == 0) error->all(FLERR, "Fix rigid/small/ls/dem requires a nonempty infile");
   else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
 
   auto buffer = new char[CHUNK * MAXLINE];
@@ -2161,6 +2163,8 @@ void FixRigidSmallLSDEM::read_infile()
         }
 
         if (!skip) {
+          if (mass_custom[m] != -1)
+              error->one(FLERR, "Duplicate rigid body molecule ID {} in fix {} file", id, style);
           mass_custom[m] = values.next_double();
           xcm_custom[m][0] = values.next_double();
           xcm_custom[m][1] = values.next_double();
@@ -2219,6 +2223,11 @@ void FixRigidSmallLSDEM::read_infile()
   }
 
   if (comm->me == 0) fclose(fp);
+
+  for (int i = 0; i < nlocal_body; i++)
+    if (mass_custom[i] == -1)
+      error->one(FLERR, "Must define all bodies in infile for ls/dem");
+
   delete[] buffer;
 }
 

@@ -205,7 +205,10 @@ void FixRigidLSDEM::init()
   auto pair = dynamic_cast<PairLSDEM *>(force->pair);
   maxcut = pair->maxcut;
 
-  if (ls_read_flag) return;
+  if (ls_read_flag) {
+    FixRigid::init();
+    return;
+  }
   ls_read_flag = 1;
 
   // allocate storage for LS-derived quantities (used in FixRigid::init())
@@ -727,7 +730,6 @@ void FixRigidLSDEM::setup(int /*vflag*/)
   memory->destroy(q2g_owner);
 
   memory->destroy(itensor_custom);
-  memory->destroy(quat_custom);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -874,6 +876,9 @@ void FixRigidLSDEM::write_restart_file(const char *file)
     ybox = (imagebody[i] >> IMGBITS & IMGMASK) - IMGMAX;
     zbox = (imagebody[i] >> IMG2BITS) - IMGMAX;
 
+    double qgrid[4];
+    MathExtra::quatquat(quat[i], quatd2g[i], qgrid);
+
     fprintf(fp,"%d %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
             "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d "
             "%d %-1.16e %s %-1.16e %-1.16e %-1.16e %-1.16e\n",
@@ -881,7 +886,7 @@ void FixRigidLSDEM::write_restart_file(const char *file)
             ispace[0][1],ispace[0][2],ispace[1][2],vcm[i][0],vcm[i][1],vcm[i][2],
             angmom[i][0],angmom[i][1],angmom[i][2],xbox,ybox,zbox,
             grid_style[i], grid_scale[i], gridfiles[i],
-            quat[i][0], quat[i][1], quat[i][2], quat[i][3]);
+            qgrid[0], qgrid[1], qgrid[2], qgrid[3]);
   }
 
   fclose(fp);
@@ -1170,8 +1175,12 @@ int FixRigidLSDEM::read_infile(char **gridfiles)
   // empty file with 0 lines is needed to trigger initial restart file
   // generation when no infile was previously used.
 
-  if (nlines == 0) return 0;
+  if (nlines == 0) error->all(FLERR, "Fix rigid/ls/dem requires a nonempty infile");
   else if (nlines < 0) error->all(FLERR, "Fix rigid infile has incorrect format");
+
+  // to confirm all bodies are set in the infile
+  for (id = 0; id < nbody; id++)
+    grid_scale[id] = -1;
 
   auto buffer = new char[CHUNK * MAXLINE];
   int nread = 0;
@@ -1234,6 +1243,9 @@ int FixRigidLSDEM::read_infile(char **gridfiles)
         if (grid_style[id] == DISTRIBUTED)
           distributed_flag = 1;
 
+        if (grid_scale[id] > 0)
+          error->one(FLERR, "Duplicate body {} found in infile", id);
+
         grid_scale[id] = values.next_double();
         if (grid_scale[id] <= 0)
           error->one(FLERR, "Invalid scaling factor {}", grid_scale[id]);
@@ -1255,6 +1267,11 @@ int FixRigidLSDEM::read_infile(char **gridfiles)
 
   if (comm->me == 0) fclose(fp);
   delete[] buffer;
+
+  // to confirm all bodies are set in the infile
+  for (id = 0; id < nbody; id++)
+    if (grid_scale[id] <= 0)
+      error->all(FLERR, "Body {} not included in infile", id);
 
   return read_quat;
 }
