@@ -1099,6 +1099,75 @@ void PairLSDEM::init_style()
                      maxcut, auto_cut_factor, spacing);
   }
 
+  // get fix data
+
+
+  auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
+  auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
+
+  if (fixlist1.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/ls/dem");
+  if (fixlist2.size() > 1)
+    error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
+
+  if (fixlist1.size() == 0 && fixlist2.size() == 0)
+    error->all(FLERR, "Pair ls/dem requires at least one instance of fix rigid/ls/dem or rigid/small/ls/dem");
+
+
+  int igroup_large, igroup_small, ws_large, ws_small;
+  groupbit_large = -1;
+  igroup_large = -1;
+  ws_large = -1;
+  if (fixlist1.size() == 1) {
+    fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
+    groupbit_large = fix_rigid->groupbit;
+    igroup_large = fix_rigid->igroup;
+    ws_large = fix_rigid->get_storage_model();
+  }
+
+  groupbit_small = -1;
+  igroup_small = -1;
+  ws_small = -1;
+  if (fixlist2.size() == 1) {
+    fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
+    groupbit_small = fix_rigid_small->groupbit;
+    igroup_small = fix_rigid_small->igroup;
+    ws_small = fix_rigid_small->get_storage_model();
+  }
+
+  if (ws_large != -1 && ws_small != -1)
+    if (ws_large != ws_small)
+      error->all(FLERR, "Must use same storage option for rigid/ls/dem and rigid/small/ls/dem");
+  watershed_flag = MAX(ws_large, ws_small);
+
+  if (groupbit_small == -1 && igroup_large != 0)
+    error->all(FLERR, "If only using fix rigid/ls/dem, it must use group all");
+
+  if (groupbit_large == -1 && igroup_small != 0)
+    error->all(FLERR, "If only using fix rigid/small/ls/dem, it must use group all");
+
+  if (groupbit_small != -1 && groupbit_large != -1) {
+    int missing_atoms = 0;
+    int overlap_atoms = 0;
+    int *mask = atom->mask;
+    for (size_t i = 0; i < atom->nlocal; i++) {
+      if ((mask[i] & groupbit_small) && (mask[i] & groupbit_large)) {
+        overlap_atoms++;
+      } else if (!(mask[i] & groupbit_small) && !(mask[i] & groupbit_large)) {
+        missing_atoms++;
+      }
+    }
+
+    int total_atoms;
+    MPI_Allreduce(&missing_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
+    if (total_atoms > 0)
+      error->all(FLERR, "All atoms must be in group of either fix rigid/ls/dem or fix rigid/small/ls/dem");
+
+    MPI_Allreduce(&overlap_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
+    if (total_atoms > 0)
+      error->all(FLERR, "No atoms may be in both groups fix rigid/ls/dem or fix rigid/small/ls/dem");
+  }
+
   if (watershed_flag == 0)
     neighbor->add_request(this, NeighConst::REQ_GHOST);
   else
@@ -1198,72 +1267,6 @@ void PairLSDEM::setup()
 
   if (maxcut < maxcut2)
     error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
-
-  auto fixlist1 = modify->get_fix_by_style("rigid/ls/dem");
-  auto fixlist2 = modify->get_fix_by_style("rigid/small/ls/dem");
-
-  if (fixlist1.size() > 1)
-    error->all(FLERR, "Must have no more than one instance of fix rigid/ls/dem");
-  if (fixlist2.size() > 1)
-    error->all(FLERR, "Must have no more than one instance of fix rigid/small/ls/dem");
-
-  if (fixlist1.size() == 0 && fixlist2.size() == 0)
-    error->all(FLERR, "Pair ls/dem requires at least one instance of fix rigid/ls/dem or rigid/small/ls/dem");
-
-
-  int igroup_large, igroup_small, ws_large, ws_small;
-  groupbit_large = -1;
-  igroup_large = -1;
-  ws_large = -1;
-  if (fixlist1.size() == 1) {
-    fix_rigid = dynamic_cast<FixRigidLSDEM *>(fixlist1.front());
-    groupbit_large = fix_rigid->groupbit;
-    igroup_large = fix_rigid->igroup;
-    ws_large = fix_rigid->get_storage_model();
-  }
-
-  groupbit_small = -1;
-  igroup_small = -1;
-  ws_small = -1;
-  if (fixlist2.size() == 1) {
-    fix_rigid_small = dynamic_cast<FixRigidSmallLSDEM *>(fixlist2.front());
-    groupbit_small = fix_rigid_small->groupbit;
-    igroup_small = fix_rigid_small->igroup;
-    ws_small = fix_rigid_small->get_storage_model();
-  }
-
-  if (ws_large != -1 && ws_small != -1)
-    if (ws_large != ws_small)
-      error->all(FLERR, "Must use same storage option for rigid/ls/dem and rigid/small/ls/dem");
-  watershed_flag = MAX(ws_large, ws_small);
-
-  if (groupbit_small == -1 && igroup_large != 0)
-    error->all(FLERR, "If only using fix rigid/ls/dem, it must use group all");
-
-  if (groupbit_large == -1 && igroup_small != 0)
-    error->all(FLERR, "If only using fix rigid/small/ls/dem, it must use group all");
-
-  if (groupbit_small != -1 && groupbit_large != -1) {
-    int missing_atoms = 0;
-    int overlap_atoms = 0;
-    int *mask = atom->mask;
-    for (size_t i = 0; i < atom->nlocal; i++) {
-      if ((mask[i] & groupbit_small) && (mask[i] & groupbit_large)) {
-        overlap_atoms++;
-      } else if (!(mask[i] & groupbit_small) && !(mask[i] & groupbit_large)) {
-        missing_atoms++;
-      }
-    }
-
-    int total_atoms;
-    MPI_Allreduce(&missing_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
-    if (total_atoms > 0)
-      error->all(FLERR, "All atoms must be in group of either fix rigid/ls/dem or fix rigid/small/ls/dem");
-
-    MPI_Allreduce(&overlap_atoms, &total_atoms, 1, MPI_INT, MPI_SUM, world);
-    if (total_atoms > 0)
-      error->all(FLERR, "No atoms may be in both groups fix rigid/ls/dem or fix rigid/small/ls/dem");
-  }
 
   int tmp1, tmp2;
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
