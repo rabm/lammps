@@ -434,6 +434,8 @@
 /ls_dem_extra.h
 /pair_ls_dem.cpp
 /pair_ls_dem.h
+/pair_ls_dem_vanilla.cpp
+/pair_ls_dem_vanilla.h
 /rigid_ls_dem_const.h
 
 /atom_vec_mesont.cpp
@@ -1169,6 +1171,18 @@
 /fix_reaxff_bonds.h
 /fix_reaxff_species.cpp
 /fix_reaxff_species.h
+/fix_ilves.cpp
+/fix_ilves.h
+/growing_allocator.h
+/growing_mem_pool.h
+/ilves.cpp
+/ilves.h
+/ilves_graph.cpp
+/ilves_graph.h
+/ilves_molecule.cpp
+/ilves_molecule.h
+/ilves_solver.cpp
+/ilves_solver.h
 /fix_rhok.cpp
 /fix_rhok.h
 /fix_rigid.cpp
