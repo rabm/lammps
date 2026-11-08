@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -100,6 +101,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   auto_cut_factor = AUTO_CUT_FACTOR;
+  contact_build_fast = 1;
   overlap_det = overlap_limit = maxoverlap = 0.0;
   overlap_warned = 0;
   binfo_lastbuild = -1;
@@ -298,6 +300,148 @@ void PairLSDEM::compute(int eflag, int vflag)
   if ((neighbor->lastcall != binfo_lastbuild) || ((int) binfo.size() < ntotal)) {
     cache_body_info(ntotal);
     binfo_lastbuild = neighbor->lastcall;
+  }
+
+  if (!contact_build_fast) {
+    const int nlocal = atom->nlocal;
+    double *special_lj = force->special_lj;
+    int *ilist = list->ilist;
+    int *numneigh = list->numneigh;
+    int **firstneigh = list->firstneigh;
+    const int inum = list->inum;
+    const int allnum = inum + list->gnum;
+
+    contacts.clear();
+    wsbins.clear();
+
+    if (watershed_flag == 0) {
+      using NodeBodyKey = std::tuple<tagint, int, int>;
+      std::map<NodeBodyKey, std::pair<double, Contact>> min_distances;
+      int ipair = 0;
+
+      for (int ii = 0; ii < allnum; ii++) {
+        const int i = ilist[ii];
+        const BodyInfo &bi = binfo[i];
+        if (bi.bidx < 0) continue;
+        xitmp = x[i][0];
+        yitmp = x[i][1];
+        zitmp = x[i][2];
+        int *jlist = firstneigh[i];
+        const int jnum = numneigh[i];
+
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (special_lj[sbmask(j)] == 0) continue;
+          const int key = (ii < inum) ? ipair++ : -1;
+          j &= NEIGHMASK;
+          const BodyInfo &bj = binfo[j];
+          if (bj.bidx < 0) continue;
+
+          delx = xitmp - x[j][0];
+          dely = yitmp - x[j][1];
+          delz = zitmp - x[j][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+
+          NodeBodyKey mapkey;
+          Contact contact;
+          if (use_nodes_of_i(i, j, bi.vol, bj.vol)) {
+            mapkey = NodeBodyKey(tag[i], bj.bID, bj.off);
+            contact = {i, j, 1, key, -1};
+          } else {
+            mapkey = NodeBodyKey(tag[j], bi.bID, bi.off);
+            contact = {i, j, 0, key, -1};
+          }
+
+          auto item = min_distances.find(mapkey);
+          if ((item == min_distances.end()) || (rsq < item->second.first))
+            min_distances[mapkey] = std::make_pair(rsq, contact);
+        }
+      }
+
+      for (const auto &entry : min_distances)
+        if (entry.second.second.key >= 0) contacts.push_back(entry.second.second);
+
+      std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
+        return a.key < b.key;
+      });
+
+      double x_local[3] = {0.0, 0.0, 0.0};
+      for (const Contact &ct : contacts) process_contact(ct.i, ct.j, ct.calc, -1, x_local);
+    } else {
+      using NodeBodyKey = std::tuple<tagint, int, int>;
+      using BodyKey = std::tuple<int, int>;
+      std::map<NodeBodyKey, int> found_watershed;
+      std::vector<std::map<BodyKey, std::tuple<int, double, double, double>>> saved_bins(ntotal);
+      std::vector<std::unordered_set<int>> checked_bins(ntotal);
+      double x_local[3];
+      int ipair = 0;
+
+      for (int ii = 0; ii < inum; ii++) {
+        const int i = ilist[ii];
+        const BodyInfo &bi = binfo[i];
+        if (bi.bidx < 0) continue;
+        xitmp = x[i][0];
+        yitmp = x[i][1];
+        zitmp = x[i][2];
+        int *jlist = firstneigh[i];
+        const int jnum = numneigh[i];
+
+        for (int jj = 0; jj < jnum; jj++) {
+          int j = jlist[jj];
+          if (special_lj[sbmask(j)] == 0) continue;
+          const int key = ipair++;
+          j &= NEIGHMASK;
+          const BodyInfo &bj = binfo[j];
+          if (bj.bidx < 0) continue;
+
+          delx = xitmp - x[j][0];
+          dely = yitmp - x[j][1];
+          delz = zitmp - x[j][2];
+          rsq = delx * delx + dely * dely + delz * delz;
+          if (rsq > maxcutsq) continue;
+
+          const int calc = use_nodes_of_i(i, j, bi.vol, bj.vol);
+          const int inode = calc ? i : j;
+          const int ipartner = calc ? j : i;
+          const BodyInfo &bp = binfo[ipartner];
+          NodeBodyKey node_body_key(tag[inode], bp.bID, bp.off);
+          if (found_watershed.find(node_body_key) != found_watershed.end()) continue;
+
+          BodyKey body_key(bp.bID, bp.off);
+          auto saved = saved_bins[inode].find(body_key);
+          int tmp_bin;
+          if (saved == saved_bins[inode].end()) {
+            if (bp.grp == 2)
+              tmp_bin = fix_rigid->get_bin(inode, ipartner, x_local);
+            else
+              tmp_bin = fix_rigid_small->get_bin(inode, ipartner, x_local);
+            saved_bins[inode][body_key] =
+                std::make_tuple(tmp_bin, x_local[0], x_local[1], x_local[2]);
+          } else {
+            tmp_bin = std::get<0>(saved->second);
+            x_local[0] = std::get<1>(saved->second);
+            x_local[1] = std::get<2>(saved->second);
+            x_local[2] = std::get<3>(saved->second);
+          }
+
+          if (checked_bins[ipartner].find(tmp_bin) == checked_bins[ipartner].end()) {
+            const int owns = (bp.grp == 2) ? fix_rigid->check_watershed_bin(tmp_bin, ipartner)
+                                          : fix_rigid_small->check_watershed_bin(tmp_bin, ipartner);
+            if (!owns) continue;
+            checked_bins[ipartner].insert(tmp_bin);
+          }
+
+          found_watershed[node_body_key] = 1;
+          contacts.push_back({i, j, calc, key, -1});
+          process_contact(i, j, calc, tmp_bin, x_local);
+        }
+      }
+    }
+
+    check_overlap();
+    if (vflag_fdotr) virial_fdotr_compute();
+    return;
   }
 
   // candidate nodes on each other grain only change when the neighbor list is rebuilt
@@ -933,19 +1077,22 @@ void PairLSDEM::allocate()
    global settings
 ------------------------------------------------------------------------- */
 
-void PairLSDEM::settings(int narg, char ** arg)
+void PairLSDEM::settings(int narg, char **arg)
 {
   if (narg < 1) utils::missing_cmd_args(FLERR, "pair_style ls/dem", error);
 
   // "auto" estimates the node-node cutoff from the node spacing of the grains in init_style()
-  //   with an optional factor, otherwise the cutoff is the given number
+  //   with an optional factor, otherwise the cutoff is the given number.  Contact building uses
+  //   the faster cached candidate path by default; the transparent path is useful for debugging.
+  contact_build_fast = 1;
+  int iarg = 1;
   if (strcmp(arg[0], "auto") == 0) {
-    if (narg > 2) error->all(FLERR, "Too many arguments for pair_style ls/dem auto");
     cutoff_auto = 1;
     maxcut = -1.0;
     auto_cut_factor = AUTO_CUT_FACTOR;
-    if (narg == 2) {
-      auto_cut_factor = utils::numeric(FLERR, arg[1], false, lmp);
+    if ((iarg < narg) && (strcmp(arg[iarg], "fast") != 0) &&
+        (strcmp(arg[iarg], "transparent") != 0) && (strcmp(arg[iarg], "method") != 0)) {
+      auto_cut_factor = utils::numeric(FLERR, arg[iarg], false, lmp);
       if (auto_cut_factor <= 0.0)
         error->all(FLERR, "The pair ls/dem auto cutoff factor {} must be positive",
                    auto_cut_factor);
@@ -954,11 +1101,26 @@ void PairLSDEM::settings(int narg, char ** arg)
                        "A pair ls/dem auto cutoff factor of {} does not exceed the node "
                        "spacing, so contacts may be missed",
                        auto_cut_factor);
+      iarg++;
     }
   } else {
-    if (narg > 1) error->all(FLERR, "Too many arguments for pair_style ls/dem");
     cutoff_auto = 0;
     maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  }
+
+  while (iarg < narg) {
+    if (strcmp(arg[iarg], "method") == 0) {
+      if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem method", error);
+      iarg++;
+    }
+    if (strcmp(arg[iarg], "fast") == 0) {
+      contact_build_fast = 1;
+    } else if (strcmp(arg[iarg], "transparent") == 0) {
+      contact_build_fast = 0;
+    } else {
+      error->all(FLERR, "Unknown pair_style ls/dem option {}", arg[iarg]);
+    }
+    iarg++;
   }
 
   if (force->newton_pair)
@@ -1428,6 +1590,36 @@ void PairLSDEM::read_restart(FILE *fp)
         MPI_Bcast(&etat1[i][j], 1, MPI_DOUBLE, 0, world);
       }
     }
+}
+
+/* ----------------------------------------------------------------------
+   proc 0 writes settings to restart file
+------------------------------------------------------------------------- */
+
+void PairLSDEM::write_restart_settings(FILE *fp)
+{
+  fwrite(&maxcut, sizeof(double), 1, fp);
+  fwrite(&cutoff_auto, sizeof(int), 1, fp);
+  fwrite(&auto_cut_factor, sizeof(double), 1, fp);
+  fwrite(&contact_build_fast, sizeof(int), 1, fp);
+}
+
+/* ----------------------------------------------------------------------
+   proc 0 reads settings from restart file, bcasts
+------------------------------------------------------------------------- */
+
+void PairLSDEM::read_restart_settings(FILE *fp)
+{
+  if (comm->me == 0) {
+    utils::sfread(FLERR, &maxcut, sizeof(double), 1, fp, nullptr, error);
+    utils::sfread(FLERR, &cutoff_auto, sizeof(int), 1, fp, nullptr, error);
+    utils::sfread(FLERR, &auto_cut_factor, sizeof(double), 1, fp, nullptr, error);
+    utils::sfread(FLERR, &contact_build_fast, sizeof(int), 1, fp, nullptr, error);
+  }
+  MPI_Bcast(&maxcut, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&cutoff_auto, 1, MPI_INT, 0, world);
+  MPI_Bcast(&auto_cut_factor, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&contact_build_fast, 1, MPI_INT, 0, world);
 }
 
 /* ----------------------------------------------------------------------

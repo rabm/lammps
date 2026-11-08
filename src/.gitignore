@@ -434,8 +434,6 @@
 /ls_dem_extra.h
 /pair_ls_dem.cpp
 /pair_ls_dem.h
-/pair_ls_dem_vanilla.cpp
-/pair_ls_dem_vanilla.h
 /rigid_ls_dem_const.h
 
 /atom_vec_mesont.cpp

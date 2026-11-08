@@ -39,6 +39,8 @@ class PairLSDEM : public Pair {
   double init_one(int, int) override;
   void write_restart(FILE *) override;
   void read_restart(FILE *) override;
+  void write_restart_settings(FILE *) override;
+  void read_restart_settings(FILE *) override;
   void write_data(FILE *) override;
   void write_data_all(FILE *) override;
 
@@ -59,6 +61,7 @@ class PairLSDEM : public Pair {
 
   int groupbit_small, groupbit_large;
   int watershed_flag;
+  int contact_build_fast;
 
   int index_ls_dem_vol;
   int index_ls_dem_n;
