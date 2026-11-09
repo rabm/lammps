@@ -369,7 +369,7 @@ void PairLSDEM::compute(int eflag, int vflag)
       double x_local[3] = {0.0, 0.0, 0.0};
       for (const Contact &ct : contacts) process_contact(ct.i, ct.j, ct.calc, -1, x_local);
     } else {
-      using NodeBodyKey = std::tuple<tagint, int, int>;
+      using NodeBodyKey = std::tuple<int, int, int>;
       using BodyKey = std::tuple<int, int>;
       std::map<NodeBodyKey, int> found_watershed;
       std::vector<std::map<BodyKey, std::tuple<int, double, double, double>>> saved_bins(ntotal);
@@ -399,13 +399,12 @@ void PairLSDEM::compute(int eflag, int vflag)
           dely = yitmp - x[j][1];
           delz = zitmp - x[j][2];
           rsq = delx * delx + dely * dely + delz * delz;
-          if (rsq > maxcutsq) continue;
 
           const int calc = use_nodes_of_i(i, j, bi.vol, bj.vol);
           const int inode = calc ? i : j;
           const int ipartner = calc ? j : i;
           const BodyInfo &bp = binfo[ipartner];
-          NodeBodyKey node_body_key(tag[inode], bp.bID, bp.off);
+          NodeBodyKey node_body_key(inode, bp.bID, bp.off);
           if (found_watershed.find(node_body_key) != found_watershed.end()) continue;
 
           BodyKey body_key(bp.bID, bp.off);
@@ -431,6 +430,8 @@ void PairLSDEM::compute(int eflag, int vflag)
             if (!owns) continue;
             checked_bins[ipartner].insert(tmp_bin);
           }
+
+          if (rsq > maxcutsq) continue;
 
           found_watershed[node_body_key] = 1;
           contacts.push_back({i, j, calc, key, -1});
