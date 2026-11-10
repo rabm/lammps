@@ -476,7 +476,7 @@ void Replicate::replicate_by_proc(int nx, int ny, int nz,
 
   tagint atom_offset,mol_offset;
   imageint image;
-  double x[3],lamda[3];
+  double x[3],xoffset[3],lamda[3];
   double *coord;
 
   // loop over all procs
@@ -506,14 +506,17 @@ void Replicate::replicate_by_proc(int nx, int ny, int nz,
             image = ((imageint) IMGMAX << IMG2BITS) |
               ((imageint) IMGMAX << IMGBITS) | IMGMAX;
             if (triclinic == 0) {
-              x[0] = buf[m+1] + ix*old_xprd;
-              x[1] = buf[m+2] + iy*old_yprd;
-              x[2] = buf[m+3] + iz*old_zprd;
+              xoffset[0] = ix*old_xprd;
+              xoffset[1] = iy*old_yprd;
+              xoffset[2] = iz*old_zprd;
             } else {
-              x[0] = buf[m+1] + ix*old_xprd + iy*old_xy + iz*old_xz;
-              x[1] = buf[m+2] + iy*old_yprd + iz*old_yz;
-              x[2] = buf[m+3] + iz*old_zprd;
+              xoffset[0] = ix*old_xprd + iy*old_xy + iz*old_xz;
+              xoffset[1] = iy*old_yprd + iz*old_yz;
+              xoffset[2] = iz*old_zprd;
             }
+            x[0] = buf[m+1] + xoffset[0];
+            x[1] = buf[m+2] + xoffset[1];
+            x[2] = buf[m+3] + xoffset[2];
             domain->remap(x,image);
             if (triclinic) {
               domain->x2lamda(x,lamda);
@@ -537,35 +540,38 @@ void Replicate::replicate_by_proc(int nx, int ny, int nz,
 
               atom->tag[i] += atom_offset;
               atom->image[i] = image;
+              if (atom->xcom_flag) {
+                atom->xcom[i][0] += xoffset[0];
+                atom->xcom[i][1] += xoffset[1];
+                atom->xcom[i][2] += xoffset[2];
+              }
 
-              if (atom->molecular != Atom::ATOMIC) {
-                if (atom->molecule[i] > 0)
-                  atom->molecule[i] += mol_offset;
-                if (atom->molecular == Atom::MOLECULAR) {
-                  if (atom->avec->bonds_allow)
-                    for (j = 0; j < atom->num_bond[i]; j++)
-                      atom->bond_atom[i][j] += atom_offset;
-                  if (atom->avec->angles_allow)
-                    for (j = 0; j < atom->num_angle[i]; j++) {
-                      atom->angle_atom1[i][j] += atom_offset;
-                      atom->angle_atom2[i][j] += atom_offset;
-                      atom->angle_atom3[i][j] += atom_offset;
-                    }
-                  if (atom->avec->dihedrals_allow)
-                    for (j = 0; j < atom->num_dihedral[i]; j++) {
-                      atom->dihedral_atom1[i][j] += atom_offset;
-                      atom->dihedral_atom2[i][j] += atom_offset;
-                      atom->dihedral_atom3[i][j] += atom_offset;
-                      atom->dihedral_atom4[i][j] += atom_offset;
-                    }
-                  if (atom->avec->impropers_allow)
-                    for (j = 0; j < atom->num_improper[i]; j++) {
-                      atom->improper_atom1[i][j] += atom_offset;
-                      atom->improper_atom2[i][j] += atom_offset;
-                      atom->improper_atom3[i][j] += atom_offset;
-                      atom->improper_atom4[i][j] += atom_offset;
-                    }
-                }
+              if (atom->molecule_flag && atom->molecule[i] > 0)
+                atom->molecule[i] += mol_offset;
+              if (atom->molecular == Atom::MOLECULAR) {
+                if (atom->avec->bonds_allow)
+                  for (j = 0; j < atom->num_bond[i]; j++)
+                    atom->bond_atom[i][j] += atom_offset;
+                if (atom->avec->angles_allow)
+                  for (j = 0; j < atom->num_angle[i]; j++) {
+                    atom->angle_atom1[i][j] += atom_offset;
+                    atom->angle_atom2[i][j] += atom_offset;
+                    atom->angle_atom3[i][j] += atom_offset;
+                  }
+                if (atom->avec->dihedrals_allow)
+                  for (j = 0; j < atom->num_dihedral[i]; j++) {
+                    atom->dihedral_atom1[i][j] += atom_offset;
+                    atom->dihedral_atom2[i][j] += atom_offset;
+                    atom->dihedral_atom3[i][j] += atom_offset;
+                    atom->dihedral_atom4[i][j] += atom_offset;
+                  }
+                if (atom->avec->impropers_allow)
+                  for (j = 0; j < atom->num_improper[i]; j++) {
+                    atom->improper_atom1[i][j] += atom_offset;
+                    atom->improper_atom2[i][j] += atom_offset;
+                    atom->improper_atom3[i][j] += atom_offset;
+                    atom->improper_atom4[i][j] += atom_offset;
+                  }
               }
             } else m += static_cast<int> (buf[m]);
           }
@@ -598,7 +604,7 @@ void Replicate::replicate_by_bbox(int nx, int ny, int nz,
 
   tagint atom_offset,mol_offset,atom0tag;
   imageint image;
-  double x[3],lamda[3];
+  double x[3],xoffset[3],lamda[3];
   double *coord;
 
   // allgather size of buf on each proc
@@ -849,14 +855,17 @@ void Replicate::replicate_by_bbox(int nx, int ny, int nz,
             image = ((imageint) IMGMAX << IMG2BITS) |
               ((imageint) IMGMAX << IMGBITS) | IMGMAX;
             if (triclinic == 0) {
-              x[0] = buf_all[m+1] + ix*old_xprd;
-              x[1] = buf_all[m+2] + iy*old_yprd;
-              x[2] = buf_all[m+3] + iz*old_zprd;
+              xoffset[0] = ix*old_xprd;
+              xoffset[1] = iy*old_yprd;
+              xoffset[2] = iz*old_zprd;
             } else {
-              x[0] = buf_all[m+1] + ix*old_xprd + iy*old_xy + iz*old_xz;
-              x[1] = buf_all[m+2] + iy*old_yprd + iz*old_yz;
-              x[2] = buf_all[m+3] + iz*old_zprd;
+              xoffset[0] = ix*old_xprd + iy*old_xy + iz*old_xz;
+              xoffset[1] = iy*old_yprd + iz*old_yz;
+              xoffset[2] = iz*old_zprd;
             }
+            x[0] = buf_all[m+1] + xoffset[0];
+            x[1] = buf_all[m+2] + xoffset[1];
+            x[2] = buf_all[m+3] + xoffset[2];
             domain->remap(x,image);
             if (triclinic) {
               domain->x2lamda(x,lamda);
@@ -882,58 +891,61 @@ void Replicate::replicate_by_bbox(int nx, int ny, int nz,
               atom0tag = atom->tag[i];
               atom->tag[i] += atom_offset;
               atom->image[i] = image;
+              if (atom->xcom_flag) {
+                atom->xcom[i][0] += xoffset[0];
+                atom->xcom[i][1] += xoffset[1];
+                atom->xcom[i][2] += xoffset[2];
+              }
 
-              if (atom->molecular != Atom::ATOMIC) {
-                if (atom->molecule[i] > 0)
-                  atom->molecule[i] += mol_offset;
-                if (atom->molecular == Atom::MOLECULAR) {
-                  if (atom->avec->bonds_allow)
-                    for (j = 0; j < atom->num_bond[i]; j++) {
-                      if (bond_flag)
-                        newtag(atom0tag,atom->bond_atom[i][j]);
-                      else atom->bond_atom[i][j] += atom_offset;
+              if (atom->molecule_flag && atom->molecule[i] > 0)
+                atom->molecule[i] += mol_offset;
+              if (atom->molecular == Atom::MOLECULAR) {
+                if (atom->avec->bonds_allow)
+                  for (j = 0; j < atom->num_bond[i]; j++) {
+                    if (bond_flag)
+                      newtag(atom0tag,atom->bond_atom[i][j]);
+                    else atom->bond_atom[i][j] += atom_offset;
+                  }
+                if (atom->avec->angles_allow)
+                  for (j = 0; j < atom->num_angle[i]; j++) {
+                    if (bond_flag) {
+                      newtag(atom0tag,atom->angle_atom1[i][j]);
+                      newtag(atom0tag,atom->angle_atom2[i][j]);
+                      newtag(atom0tag,atom->angle_atom3[i][j]);
+                    } else {
+                      atom->angle_atom1[i][j] += atom_offset;
+                      atom->angle_atom2[i][j] += atom_offset;
+                      atom->angle_atom3[i][j] += atom_offset;
                     }
-                  if (atom->avec->angles_allow)
-                    for (j = 0; j < atom->num_angle[i]; j++) {
-                      if (bond_flag) {
-                        newtag(atom0tag,atom->angle_atom1[i][j]);
-                        newtag(atom0tag,atom->angle_atom2[i][j]);
-                        newtag(atom0tag,atom->angle_atom3[i][j]);
-                      } else {
-                        atom->angle_atom1[i][j] += atom_offset;
-                        atom->angle_atom2[i][j] += atom_offset;
-                        atom->angle_atom3[i][j] += atom_offset;
-                      }
+                  }
+                if (atom->avec->dihedrals_allow)
+                  for (j = 0; j < atom->num_dihedral[i]; j++) {
+                    if (bond_flag) {
+                      newtag(atom0tag,atom->dihedral_atom1[i][j]);
+                      newtag(atom0tag,atom->dihedral_atom2[i][j]);
+                      newtag(atom0tag,atom->dihedral_atom3[i][j]);
+                      newtag(atom0tag,atom->dihedral_atom4[i][j]);
+                    } else {
+                      atom->dihedral_atom1[i][j] += atom_offset;
+                      atom->dihedral_atom2[i][j] += atom_offset;
+                      atom->dihedral_atom3[i][j] += atom_offset;
+                      atom->dihedral_atom4[i][j] += atom_offset;
                     }
-                  if (atom->avec->dihedrals_allow)
-                    for (j = 0; j < atom->num_dihedral[i]; j++) {
-                      if (bond_flag) {
-                        newtag(atom0tag,atom->dihedral_atom1[i][j]);
-                        newtag(atom0tag,atom->dihedral_atom2[i][j]);
-                        newtag(atom0tag,atom->dihedral_atom3[i][j]);
-                        newtag(atom0tag,atom->dihedral_atom4[i][j]);
-                      } else {
-                        atom->dihedral_atom1[i][j] += atom_offset;
-                        atom->dihedral_atom2[i][j] += atom_offset;
-                        atom->dihedral_atom3[i][j] += atom_offset;
-                        atom->dihedral_atom4[i][j] += atom_offset;
-                      }
+                  }
+                if (atom->avec->impropers_allow)
+                  for (j = 0; j < atom->num_improper[i]; j++) {
+                    if (bond_flag) {
+                      newtag(atom0tag,atom->improper_atom1[i][j]);
+                      newtag(atom0tag,atom->improper_atom2[i][j]);
+                      newtag(atom0tag,atom->improper_atom3[i][j]);
+                      newtag(atom0tag,atom->improper_atom4[i][j]);
+                    } else {
+                      atom->improper_atom1[i][j] += atom_offset;
+                      atom->improper_atom2[i][j] += atom_offset;
+                      atom->improper_atom3[i][j] += atom_offset;
+                      atom->improper_atom4[i][j] += atom_offset;
                     }
-                  if (atom->avec->impropers_allow)
-                    for (j = 0; j < atom->num_improper[i]; j++) {
-                      if (bond_flag) {
-                        newtag(atom0tag,atom->improper_atom1[i][j]);
-                        newtag(atom0tag,atom->improper_atom2[i][j]);
-                        newtag(atom0tag,atom->improper_atom3[i][j]);
-                        newtag(atom0tag,atom->improper_atom4[i][j]);
-                      } else {
-                        atom->improper_atom1[i][j] += atom_offset;
-                        atom->improper_atom2[i][j] += atom_offset;
-                        atom->improper_atom3[i][j] += atom_offset;
-                        atom->improper_atom4[i][j] += atom_offset;
-                      }
-                    }
-                }
+                  }
               }
             } else m += static_cast<int> (buf_all[m]);
           }
