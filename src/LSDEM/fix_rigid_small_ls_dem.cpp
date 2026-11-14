@@ -2072,10 +2072,64 @@ void FixRigidSmallLSDEM::grow_body_ls()
 
 double FixRigidSmallLSDEM::memory_usage()
 {
-  int nmax = atom->nmax;
+  using WSMap = std::unordered_map<int, double>;
+
+  auto map_usage = [] (const WSMap &map) {
+    return (double) map.bucket_count() * sizeof(void *) +
+      (double) map.size() * (sizeof(WSMap::value_type) + sizeof(void *));
+  };
+
+  auto global_watershed_usage = [&map_usage] (const std::vector<std::vector<WSMap>> &tables) {
+    double bytes = (double) tables.capacity() * sizeof(std::vector<WSMap>);
+    for (const auto &per_grid : tables) {
+      bytes += (double) per_grid.capacity() * sizeof(WSMap);
+      for (const auto &map : per_grid) bytes += map_usage(map);
+    }
+    return bytes;
+  };
+
+  auto distributed_watershed_usage = [&map_usage] (const std::vector<WSMap> &tables) {
+    double bytes = (double) tables.capacity() * sizeof(WSMap);
+    for (const auto &map : tables) bytes += map_usage(map);
+    return bytes;
+  };
+
+  const int nmax = atom->nmax;
   double bytes = FixRigidSmall::memory_usage();
-  bytes += (double)nmax * sizeof(int);
-  bytes += (double)nmax_bodyLS * sizeof(BodyLS);
+
+  bytes += memory->usage(bodyownLS, nmax);
+  bytes += (double) nmax_bodyLS * sizeof(BodyLS);
+  bytes += memory->usage(atom_grid_style, nmax);
+
+  bytes += memory->usage(itensor_custom, nlocal_body, 6);
+  bytes += memory->usage(xcm_custom, nlocal_body, 3);
+  bytes += memory->usage(mass_custom, nlocal_body);
+  bytes += memory->usage(quat_custom, nlocal_body, 4);
+
+  if (storage_mode == WATERSHED) {
+    bytes += memory->usage(node_index, nmax);
+    bytes += global_watershed_usage(global_ws_tables);
+    bytes += global_watershed_usage(global_ws_buffers);
+    bytes += distributed_watershed_usage(dist_ws_tables);
+    bytes += distributed_watershed_usage(dist_ws_buffers);
+
+    bytes += (double) ws_flat.capacity() *
+      sizeof(std::vector<std::pair<int, double>>);
+    for (const auto &flat : ws_flat)
+      bytes += (double) flat.capacity() * sizeof(std::pair<int, double>);
+    bytes += (double) ws_ntable.capacity() * sizeof(std::size_t);
+  }
+
+  if (global_grids) {
+    for (const auto &[filename, data] : gridfile_data) {
+      if (data.style != GLOBAL) continue;
+
+      bytes += sizeof(double *);
+      bytes += (double) data.grid_size[0] * data.grid_size[1] *
+        data.grid_size[2] * sizeof(double);
+    }
+  }
+
   return bytes;
 }
 

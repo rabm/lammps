@@ -38,6 +38,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <unordered_set>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -898,11 +899,72 @@ void FixRigidLSDEM::write_restart_file(const char *file)
 
 double FixRigidLSDEM::memory_usage()
 {
-  int nmax = atom->nmax;
+  using WSMap = std::unordered_map<int, double>;
+
+  auto map_usage = [] (const WSMap &map) {
+    return (double) map.bucket_count() * sizeof(void *) +
+      (double) map.size() * (sizeof(WSMap::value_type) + sizeof(void *));
+  };
+
+  auto global_watershed_usage = [&map_usage] (const std::vector<std::vector<WSMap>> &tables) {
+    double bytes = (double) tables.capacity() * sizeof(std::vector<WSMap>);
+    for (const auto &per_grid : tables) {
+      bytes += (double) per_grid.capacity() * sizeof(WSMap);
+      for (const auto &map : per_grid) bytes += map_usage(map);
+    }
+    return bytes;
+  };
+
+  auto distributed_watershed_usage = [&map_usage] (const std::vector<WSMap> &tables) {
+    double bytes = (double) tables.capacity() * sizeof(WSMap);
+    for (const auto &map : tables) bytes += map_usage(map);
+    return bytes;
+  };
+
+  const int nmax = atom->nmax;
   double bytes = FixRigid::memory_usage();
-  // todo
+
+  bytes += memory->usage(grid_style, nbody);
+  bytes += memory->usage(grid_min, nbody, 3);
+  bytes += memory->usage(grid_stride, nbody);
+  bytes += memory->usage(grid_scale, nbody);
+  bytes += memory->usage(grid_index, nbody);
+  bytes += memory->usage(grid_size, nbody, 3);
+  bytes += memory->usage(grid_vol, nbody);
+  bytes += memory->usage(node_area, nbody);
+  bytes += memory->usage(quatd2g, nbody, 4);
+  bytes += memory->usage(gridfiles, nbody, MAXLINE);
+  bytes += memory->usage(itensor_custom, nbody, 6);
+  bytes += memory->usage(quat_custom, nbody, 4);
+
+  if (storage_mode == WATERSHED) {
+    bytes += memory->usage(node_index, nmax);
+    bytes += global_watershed_usage(global_ws_tables);
+    bytes += global_watershed_usage(global_ws_buffers);
+    bytes += distributed_watershed_usage(dist_ws_tables);
+    bytes += distributed_watershed_usage(dist_ws_buffers);
+  } else if (distributed_flag) {
+    bytes += memory->usage(dist_grid_values, nmax, nmax_distributed);
+    bytes += memory->usage(dist_grid_min, nmax, 3);
+  }
+
+  if (global_grids) {
+    std::unordered_set<int> counted_grids;
+    for (int ibody = 0; ibody < nbody; ibody++) {
+      if (grid_index[ibody] < 0 ||
+          !counted_grids.insert(grid_index[ibody]).second)
+        continue;
+
+      bytes += sizeof(double *);
+      bytes += (double) grid_size[ibody][0] * grid_size[ibody][1] *
+        grid_size[ibody][2] * sizeof(double);
+    }
+  }
+
   return bytes;
 }
+
+
 
 /* ----------------------------------------------------------------------
    allocate atom-based array
