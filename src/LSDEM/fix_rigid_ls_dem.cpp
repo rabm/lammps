@@ -75,6 +75,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   // always write restart file
   restart_file = 1;
+  no_copies = 0;
 
   int iarg = 0;
   while (iarg < narg) {
@@ -88,6 +89,9 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
       else
         error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
       iarg += 2;
+    } else if (strcmp(arg[iarg], "no/copies") == 0) {
+      no_copies = 1;
+      iarg += 1;
     } else {
       iarg ++;
     }
@@ -250,11 +254,13 @@ void FixRigidLSDEM::init()
     grid_index[ibody] = -1;
     if (grid_style[ibody] == GLOBAL) {
       global_flag = 1;
+
       // Copy from prior entry if it exists
-      if (file_map.find(filename) != file_map.end())
-        for (const auto& jbody : file_map[filename])
-          if (grid_index[jbody] != -1)
-            grid_index[ibody] = grid_index[jbody];
+      if (!no_copies) // debugging option to prevent duplicate files
+        if (file_map.find(filename) != file_map.end())
+          for (const auto& jbody : file_map[filename])
+            if (grid_index[jbody] != -1)
+              grid_index[ibody] = grid_index[jbody];
 
       // If no global instances, add new index
       if (grid_index[ibody] == -1) {
@@ -380,6 +386,17 @@ void FixRigidLSDEM::init()
           for (int n = 0; n < ntotal_global[index_global]; n++)
             // Unscaled values stored globally to avoid duplicating memory
             global_grids[index_global][n] = temp_grid_values[n];
+
+        // for debugging/benchmarking, copy data
+        if (no_copies) {
+          for (const auto& jbody : pair.second) {
+            if (grid_style[jbody] == GLOBAL) {
+              int index_global2 = grid_index[jbody];
+              for (int n = 0; n < ntotal_global[index_global2]; n++)
+                global_grids[index_global2][n] = temp_grid_values[n];
+            }
+          }
+        }
       }
 
       if (distributed_flag) {
@@ -625,6 +642,27 @@ void FixRigidLSDEM::init()
           for (auto bin : node_buffer_bins[i])
             global_ws_buffers[index_global][i].insert(std::make_pair(bin, temp_grid_values[bin]));
         }
+
+
+        // for debugging/benchmarking, copy data
+        if (no_copies) {
+          for (const auto& jbody : pair.second) {
+            if (grid_style[jbody] == GLOBAL) {
+              int index_global2 = grid_index[jbody];
+
+              global_ws_tables[index_global2].resize(max_node_index);
+              global_ws_buffers[index_global2].resize(max_node_index);
+
+              for (i = 0; i < max_node_index; i++) {
+                for (auto bin : node_bins[i])
+                  global_ws_tables[index_global2][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+                for (auto bin : node_buffer_bins[i])
+                  global_ws_buffers[index_global2][i].insert(std::make_pair(bin, temp_grid_values[bin]));
+              }
+            }
+          }
+        }
+
       } else {
         int nt, size_sum;
         for (i = 0; i < nlocal; i++) {

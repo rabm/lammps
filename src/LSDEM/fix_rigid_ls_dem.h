@@ -86,6 +86,8 @@ class FixRigidLSDEM : public FixRigid {
   double maxcut;
   int rcell;
 
+  int no_copies;
+
   std::vector<std::vector <std::unordered_map<int, double>>> global_ws_tables;
   std::vector<std::vector <std::unordered_map<int, double>>> global_ws_buffers;
   std::vector<std::unordered_map<int, double>> dist_ws_tables;

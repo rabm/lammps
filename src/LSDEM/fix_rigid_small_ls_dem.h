@@ -96,6 +96,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int ws_chunk, ws_chunk_size;    // chunk of watershed bins pushed to ghosts in setup
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;
+  int no_copies;
 
   double **quat_custom;
 

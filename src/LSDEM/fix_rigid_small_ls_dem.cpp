@@ -79,6 +79,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
 
+  no_copies = 0;
+
   nmax_bodyLS = nmax_body;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
   memory->grow(bodyownLS, atom->nmax, "rigid/small/ls/dem:bodyownLS");
@@ -100,6 +102,9 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
       else
         error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
       iarg += 2;
+    } else if (strcmp(arg[iarg], "no/copies") == 0) {
+      no_copies = 1;
+      iarg += 1;
     } else {
       iarg ++;
     }
