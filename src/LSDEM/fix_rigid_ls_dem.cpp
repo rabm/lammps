@@ -75,7 +75,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   // always write restart file
   restart_file = 1;
-  no_copies = 0;
+  duplicate_data = 0;
 
   int iarg = 0;
   while (iarg < narg) {
@@ -89,8 +89,8 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
       else
         error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
       iarg += 2;
-    } else if (strcmp(arg[iarg], "no/copies") == 0) {
-      no_copies = 1;
+    } else if (strcmp(arg[iarg], "duplicate/data") == 0) {
+      duplicate_data = 1;
       iarg += 1;
     } else {
       iarg ++;
@@ -255,8 +255,8 @@ void FixRigidLSDEM::init()
     if (grid_style[ibody] == GLOBAL) {
       global_flag = 1;
 
-      // Copy from prior entry if it exists
-      if (!no_copies) // debugging option to prevent duplicate files
+      // Reuse a prior grid from the same file unless duplicate/data was requested
+      if (!duplicate_data)
         if (file_map.find(filename) != file_map.end())
           for (const auto& jbody : file_map[filename])
             if (grid_index[jbody] != -1)
@@ -388,7 +388,7 @@ void FixRigidLSDEM::init()
             global_grids[index_global][n] = temp_grid_values[n];
 
         // for debugging/benchmarking, copy data
-        if (no_copies) {
+        if (duplicate_data) {
           for (const auto& jbody : pair.second) {
             if (grid_style[jbody] == GLOBAL) {
               int index_global2 = grid_index[jbody];
@@ -645,7 +645,7 @@ void FixRigidLSDEM::init()
 
 
         // for debugging/benchmarking, copy data
-        if (no_copies) {
+        if (duplicate_data) {
           for (const auto& jbody : pair.second) {
             if (grid_style[jbody] == GLOBAL) {
               int index_global2 = grid_index[jbody];

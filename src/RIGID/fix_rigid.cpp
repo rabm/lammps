@@ -582,9 +582,9 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
         utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
       iarg += 2;
 
-    } else if (strcmp(arg[iarg], "no/copies") == 0) {
+    } else if (strcmp(arg[iarg], "duplicate/data") == 0) {
       if (!utils::strmatch(style, "ls"))
-        error->all(FLERR, "Illegal fix {} command option no/copies", style);
+        error->all(FLERR, "Illegal fix {} command option duplicate/data", style);
       iarg += 1;
 
     } else
