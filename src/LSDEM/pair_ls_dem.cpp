@@ -758,6 +758,10 @@ void PairLSDEM::process_contact(int i, int j, int calc_force_of_i_on_j, int tmp_
 
   // Check if the pair is valid for shear history calculation
   // Initialise if no contact
+  // For fix rigid/small/ls/dem with no accompanying fix rigid/ls/dem, body IDs are positive.
+  // A zero touch ID can appear on ghost nodes before shear history has been initialized.
+  if ((touch_id[ni] == 0) && (fix_rigid == nullptr) && (binfo[ni].grp == 1))
+    touch_id[ni] = -1;
   if (touch_id[ni] == -1) { touch_id[ni] = partner_body; }
   if (touch_id[ni] != partner_body) {
     if (comm->me == 0) {
