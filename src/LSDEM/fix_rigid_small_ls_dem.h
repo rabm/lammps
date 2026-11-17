@@ -96,6 +96,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int ws_chunk, ws_chunk_size;    // chunk of watershed bins pushed to ghosts in setup
   char *id_fix, *id_fix2;
   int index_ls_dem_touch_id;
+  int duplicate_data;
   double **quat_custom;
 
   double maxcut, warncut;
@@ -159,6 +160,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   // local methods
 
   void process_levelsets();
+  void duplicate_global_grids(int *);
   int pack_watershed(int, int *, double *);
   int unpack_watershed(int, int, double *);
   int pack_watershed_chunk(int, int *, double *);

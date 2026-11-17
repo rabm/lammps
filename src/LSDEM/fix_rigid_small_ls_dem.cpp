@@ -79,6 +79,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
   n_extra_attributes = 3;
 
+  duplicate_data = 0;
+
   nmax_bodyLS = nmax_body;
   bodyLS = (BodyLS *) memory->smalloc(nmax_bodyLS * sizeof(BodyLS), "rigid/small/ls/dem:bodyls");
   memory->grow(bodyownLS, atom->nmax, "rigid/small/ls/dem:bodyownLS");
@@ -101,7 +103,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR, "Illegal fix {} command option ls/storage {}", style, arg[iarg + 1]);
       iarg += 2;
     } else if (strcmp(arg[iarg], "duplicate/data") == 0) {
-      error->all(FLERR, "Fix rigid/small/ls/dem does not yet support duplicate/data");
+      duplicate_data = 1;
+      iarg += 1;
     } else {
       iarg ++;
     }
@@ -994,6 +997,9 @@ void FixRigidSmallLSDEM::process_levelsets()
     }
   }
 
+  if (duplicate_data && global_flag)
+    duplicate_global_grids(grid_size_flat);
+
   memory->destroy(temp_grid_values);
   memory->destroy(global_node_bins);
   memory->destroy(grid_size_flat);
@@ -1074,6 +1080,68 @@ void FixRigidSmallLSDEM::process_levelsets()
     comm->forward_comm(this, subgrid_size[0] * subgrid_size[1] * subgrid_size[2] + 3);
     commflag_ls = PARENT;
   }
+}
+
+/* ----------------------------------------------------------------------
+   for debugging/benchmarking only: duplicate the global level-set storage
+   so that every GLOBAL-style rigid body gets its own copy of the data,
+   rather than having bodies that share a grid file share one global instance
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::duplicate_global_grids(int *grid_size_flat)
+{
+  std::vector<int> local_old_index;
+  for (int ibody = 0; ibody < nlocal_bodyLS; ibody++)
+    if (bodyLS[ibody].style == GLOBAL)
+      local_old_index.push_back(bodyLS[ibody].grid_index);
+
+  const int nprocs = comm->nprocs;
+  const int nlocal_global = local_old_index.size();
+  std::vector<int> recvcounts(nprocs), displs(nprocs);
+  MPI_Allgather(&nlocal_global, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, world);
+
+  int ntotal = 0;
+  for (int iproc = 0; iproc < nprocs; iproc++) {
+    displs[iproc] = ntotal;
+    ntotal += recvcounts[iproc];
+  }
+  if (ntotal == 0) return;
+
+  std::vector<int> all_old_index(ntotal);
+  MPI_Allgatherv(local_old_index.data(), nlocal_global, MPI_INT, all_old_index.data(),
+                 recvcounts.data(), displs.data(), MPI_INT, world);
+
+  const int offset = displs[comm->me];
+  int n = 0;
+  for (int ibody = 0; ibody < nlocal_bodyLS; ibody++)
+    if (bodyLS[ibody].style == GLOBAL)
+      bodyLS[ibody].grid_index = offset + (n++);
+
+  if (storage_mode == ARRAY) {
+    std::vector<int> new_grid_size_flat(ntotal);
+    for (int k = 0; k < ntotal; k++)
+      new_grid_size_flat[k] = grid_size_flat[all_old_index[k]];
+
+    double **new_global_grids = nullptr;
+    memory->create_ragged(new_global_grids, ntotal, new_grid_size_flat.data(),
+                          "rigid/small/ls/dem:global_grids");
+    for (int k = 0; k < ntotal; k++)
+      memcpy(new_global_grids[k], global_grids[all_old_index[k]],
+             (size_t) new_grid_size_flat[k] * sizeof(double));
+
+    memory->destroy(global_grids);
+    global_grids = new_global_grids;
+  } else {
+    std::vector<std::vector<std::unordered_map<int, double>>> new_tables(ntotal), new_buffers(ntotal);
+    for (int k = 0; k < ntotal; k++) {
+      new_tables[k] = global_ws_tables[all_old_index[k]];
+      new_buffers[k] = global_ws_buffers[all_old_index[k]];
+    }
+    global_ws_tables.swap(new_tables);
+    global_ws_buffers.swap(new_buffers);
+  }
+
+  n_global_grids = ntotal;
 }
 
 /* ---------------------------------------------------------------------- */
