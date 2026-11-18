@@ -671,6 +671,7 @@ void FixRigidSmallLSDEM::process_levelsets()
       global_ws_buffers.resize(n_global_grids);
     } else {
       memory->create_ragged(global_grids, n_global_grids, grid_size_flat, "rigid/small/ls/dem:global_grids");
+      global_grid_size_flat.assign(grid_size_flat, grid_size_flat + n_global_grids);
     }
   }
 
@@ -1131,6 +1132,7 @@ void FixRigidSmallLSDEM::duplicate_global_grids(int *grid_size_flat)
 
     memory->destroy(global_grids);
     global_grids = new_global_grids;
+    global_grid_size_flat.swap(new_grid_size_flat);
   } else {
     std::vector<std::vector<std::unordered_map<int, double>>> new_tables(ntotal), new_buffers(ntotal);
     for (int k = 0; k < ntotal; k++) {
@@ -2191,13 +2193,9 @@ double FixRigidSmallLSDEM::memory_usage()
   }
 
   if (global_grids) {
-    for (const auto &[filename, data] : gridfile_data) {
-      if (data.style != GLOBAL) continue;
-
-      bytes += sizeof(double *);
-      bytes += (double) data.grid_size[0] * data.grid_size[1] *
-        data.grid_size[2] * sizeof(double);
-    }
+    // count every allocated global grid, including copies made by duplicate/data
+    bytes += (double) n_global_grids * sizeof(double *);
+    for (const int size : global_grid_size_flat) bytes += (double) size * sizeof(double);
   }
 
   return bytes;

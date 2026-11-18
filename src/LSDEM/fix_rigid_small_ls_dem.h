@@ -24,6 +24,7 @@ FixStyle(rigid/small/ls/dem,FixRigidSmallLSDEM);
 
 #include <map>
 #include <unordered_map>
+#include <vector>
 
 namespace LAMMPS_NS {
 
@@ -123,6 +124,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   int index_grid_min;
 
   double **global_grids;
+  std::vector<int> global_grid_size_flat;    // flattened size of each global grid
 
   // storage for global watershed
 
