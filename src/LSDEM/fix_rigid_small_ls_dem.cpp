@@ -614,9 +614,12 @@ void FixRigidSmallLSDEM::process_levelsets()
 
   int *mask = atom->mask;
   tagint *tag = atom->tag;
-  for (i = 0; i < atom->nlocal; i++)
+  // mark no contact for preexisting atoms (new atoms are set in set_arrays())
+  //   this runs in setup_pre_neighbor(), after comm->borders() already copied the
+  //   zero-initialized values to the ghosts, so the ghosts must be set here as well
+  for (i = 0; i < atom->nlocal + atom->nghost; i++)
     if (mask[i] & groupbit)
-      touch_id[i] = -1; // set to zero for preexisting atoms (rest set in set_array)
+      touch_id[i] = -1;
 
   // Copy gridfile extra data to bodyLS structure
   for (i = 0; i < nmax_body; i++)
