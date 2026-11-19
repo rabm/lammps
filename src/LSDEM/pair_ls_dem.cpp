@@ -497,7 +497,11 @@ void PairLSDEM::compute(int eflag, int vflag)
           if (cand.key < 0) continue;
           const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
                                     : fix_rigid->check_watershed_bin(wb.bin, cand.idx);
-          if (owns) add_contact(irep, cand, ws);
+          if (!owns) continue;
+          add_contact(irep, cand, ws);
+          // each bin is owned by one node of the grain, so without periodic images of
+          //   a node among the candidates no other candidate can own it
+          if (!seg.dup) break;
         }
         continue;
       }
