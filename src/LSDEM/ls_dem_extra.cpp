@@ -284,10 +284,11 @@ double interpolate_LS_array(int dimension, int mybin, double *mygrid, int *ngrid
 
 double get_ws_ls_value(int mybin, std::unordered_map<int, double> *mytable, std::unordered_map<int, double> *mybuffer)
 {
-  if (mytable->find(mybin) != mytable->end())
-    return mytable->at(mybin);
-  if (mybuffer->find(mybin) != mybuffer->end())
-    return mybuffer->at(mybin);
+  // one hash lookup per map, the value is read through the iterator found
+  auto it = mytable->find(mybin);
+  if (it != mytable->end()) return it->second;
+  it = mybuffer->find(mybin);
+  if (it != mybuffer->end()) return it->second;
   return BIG;
 }
 
@@ -307,10 +308,11 @@ double interpolate_LS_watershed(int dimension, int mybin, std::unordered_map<int
     return BIG; // To avoid having to perfectly match the neighbour listing cutoff with the grid size.
 
   // Level-set value of lower corner
-  if (mytable->find(mybin) == mytable->end())
+  const auto it000 = mytable->find(mybin);
+  if (it000 == mytable->end())
     return BIG;
 
-  double ls000 = mytable->at(mybin);
+  double ls000 = it000->second;
 
   // Short circuit the level-set interpolation if we know we're so far from the surface we won't use the
   // value anyway. NB: Need adjustment for bonding. Voxel diagonal is at most sqrt(3)*stride = 1.7*stride
