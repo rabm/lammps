@@ -943,23 +943,22 @@ void FixRigidSmallLSDEM::process_levelsets()
         }
       }
 
-      // Create buffer (1st and 2nd neighbors of all bins)
+      // Create buffer: the corners above each owned bin (+x, +y, +z) that the trilinear
+      //   interpolation in interpolate_LS_watershed() reads and the node does not own
       for (i = 0; i < max_node_index; i++) {
         if (global_node_bins[i] < 0) continue; // skip if unused node slot
 
         for (const auto& currentbin : node_bins[i]) {
-          // bins of a node at a face of the grid have no buffer bins beyond that face
+          // bins at the upper face of the grid have no buffer bins beyond that face
           const int cx = currentbin % nx;
           const int cy = (currentbin / nx) % ny;
           const int cz = currentbin / (nx * ny);
-          for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-              for (int dz = -1; dz <= 1; dz++) {
+          for (int dx = 0; dx <= 1; dx++) {
+            for (int dy = 0; dy <= 1; dy++) {
+              for (int dz = 0; dz <= 1; dz++) {
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 if (dimension == 2 && dz != 0) continue;
-                if ((cx + dx < 0) || (cx + dx >= nx) || (cy + dy < 0) || (cy + dy >= ny) ||
-                    (cz + dz < 0) || (cz + dz >= nz))
-                  continue;
+                if ((cx + dx >= nx) || (cy + dy >= ny) || (cz + dz >= nz)) continue;
                 newbin = currentbin + dx + dy * nx + dz * nx * ny;
                 if (bin_owners[newbin] != i) {
                   node_buffer_bins[i].insert(newbin);
