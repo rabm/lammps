@@ -2148,9 +2148,17 @@ double FixRigidSmallLSDEM::memory_usage()
 {
   using WSMap = std::unordered_map<int, double>;
 
-  auto map_usage = [] (const WSMap &map) {
-    return (double) map.bucket_count() * sizeof(void *) +
-      (double) map.size() * (sizeof(WSMap::value_type) + sizeof(void *));
+  // each entry is a separate heap allocation holding the key, the value, and a pointer to the
+  //   next entry, and the bucket array is one more allocation. The heap adds an 8 byte header
+  //   to each allocation and rounds it up to a multiple of 16 bytes, at least 32 bytes (glibc).
+  //   A map with a single bucket keeps it inside the map object.
+  auto heap_block = [] (double bytes) {
+    return MAX(32.0, 16.0 * ceil((bytes + sizeof(std::size_t)) / 16.0));
+  };
+  auto map_usage = [&heap_block] (const WSMap &map) {
+    double bytes = (double) map.size() * heap_block(sizeof(WSMap::value_type) + sizeof(void *));
+    if (map.bucket_count() > 1) bytes += heap_block((double) map.bucket_count() * sizeof(void *));
+    return bytes;
   };
 
   auto global_watershed_usage = [&map_usage] (const std::vector<std::vector<WSMap>> &tables) {
