@@ -157,11 +157,11 @@ void PairLSDEMKokkos<DeviceType>::setup()
 }
 
 /* ----------------------------------------------------------------------
-   segments of PairLSDEM::build_rep_segments() built on the device from the device
-   neighbor list into flat arrays, with the level-set grids of the candidate nodes,
-   the contacts of each node and of each atom are ordered by the atoms of their pair
-   as pair ls/dem evaluates them, so nothing depends on the order of the neighbor list
-   the order of the segments of a node does not matter, each is evaluated on its own
+   Build the device equivalent of PairLSDEM::build_rep_segments(). A segment
+   groups candidate surface nodes of one partner grain for one query node.
+   The neighbor rebuild groups and filters candidates once. Between rebuilds
+   the contact kernel searches each retained segment for the closest node
+   (or watershed owner) as the two bodies move.
 ------------------------------------------------------------------------- */
 
 template<class DeviceType>
@@ -255,7 +255,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
   Kokkos::View<unsigned char **, DeviceType> pseg(
       Kokkos::view_alloc("pair:pseg", Kokkos::WithoutInitializing), d_neighbors.extent(0),
       d_neighbors.extent(1));
-  IView pbeg(Kokkos::view_alloc("pair:pbeg", Kokkos::WithoutInitializing), allnum + 1);
+  IView pbeg(Kokkos::view_alloc("pair:pbeg", Kokkos::WithoutInitializing), allnum);
   Kokkos::parallel_for(Range(0, allnum), KOKKOS_LAMBDA(const int ii) {
     const int i = d_ilist(ii);
     for (int jj = 0; jj < d_numneigh(i); jj++) {
@@ -277,9 +277,10 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     upd += n;
   }, npair);
   if (2 * npair > MAXSMALLINT) error->one(FLERR, "Too many node pairs for pair ls/dem/kk");
-  int nlocpair = 0;
-  if (inum) Kokkos::deep_copy(nlocpair, Kokkos::subview(pbeg, inum));
-  nkey = nlocpair;
+  // pbeg contains one offset per list entry. Without ghost entries the
+  // local range ends at the scan total, beyond the last stored offset.
+  nkey = static_cast<int>(npair);
+  if (inum < allnum) Kokkos::deep_copy(nkey, Kokkos::subview(pbeg, inum));
 
   // a segment without a pair from the neighbor list of a local atom has no contacts,
   //   so only the segments found in those lists are kept, most pairs of ghost atoms are not:
