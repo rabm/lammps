@@ -3,6 +3,8 @@
 pair_style ls/dem command
 =========================
 
+Accelerator variant: *ls/dem/kk*
+
 Syntax
 """"""
 
@@ -43,6 +45,9 @@ whole list when that grain's level set cannot reach the query node before
 the next rebuild and there is no shear history to clear. At each step the
 remaining lists supply the closest candidate or the owner of the watershed
 bin. The transparent method looks up contacts directly for comparison.
+
+The KOKKOS variant implements the fast method. Use the CPU pair style
+for a transparent reference calculation.
 
 For molecule-defined grains with ``fix rigid/small/ls/dem``, the ghost
 communication cutoff must cover the largest owner-to-node distance plus

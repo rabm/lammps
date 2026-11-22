@@ -110,6 +110,8 @@ void PairLSDEMKokkos<DeviceType>::allocate()
 template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::init_style()
 {
+  if (!contact_build_fast)
+    error->all(FLERR, "The ls/dem/kk pair style requires method fast; use ls/dem for method transparent");
   PairLSDEM::init_style();
   Kokkos::deep_copy(kern.maxu, 0.0);
 
