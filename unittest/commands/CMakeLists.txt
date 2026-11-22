@@ -229,3 +229,19 @@ add_executable(test_input_validation test_input_validation.cpp)
 target_link_libraries(test_input_validation PRIVATE lammps GTest::GMock)
 add_test(NAME InputValidation COMMAND test_input_validation)
 add_kokkos_test(NAME InputValidation COMMAND test_input_validation)
+
+if(PKG_LSDEM AND PKG_RIGID AND PKG_KOKKOS AND Python_Interpreter_FOUND)
+  set(lsdem_kokkos_args t 1)
+  if(Kokkos_ENABLE_CUDA OR Kokkos_ENABLE_HIP OR Kokkos_ENABLE_SYCL OR Kokkos_ENABLE_OPENMPTARGET)
+    set(lsdem_kokkos_args g 1)
+  endif()
+  add_test(NAME LSDEMNeighborPolicyKokkos
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_neighbor_policy.py
+            $<TARGET_FILE:lmp> -k on ${lsdem_kokkos_args} -sf kk)
+  add_test(NAME LSDEMSharedGridRadiusKokkos
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_shared_radius.py
+            $<TARGET_FILE:lmp> -k on ${lsdem_kokkos_args} -sf kk)
+  add_test(NAME LSDEMNoGhostSegments
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_segments.py
+            $<TARGET_FILE:lmp> ${lsdem_kokkos_args})
+endif()

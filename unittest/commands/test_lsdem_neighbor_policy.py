@@ -29,10 +29,12 @@ run 0
 run 0
 write_dump all custom forces id fx fy fz modify sort id format float %.17g
 """
-    result = subprocess.run([str(Path(sys.argv[1]).resolve()), "-log", "none"], input=commands,
+    result = subprocess.run([str(Path(sys.argv[1]).resolve()), *sys.argv[2:], "-log", "none"], input=commands,
                             text=True, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if (result.returncode != 0) != expect_error:
         raise RuntimeError(result.stdout)
+    if sys.argv[2:] and not expect_error and "ls/dem" in pair:
+        assert "pair ls/dem/kk," in result.stdout
     return result.stdout
 
 
