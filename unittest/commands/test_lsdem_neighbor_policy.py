@@ -10,17 +10,22 @@ import tempfile
 from lsdem_spheres import write_shapes
 
 
-def simulate(directory, pair, coeff, neighbors="", *, expect_error=False):
+def simulate(directory, pair, coeff, neighbors="", *, expect_error=False, two_types=False):
+    if sys.argv[2:] and pair.startswith("hybrid/overlay"):
+        # Hybrid lists report the input sub-style name even when a suffix is active.
+        pair = pair.replace(" ls/dem ", " ls/dem/kk ")
+        coeff = coeff.replace(" ls/dem ", " ls/dem/kk ")
     commands = f"""units lj
 atom_style ls/dem
 atom_modify map yes
 comm_modify vel yes cutoff 20
 newton off
 region box block -25 25 -25 25 -25 25
-create_box 1 box
-mass 1 1
+create_box {2 if two_types else 1} box
+mass * 1
 molecule sphere sphere1.mol
 create_atoms 0 single 0 0 0 mol sphere 1234 rotate 0 0 0 1 units box
+{"create_atoms 1 single 3 0 0 mol sphere 5678 rotate 0 0 0 1 units box" if two_types else ""}
 {"fix bodies all rigid/small/ls/dem molecule" if "ls/dem" in pair else ""}
 {neighbors}
 pair_style {pair}
@@ -43,7 +48,15 @@ def list_distance(log):
 
 
 def forces(directory):
-    return (directory / "forces").read_text().split("ITEM: ATOMS id fx fy fz\n")[1]
+    rows = (directory / "forces").read_text().split("ITEM: ATOMS id fx fy fz\n")[1]
+    return {int(row.split()[0]): tuple(map(float, row.split()[1:])) for row in rows.splitlines()}
+
+
+def check_forces(actual, expected):
+    assert actual.keys() == expected.keys()
+    for atom, reference in expected.items():
+        for got, ref in zip(actual[atom], reference):
+            assert math.isclose(got, ref, rel_tol=1e-6, abs_tol=1e-7), (atom, got, ref)
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +84,14 @@ with tempfile.TemporaryDirectory() as tmp:
     hybrid_coeff = "pair_coeff * * ls/dem 0 0 0 0 0 0 {}\npair_coeff * * lj/cut 1 1"
     reference = simulate(d, "lj/cut 4", "pair_coeff * * 1 1")
     expected = forces(d)
-    assert any(float(f) != 0.0 for row in expected.splitlines() for f in row.split()[1:])
+    assert any(f != 0.0 for row in expected.values() for f in row)
     overlay = simulate(d, hybrid.format("auto"), hybrid_coeff.format("12"))
     assert list_distance(reference) == list_distance(overlay) == 4.3
-    assert forces(d) == expected and overlay.count(no_exclusion) == 1
+    check_forces(forces(d), expected)
+    assert overlay.count(no_exclusion) == 1
+    # Only one type pair is assigned to LS-DEM. The other type still feels LJ forces.
+    simulate(d, "lj/cut 4", "pair_coeff * * 1 1", two_types=True)
+    expected = forces(d)
+    simulate(d, hybrid.format("auto"), hybrid_coeff.format("12").replace("* * ls/dem", "1 1 ls/dem"),
+             two_types=True)
+    check_forces(forces(d), expected)

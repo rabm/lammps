@@ -129,25 +129,31 @@ void PairLSDEMKokkos<DeviceType>::init_style()
 /* ---------------------------------------------------------------------- */
 
 template<class DeviceType>
+double PairLSDEMKokkos<DeviceType>::init_one(int i, int j)
+{
+  const double cutoff = PairLSDEM::init_one(i, j);
+  // A hybrid style initializes only the type pairs assigned to this sub-style.
+  auto &p = k_params.view_host()(i, j);
+  p.kn = kn[i][j];
+  p.kt = kt[i][j];
+  p.mu = mu[i][j];
+  p.etan = etan[i][j];
+  p.etat = etat[i][j];
+  p.knp = knp[i][j];
+  p.etan1 = etan1[i][j];
+  p.decayn1 = decayn1[i][j];
+  p.etat1 = etat1[i][j];
+  p.decayt1 = decayt1[i][j];
+  k_params.view_host()(j, i) = p;
+  return cutoff;
+}
+
+/* ---------------------------------------------------------------------- */
+
+template<class DeviceType>
 void PairLSDEMKokkos<DeviceType>::setup()
 {
   PairLSDEM::setup();
-
-  const int n = atom->ntypes;
-  for (int i = 1; i <= n; i++)
-    for (int j = 1; j <= n; j++) {
-      auto &p = k_params.view_host()(i, j);
-      p.kn = kn[i][j];
-      p.kt = kt[i][j];
-      p.mu = mu[i][j];
-      p.etan = etan[i][j];
-      p.etat = etat[i][j];
-      p.knp = knp[i][j];
-      p.etan1 = etan1[i][j];
-      p.decayn1 = decayn1[i][j];
-      p.etat1 = etat1[i][j];
-      p.decayt1 = decayt1[i][j];
-    }
   k_params.modify_host();
   k_params.template sync<DeviceType>();
 

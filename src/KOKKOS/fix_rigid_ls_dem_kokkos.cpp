@@ -71,7 +71,7 @@ void FixRigidLSDEMKokkos<DeviceType>::init()
   // the nodes of a body are summed in one chunk, in atom index order as on the CPU,
   //   only with the exact order of pair ls/dem
 
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  auto pair = dynamic_cast<PairLSDEM *>(force->pair_match("^ls/dem", 0));
   nchunk = (pair && pair->exact_order) ? 1 : NCHUNK;
 }
 
