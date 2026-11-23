@@ -721,17 +721,17 @@ void FixRigidSmallLSDEM::process_levelsets()
   // Read and store level sets      //
   // ------------------------------ //
 
-  // The size, minimum corner, and stride of the grid of each body only depend on the header
-  //   of its grid file, so they are set for all bodies before the files are read and are
-  //   sent to the ghost bodies once, rather than once per grid file
+  // The size, minimum corner, and stride of the grid of each body only depend on the header,
+  //   so they are set for all bodies before reading files -> sent to ghost bodies
 
   for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
     LSData &bodydata = gridfile_data[id_to_gridfile[bodyLS[ibody].file_id]];
     set_grid_geometry(ibody, bodydata.grid_size, bodydata.grid_min);
   }
 
-  // Manually calculate & communicate xcom before static_bodies called
+  // Manually calculate & communicate xcom before static_bodies() called
   //   Needed to map nodes to bins, may not be necessary for all combinations of options
+
   calculate_xcom();
   nghost_bodyLS = 0;
   commflag_ls = FULL_BODY_LS;
