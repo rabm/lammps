@@ -10,18 +10,21 @@ import tempfile
 from lsdem_spheres import write_shapes
 
 
-def simulate(directory, pair, coeff, neighbors="", *, expect_error=False):
+def simulate(directory, pair, coeff, neighbors="", *, halo=20, owner_halo=False, expect_error=False):
+    fix = "fix bodies all rigid/small/ls/dem molecule" if "ls/dem" in pair else ""
+    if owner_halo:
+        fix += " owner/halo"
     commands = f"""units lj
 atom_style ls/dem
 atom_modify map yes
-comm_modify vel yes cutoff 20
+comm_modify vel yes cutoff {halo}
 newton off
 region box block -25 25 -25 25 -25 25
 create_box 1 box
 mass 1 1
 molecule sphere sphere1.mol
 create_atoms 0 single 0 0 0 mol sphere 1234 rotate 0 0 0 1 units box
-{"fix bodies all rigid/small/ls/dem molecule" if "ls/dem" in pair else ""}
+{fix}
 {neighbors}
 pair_style {pair}
 {coeff}
@@ -73,3 +76,24 @@ with tempfile.TemporaryDirectory() as tmp:
     overlay = simulate(d, hybrid.format("auto"), hybrid_coeff.format("12"))
     assert list_distance(reference) == list_distance(overlay) == 4.3
     assert forces(d) == expected and overlay.count(no_exclusion) == 1
+
+    # The sphere has owner extent 2. With pair cutoff 1 and skin 1, the
+    # rigid minimum is 3, the array search reaches 4 and the owners reach 6.
+    search = "may miss neighbors of ghost nodes"
+    owners = "may miss owners of ghost nodes"
+    excess = "may communicate unnecessary atoms"
+    for separate, halo, expected in (
+        (False, 3.5, search), (False, 4, owners), (False, 6, None), (False, 8, None),
+        (True, 2, search), (True, 4, None), (True, 6, None), (True, 6.1, excess),
+    ):
+        log = simulate(d, "ls/dem 1", coefficients, "neighbor 1 bin\n" + excluded,
+                       halo=halo, owner_halo=separate)
+        for warning in (search, owners, excess):
+            assert log.count(warning) == int(warning == expected), log
+        assert log.count("Consider adding owner/halo") == int(not separate), log
+    # The mandatory owner check applies even when the two-hop cutoff is met.
+    for skin in (1.0, 0.25):
+        failure = simulate(d, "ls/dem 1", coefficients, f"neighbor {skin} bin\n" + excluded,
+                           halo=2.75, expect_error=True)
+        assert "Rigid body extent" in failure and "ghost atom cutoff" in failure, failure
+        assert search not in failure and owners not in failure

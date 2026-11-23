@@ -105,6 +105,8 @@ class FixRigidSmall : public Fix {
   tagint maxmol;       // max mol-ID
   double maxextent;    // furthest distance from body owner to body atom
   double extra_extent; // extra distance beyond maxextent
+  bool selective_halo = false;  // owner/halo option for rigid/small/ls/dem
+  double owner_reach = 0.0;     // additional owner-only communication radius
 
   Body *body;         // list of rigid bodies, owned and ghost
   int nlocal_body;    // # of owned rigid bodies

@@ -367,6 +367,9 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
         utils::missing_cmd_args(FLERR, fmt::format("fix {} ls/storage", style), error);
       iarg += 2;
 
+    } else if (strcmp(arg[iarg], "owner/halo") == 0 && strcmp(style,"rigid/small/ls/dem") == 0) {
+      selective_halo = true;
+      ++iarg;
     } else if (strcmp(arg[iarg], "duplicate/data") == 0) {
       if (!utils::strmatch(style, "ls"))
         error->all(FLERR,"Unknown fix {} keyword {}", style, arg[iarg]);
@@ -657,6 +660,7 @@ void FixRigidSmall::setup(int vflag)
   // must check here, not in init, b/c neigh/comm values set after fix init
 
   double cutghost = MAX(neighbor->cutneighmax,comm->cutghostuser);
+  cutghost = MAX(cutghost,owner_reach);
   if (maxextent + extra_extent > cutghost) {
     if (extra_extent > 0)
       error->all(FLERR, Error::NOLASTLINE,

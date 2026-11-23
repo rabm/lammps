@@ -32,6 +32,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <typeinfo>
 
 using namespace LAMMPS_NS;
 
@@ -163,6 +164,28 @@ void CommBrick::init()
 }
 
 /* ----------------------------------------------------------------------
+   register additional reach for atoms that own a body
+------------------------------------------------------------------------- */
+
+void CommBrick::request_owner_halo(double cutoff, tagint **tags)
+{
+  if ((typeid(*this) != typeid(CommBrick)) || (mode != SINGLE) || bordergroup || domain->triclinic)
+    error->all(FLERR, "Selective owner halos require orthogonal single-mode CPU brick communication with all atoms");
+  if (owner_tags && owner_tags != tags)
+    error->all(FLERR, "Only one fix can request a selective owner halo");
+  owner_tags = tags;
+  owner_cut = cutoff;
+}
+
+void CommBrick::release_owner_halo(tagint **tags)
+{
+  if (owner_tags == tags) {
+    owner_tags = nullptr;
+    owner_cut = 0.0;
+  }
+}
+
+/* ----------------------------------------------------------------------
    setup spatial-decomposition communication patterns
    function of neighbor cutoff(s) & cutghostuser & current box size
    single mode sets slab boundaries (slablo,slabhi) based on max cutoff
@@ -183,7 +206,8 @@ void CommBrick::setup()
   int i,j;
   double *prd,*sublo,*subhi;
 
-  double cut = get_comm_cutoff();
+  ordinary_cut = get_comm_cutoff();
+  double cut = MAX(ordinary_cut, owner_cut);
   if ((cut == 0.0) && (me == 0))
     error->warning(FLERR,"Communication cutoff is 0.0. No ghost atoms will be generated. "
                    "Energies and forces may be wrong and atoms may get lost.");
@@ -777,7 +801,19 @@ void CommBrick::borders()
 
       if (sendflag) {
         if (!bordergroup || ineed >= 2) {
-          if (mode == Comm::SINGLE) {
+          if (owner_cut > ordinary_cut) {
+            const double ordinary_lo = (ineed % 2) ? domain->subhi[dim]-ordinary_cut : lo;
+            const double ordinary_hi = (ineed % 2) ? hi : domain->sublo[dim]+ordinary_cut;
+            for (i = nfirst; i < nlast; ++i) {
+              const double coord = x[i][dim];
+              if (coord < lo || coord > hi) continue;
+              const bool ordinary = (coord >= ordinary_lo && coord <= ordinary_hi);
+              if (ordinary || ((*owner_tags)[i] == atom->tag[i])) {
+                if (nsend == maxsendlist[iswap]) grow_list(iswap,nsend);
+                sendlist[iswap][nsend++] = i;
+              }
+            }
+          } else if (mode == Comm::SINGLE) {
             for (i = nfirst; i < nlast; i++)
               if (x[i][dim] >= lo && x[i][dim] <= hi) {
                 if (nsend == maxsendlist[iswap]) grow_list(iswap,nsend);

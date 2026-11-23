@@ -44,6 +44,7 @@ class PairLSDEM : public Pair {
   void write_data(FILE *) override;
   void write_data_all(FILE *) override;
 
+  double node_pair_cutoff() const { return node_cutoff; }
   double maxcut;
   int cutoff_mode;           // fixed, explicit auto, or inherited per type pair
   int exact_order;           // 1 if results do not depend on the order of the neighbor list
@@ -57,6 +58,9 @@ class PairLSDEM : public Pair {
   double overlap_det, overlap_limit, maxoverlap;
   int overlap_warned;
   bool cutoff_warned = false, exclusion_warned = false;
+  bool short_halo_warned = false, owner_halo_warned = false, long_halo_warned = false;
+  double node_cutoff;    // largest cutoff among type pairs actually assigned to LS-DEM
+  void check_ghost_cutoff();
   void check_overlap();
 
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;

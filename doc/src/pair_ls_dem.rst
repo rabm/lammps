@@ -50,3 +50,19 @@ the LS-DEM pair cutoff. Use :doc:`comm_modify cutoff <comm_modify>` when
 the neighbor cutoff is shorter. For a small number of large grains,
 ``fix rigid/ls/dem`` stores body information on every rank and avoids
 this owner-distance requirement at the cost of global reductions.
+
+With a shared halo, ``fix rigid/small/ls/dem`` recommends the
+``owner/halo`` keyword once per fix. This option gives body owners extra
+communication reach while preserving the ordinary halo for every atom. It
+supports orthogonal CPU brick communication in single mode with all atoms
+communicated.
+
+With array storage, a local node can need the neighbors of a ghost node.
+Let *R* be the largest LS-DEM node-pair cutoff plus the neighbor skin,
+and *D* the maximum owner-to-node distance. In single communication mode
+the pair style warns once if the ordinary halo is below *2R*. For a
+shared halo, *D* + *2R* also covers the owners of nodes at the edge of
+that search. The pair style gives one advisory if both reaches fall
+short. The rigid fix already reports an error below its mandatory owner
+cutoff. With ``owner/halo``, the pair style also warns if the ordinary halo
+exceeds *3R* and is longer than other requested neighbor lists require.

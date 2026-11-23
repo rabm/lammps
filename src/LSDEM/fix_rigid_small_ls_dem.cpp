@@ -16,6 +16,7 @@
 
 #include "atom.h"
 #include "comm.h"
+#include "comm_brick.h"
 #include "domain.h"
 #include "error.h"
 #include "force.h"
@@ -138,7 +139,8 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   commflag_rev_ls = RPARENT;
   comm_forward += 1 + bodysizeLS;
 
-  if (storage_mode == WATERSHED)
+  if (selective_halo) comm_border = 1;
+  if (selective_halo || storage_mode == WATERSHED)
     atom->add_callback(Atom::BORDER);
 
   if (langflag)
@@ -147,12 +149,23 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   // currently only call FixRigidSmall::setup_bodies_static() once
   //   need to think how to support this...
   reinitflag = 0;
+
+  if (!selective_halo && comm->me == 0)
+    error->warning(FLERR, "Fix {} uses the same ghost cutoff for nodes and body owners. "
+                   "Consider adding owner/halo to fix {} to send only owners the extra distance "
+                   "in orthogonal, single-mode CPU brick runs with all atoms communicated", style, id);
 }
 
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 {
+  if (selective_halo) {
+    if (auto *brick = dynamic_cast<CommBrick *>(comm)) brick->release_owner_halo(&bodytag);
+  }
+  if ((selective_halo || storage_mode == WATERSHED) && modify->get_fix_by_id(id))
+    atom->delete_callback(id, Atom::BORDER);
+
   // delete extra property/atom fixes
 
   if (id_fix && modify->nfix) modify->delete_fix(id_fix);
@@ -232,6 +245,13 @@ void FixRigidSmallLSDEM::init()
   // Fix rigid/small ensures communication cutoff is large enough so that any owned atom in a body
   //   can reach the atom that owns the body, here, need to ensure this any ghost atom in a body
   extra_extent = maxcut;
+  if (selective_halo) {
+    auto *brick = dynamic_cast<CommBrick *>(comm);
+    if (!brick) error->all(FLERR, "Selective owner halos require CPU brick communication");
+    const double radius = pair->node_pair_cutoff() + neighbor->skin;
+    owner_reach = maxextent + MAX(maxcut, 2.0 * radius);
+    brick->request_owner_halo(owner_reach, &bodytag);
+  }
 
   if (ls_read_flag) return;
   // set in setup_pre_neighbor()
@@ -1020,7 +1040,7 @@ void FixRigidSmallLSDEM::process_levelsets()
   maxexchange = 2 + bodysizeLS;
 
   if (storage_mode == WATERSHED) {
-    comm_border = 2; // node index
+    comm_border = 2 + selective_halo; // node index, grid style and optional owner tag
     maxexchange += 1; // node index
     if (distributed_flag) {
       int max_nbins = 0;
@@ -1673,10 +1693,14 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 
 int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
 {
-  if (storage_mode != WATERSHED) return 0;
-  if (!ls_read_flag) return 0;
-
-  return pack_watershed(n, list, buf);
+  int m = 0;
+  if (selective_halo) {
+    for (int i = 0; i < n; ++i) buf[i] = ubuf(bodytag[list[i]]).d;
+    m = n;
+  }
+  if (storage_mode == WATERSHED && ls_read_flag)
+    m += pack_watershed(n, list, buf + m);
+  return m;
 }
 
 /* ----------------------------------------------------------------------
@@ -1780,10 +1804,14 @@ void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
 
 int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
 {
-  if (storage_mode != WATERSHED) return 0;
-  if (!ls_read_flag) return 0;
-
-  return unpack_watershed(n, first, buf);
+  int m = 0;
+  if (selective_halo) {
+    for (int i = 0; i < n; ++i) bodytag[first+i] = (tagint) ubuf(buf[i]).i;
+    m = n;
+  }
+  if (storage_mode == WATERSHED && ls_read_flag)
+    m += unpack_watershed(n, first, buf + m);
+  return m;
 }
 
 /* ----------------------------------------------------------------------

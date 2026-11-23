@@ -25,6 +25,10 @@ class CommBrick : public Comm {
 
   ~CommBrick() override;
 
+  // Optional extra reach for the atoms identified by their own tag in a fix's owner array.
+  void request_owner_halo(double, tagint **);
+  void release_owner_halo(tagint **);
+  double regular_halo() const { return ordinary_cut; }
   void init() override;
   void setup() override;                        // setup 3d comm pattern
   void forward_comm(int dummy = 0) override;    // forward comm of atom coords
@@ -49,6 +53,8 @@ class CommBrick : public Comm {
   double memory_usage() override;
 
  protected:
+  tagint **owner_tags = nullptr;  // the fix can reallocate its array during border exchange
+  double owner_cut = 0.0, ordinary_cut = 0.0;
   int nswap;                            // # of swaps to perform = sum of maxneed
   int recvneed[3][2];                   // # of procs away I recv atoms from
   int sendneed[3][2];                   // # of procs away I send atoms to

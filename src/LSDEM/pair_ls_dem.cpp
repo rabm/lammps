@@ -15,6 +15,7 @@
 
 #include "atom.h"
 #include "comm.h"
+#include "comm_brick.h"
 #include "domain.h"
 #include "error.h"
 #include "fix_rigid_ls_dem.h"
@@ -28,6 +29,7 @@
 #include "molecule.h"
 #include "neigh_list.h"
 #include "neighbor.h"
+#include "npair.h"
 #include "output.h"
 #include "update.h"
 #include "utils.h"
@@ -1351,6 +1353,7 @@ void PairLSDEM::coeff(int narg, char **arg)
 
 void PairLSDEM::init_style()
 {
+  node_cutoff = 0.0;
   if (comm->ghost_velocity == 0)
     error->all(FLERR, "Pair ls/dem requires ghost atoms store velocity");
 
@@ -1622,6 +1625,7 @@ double PairLSDEM::auto_node_spacing()
 
 void PairLSDEM::setup()
 {
+  check_ghost_cutoff();
   // the ghost atoms are recreated in each setup, so refill the body info at the next compute()
   binfo_lastbuild = -1;
   segs_lastbuild = -1;
@@ -1632,6 +1636,70 @@ void PairLSDEM::setup()
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
+}
+
+/* ----------------------------------------------------------------------
+   An array contact can depend on the neighbor of a ghost node.
+------------------------------------------------------------------------- */
+
+void PairLSDEM::check_ghost_cutoff()
+{
+  if (comm->me || watershed_flag || (comm->mode != Comm::SINGLE) || (node_cutoff <= 0.0)) return;
+
+  const bool small = groupbit_small != -1;
+  const bool separate = small && fix_rigid_small->separate_owner_halo();
+  // In a tilted box Comm stores the z reach as a fraction of the box height.
+  const double halo = separate ? static_cast<CommBrick *>(comm)->regular_halo() :
+      comm->cutghost[2] * (domain->triclinic ? domain->zprd : 1.0);
+  const double radius = node_cutoff + neighbor->skin;
+  const double two_hops = 2.0 * radius;
+  const double extent = (small && !separate) ? fix_rigid_small->owner_extent() : 0.0;
+  // rigid/small already rejects a shared halo below its mandatory owner reach.
+  if (small && !separate && (MAX(neighbor->cutneighmax, comm->cutghostuser) < extent + maxcut))
+    return;
+
+  if (!short_halo_warned && (halo < two_hops * (1.0 - EPSILON))) {
+    short_halo_warned = true;
+    if (extent > 0.0) owner_halo_warned = true;
+    error->warning(FLERR, "Pair ls/dem ghost cutoff {:.8g} may miss neighbors of ghost nodes. "
+                   "The array search needs up to {:.8g}. Consider comm_modify cutoff {:.8g} "
+                   "to cover the search and any owners sharing this halo",
+                   halo, two_hops, two_hops + extent);
+  } else if (!owner_halo_warned && (extent > 0.0) &&
+             (halo < (two_hops + extent) * (1.0 - EPSILON))) {
+    owner_halo_warned = true;
+    error->warning(FLERR, "Pair ls/dem shared ghost cutoff {:.8g} may miss owners of ghost nodes. "
+                   "A cutoff of {:.8g} covers the two-hop array search plus the owner-to-node "
+                   "distance {:.8g}", halo, two_hops + extent, extent);
+  }
+
+  if (!separate || long_halo_warned || (halo <= 3.0 * radius * (1.0 + EPSILON))) return;
+
+  double preferred = MAX(two_hops, neighbor->cutneighmax);
+  // Respect longer lists requested by hybrid partners, fixes or computes.
+  // For another ghost-centered list, include both the local and ghost hops.
+  double ghost_hop = -1.0;
+  for (int i = 0; i < neighbor->nlist; ++i) {
+    const auto *other = neighbor->lists[i];
+    if (!other->requestor || other->requestor == this || !other->np) continue;
+    double reach = other->np->cutoff_custom;
+    if (reach <= 0.0) reach = neighbor->cutneighmax;
+    if (other->ghost) {
+      if (ghost_hop < 0.0) {
+        double maxsq = 0.0;
+        for (int j = 1; j <= atom->ntypes; ++j)
+          for (int k = j; k <= atom->ntypes; ++k)
+            maxsq = MAX(maxsq, neighbor->cutneighghostsq[j][k]);
+        ghost_hop = sqrt(maxsq);
+      }
+      reach += ghost_hop;
+    }
+    preferred = MAX(preferred, reach);
+  }
+  if (halo <= preferred * (1.0 + EPSILON)) return;
+  long_halo_warned = true;
+  error->warning(FLERR, "Pair ls/dem regular ghost cutoff {:.8g} may communicate unnecessary atoms. "
+                 "Consider a cutoff near {:.8g} if other commands allow it", halo, preferred);
 }
 
 /* ----------------------------------------------------------------------
@@ -1670,6 +1738,7 @@ double PairLSDEM::init_one(int i, int j)
   decayt1[j][i] = decayt1[i][j];
   etat1[j][i] = etat1[i][j];
 
+  node_cutoff = MAX(node_cutoff, cut[i][j]);
   return cut[i][j];
 }
 
