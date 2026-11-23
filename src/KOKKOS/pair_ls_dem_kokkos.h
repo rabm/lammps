@@ -216,6 +216,7 @@ class PairLSDEMKokkos : public PairLSDEM {
   ~PairLSDEMKokkos() override;
   void compute(int, int) override;
   void init_style() override;
+  double init_one(int, int) override;
   void setup() override;
 
   // public so its device lambdas can be compiled for CUDA
