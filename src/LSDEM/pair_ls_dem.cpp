@@ -190,9 +190,12 @@ void PairLSDEM::cache_body_info(int ntotal)
 }
 
 /* ----------------------------------------------------------------------
-   for each node, list the neighbor nodes on each other grain in the order of the
-   neighbor list, under the node of the grain whose nodes are used,
-   grains of equal volume are listed both ways since their choice depends on position
+   One segment holds the candidate surface nodes of grain B for one node
+   of grain A. Rebuild these lists with the neighbor list and reuse them
+   between rebuilds to find the closest node (array) or the bin owner
+   (watershed). The grain radius plus skin rejects segments that cannot
+   reach contact before the next rebuild. Equal-volume grains can choose
+   either direction as they move, so store both directions.
 ------------------------------------------------------------------------- */
 
 void PairLSDEM::build_rep_segments()
@@ -216,7 +219,38 @@ void PairLSDEM::build_rep_segments()
   auto segkey = [](int r, int bid, int off) {
     return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
   };
-  std::unordered_set<uint64_t> live;
+
+  // a node farther from the center of the other grain than its bound plus the skin cannot reach
+  //   it before the next reneighboring, since nodes and centers move less than half the skin,
+  //   so that segment would be skipped at each step (see compute()) and is not built,
+  //   unless the node still has shear history with that grain
+
+  double **x = atom->x;
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  const double skin = neighbor->skin;
+  auto near = [&](int r, int c) {
+    const double bnd = binfo[c].radius;
+    if ((bnd >= BIG) || (touch_id[r] == binfo[c].bID)) return true;
+    if (bnd < 0.0) return false;
+    double del[3] = {x[r][0] - grain_com[c][0], x[r][1] - grain_com[c][1],
+                     x[r][2] - grain_com[c][2]};
+    domain->minimum_image(FLERR, del);
+    return del[0] * del[0] + del[1] * del[1] + del[2] * del[2] <= (bnd + skin) * (bnd + skin);
+  };
+
+  // All candidate nodes in a group refer to the same opposing grain.
+  // Store both outcomes so a rejected group is tested only once as well.
+  std::unordered_map<uint64_t, bool> accepted;
+  auto classify = [&](int node, int candidate) {
+    const auto &body = binfo[candidate];
+    auto result = accepted.try_emplace(segkey(node, body.bID, body.off), false);
+    if (result.second) result.first->second = near(node, candidate);
+  };
+  auto is_accepted = [&](int node, const BodyInfo &body) {
+    auto it = accepted.find(segkey(node, body.bID, body.off));
+    return it != accepted.end() && it->second;
+  };
   for (int ii = 0; ii < allnum; ii++) {
     const int i = ilist[ii];
     const BodyInfo &bi = binfo[i];
@@ -232,8 +266,8 @@ void PairLSDEM::build_rep_segments()
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       if (ii >= inum) continue;
-      if (bi.vol <= bj.vol) live.insert(segkey(i, bj.bID, bj.off));
-      if (bi.vol >= bj.vol) live.insert(segkey(j, bi.bID, bi.off));
+      if (bi.vol <= bj.vol) classify(i, j);
+      if (bi.vol >= bj.vol) classify(j, i);
     }
   }
 
@@ -251,11 +285,14 @@ void PairLSDEM::build_rep_segments()
       if (special_lj[sbmask(j)] == 0) continue;
       j &= NEIGHMASK;
       const BodyInfo &bj = binfo[j];
+      const int sij = (bi.vol <= bj.vol) && is_accepted(i, bj);
+      const int sji = (bi.vol >= bj.vol) && is_accepted(j, bi);
+      if (!sij && !sji) continue;
       const int key = (ii < inum) ? ipair++ : -1;
       const int tie = (bi.vol == bj.vol);
-      if ((bi.vol <= bj.vol) && live.count(segkey(i, bj.bID, bj.off)))
+      if (sij)
         add_rep_candidate(i, bj.bID, bj.off, j, tie, key, 1);
-      if ((bi.vol >= bj.vol) && live.count(segkey(j, bi.bID, bi.off)))
+      if (sji)
         add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
