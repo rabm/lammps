@@ -101,6 +101,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   single_enable = 0;
   cutoff_auto = 0;
   auto_cut_factor = AUTO_CUT_FACTOR;
+  exact_order = 0;
   contact_build_fast = 1;
   overlap_det = overlap_limit = maxoverlap = 0.0;
   overlap_warned = 0;
@@ -453,13 +454,18 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   // Array: find the closest node on each other grain for each node of the grain whose nodes
-  //   are used, in the order of the neighbor list, so the first of equally close nodes wins.
+  //   are used, of equally close nodes the first one wins.
   //   Comparing squared distances (rsq) gives the same closest node as comparing r.
   //   Each pair of the closest node and a node with its tag (periodic images) in the
   //   neighbor list of a local atom is a contact.
-  // Watershed: find the bin of the node in the grid of each other grain once, from the first
-  //   candidate in the neighbor list of a local atom, each candidate owning that bin is a contact.
+  // Watershed: find the bin of the node in the grid of each other grain once, from the
+  //   first candidate in the neighbor list of a local atom, each candidate owning that bin
+  //   is a contact.
   // The contacts are then evaluated in neighbor list order.
+  // With the exact order, the lowest atom index takes the place of the first candidate and
+  //   contacts are evaluated in the order of the atom indices of their pair. None of this then
+  //   depends on the order of the neighbor list, so pair ls/dem/kk with a neighbor list built
+  //   on the device gives the same results bit for bit. It costs some time, so it is optional.
 
   contacts.clear();
   wsbins.clear();
@@ -470,13 +476,20 @@ void PairLSDEM::compute(int eflag, int vflag)
     yitmp = x[irep][1];
     zitmp = x[irep][2];
     for (Seg &seg : segs) {
-      // grains of equal volume choose whose nodes are used by their current positions
-      const int c0 = seg.cand[0].idx;
-      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
       const int ncand = seg.cand.size();
+      int first = 0;
+      if (exact_order) {
+        // Use the lowest-index candidate from a local neighbor pair.
+        first = -1;
+        for (int m = 0; m < ncand; m++)
+          if (seg.cand[m].key >= 0 && (first < 0 || seg.cand[m].idx < seg.cand[first].idx))
+            first = m;
+        if (first < 0) continue;
+      }
+      const int c0 = seg.cand[first].idx;
+      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
 
       if (watershed_flag) {
-        int first = 0;
         while ((first < ncand) && (seg.cand[first].key < 0)) first++;
         if (first == ncand) continue;
         // the grid and watershed of the other grain are found through its body
@@ -492,7 +505,7 @@ void PairLSDEM::compute(int eflag, int vflag)
           wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
         const int ws = wsbins.size();
         wsbins.push_back(wb);
-        for (int m = first; m < ncand; m++) {
+        for (int m = 0; m < ncand; m++) {
           const Cand &cand = seg.cand[m];
           if (cand.key < 0) continue;
           const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
@@ -515,7 +528,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         delz = zitmp - x[c][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
-        if ((win < 0) || (rsq < minrsq)) {
+        if ((win < 0) || (rsq < minrsq) ||
+            (exact_order && (rsq == minrsq) && (c < seg.cand[win].idx))) {
           minrsq = rsq;
           win = m;
         }
@@ -530,9 +544,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
     }
   }
-  std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
-    return a.key < b.key;
-  });
+  if (exact_order)
+    std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
+      return (a.i < b.i) || ((a.i == b.i) && (a.j < b.j));
+    });
+  else
+    std::sort(contacts.begin(), contacts.end(),
+              [](const Contact &a, const Contact &b) { return a.key < b.key; });
 
   double x_local[3];
   for (const Contact &ct : contacts) {
@@ -1089,6 +1107,7 @@ void PairLSDEM::settings(int narg, char **arg)
   // "auto" estimates the node-node cutoff from the node spacing of the grains in init_style()
   //   with an optional factor, otherwise the cutoff is the given number.  Contact building uses
   //   the faster cached candidate path by default; the transparent path is useful for debugging.
+  exact_order = 0;
   contact_build_fast = 1;
   int iarg = 1;
   if (strcmp(arg[0], "auto") == 0) {
@@ -1096,7 +1115,8 @@ void PairLSDEM::settings(int narg, char **arg)
     maxcut = -1.0;
     auto_cut_factor = AUTO_CUT_FACTOR;
     if ((iarg < narg) && (strcmp(arg[iarg], "fast") != 0) &&
-        (strcmp(arg[iarg], "transparent") != 0) && (strcmp(arg[iarg], "method") != 0)) {
+        (strcmp(arg[iarg], "transparent") != 0) && (strcmp(arg[iarg], "method") != 0) &&
+        (strcmp(arg[iarg], "order") != 0)) {
       auto_cut_factor = utils::numeric(FLERR, arg[iarg], false, lmp);
       if (auto_cut_factor <= 0.0)
         error->all(FLERR, "The pair ls/dem auto cutoff factor {} must be positive",
@@ -1114,6 +1134,14 @@ void PairLSDEM::settings(int narg, char **arg)
   }
 
   while (iarg < narg) {
+    if (strcmp(arg[iarg], "order") == 0) {
+      if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem order", error);
+      if (strcmp(arg[iarg + 1], "exact") == 0) exact_order = 1;
+      else if (strcmp(arg[iarg + 1], "list") == 0) exact_order = 0;
+      else error->all(FLERR, "Unknown pair_style ls/dem order {}", arg[iarg + 1]);
+      iarg += 2;
+      continue;
+    }
     if (strcmp(arg[iarg], "method") == 0) {
       if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem method", error);
       iarg++;
@@ -1606,7 +1634,8 @@ void PairLSDEM::write_restart_settings(FILE *fp)
   fwrite(&maxcut, sizeof(double), 1, fp);
   fwrite(&cutoff_auto, sizeof(int), 1, fp);
   fwrite(&auto_cut_factor, sizeof(double), 1, fp);
-  fwrite(&contact_build_fast, sizeof(int), 1, fp);
+  const int mode = contact_build_fast | (exact_order << 1);
+  fwrite(&mode, sizeof(int), 1, fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -1625,6 +1654,8 @@ void PairLSDEM::read_restart_settings(FILE *fp)
   MPI_Bcast(&cutoff_auto, 1, MPI_INT, 0, world);
   MPI_Bcast(&auto_cut_factor, 1, MPI_DOUBLE, 0, world);
   MPI_Bcast(&contact_build_fast, 1, MPI_INT, 0, world);
+  exact_order = (contact_build_fast >> 1) & 1;
+  contact_build_fast &= 1;
 }
 
 /* ----------------------------------------------------------------------

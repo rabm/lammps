@@ -46,6 +46,7 @@ class PairLSDEM : public Pair {
 
   double maxcut;
   int cutoff_auto;           // 1 if the cutoff is estimated from the node spacing
+  int exact_order;           // 1 if results do not depend on the order of the neighbor list
   double auto_cut_factor;    // multiple of the node spacing used for the auto cutoff
 
  protected:
@@ -120,7 +121,7 @@ class PairLSDEM : public Pair {
   std::vector<WsBin> wsbins;
 
   // contacts of the closest nodes (array) or of the nodes owning the bin (watershed),
-  //   evaluated by process_contact() in the order of key
+  //   evaluated by process_contact() in the order of i, then j
   //   i is the atom whose neighbor list holds the pair, calc = 1 if i is the node used
   //   ws: index in wsbins, -1 for array
 
