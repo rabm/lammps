@@ -225,9 +225,8 @@ void FixRigidSmallLSDEM::init()
   }
 
   // Pair cutoff sets size of LS around nodes for distributed case
-  if (!utils::strmatch(force->pair_style, "^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  auto *pair = dynamic_cast<PairLSDEM *>(force->pair_match("^ls/dem", 0));
+  if (!pair) error->all(FLERR, "Fix rigid/small/ls/dem requires a single ls/dem pair style");
   maxcut = pair->maxcut;
 
   // Fix rigid/small ensures communication cutoff is large enough so that any owned atom in a body

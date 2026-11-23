@@ -199,6 +199,9 @@ if(PKG_REAXFF)
 endif()
 
 if(PKG_LSDEM AND PKG_RIGID AND Python_Interpreter_FOUND)
+  add_test(NAME LSDEMNeighborPolicy
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_neighbor_policy.py
+            $<TARGET_FILE:lmp>)
   add_test(NAME LSDEMSharedGridRadius
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_shared_radius.py
             $<TARGET_FILE:lmp>)

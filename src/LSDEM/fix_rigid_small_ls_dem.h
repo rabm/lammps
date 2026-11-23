@@ -84,6 +84,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   inline BodyLS* get_bodyLS_array() { return bodyLS; };
   inline int* get_atom2body_array() { return atom2body; };
   inline int get_storage_model() { return storage_mode; };
+  bool grains_by_molecule() const { return customflag == 0; }
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);

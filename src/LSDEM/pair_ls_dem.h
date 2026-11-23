@@ -45,7 +45,7 @@ class PairLSDEM : public Pair {
   void write_data_all(FILE *) override;
 
   double maxcut;
-  int cutoff_auto;           // 1 if the cutoff is estimated from the node spacing
+  int cutoff_mode;           // fixed, explicit auto, or inherited per type pair
   int exact_order;           // 1 if results do not depend on the order of the neighbor list
   double auto_cut_factor;    // multiple of the node spacing used for the auto cutoff
 
@@ -56,9 +56,12 @@ class PairLSDEM : public Pair {
   //   that is reported, the deepest overlap found so far on this processor, and whether it was
   double overlap_det, overlap_limit, maxoverlap;
   int overlap_warned;
+  bool cutoff_warned = false, exclusion_warned = false;
   void check_overlap();
 
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
+
+  double **input_cut;        // supplied coefficient cutoff, or a marker for inheritance/automatic selection
 
   int groupbit_small, groupbit_large;
   int watershed_flag;

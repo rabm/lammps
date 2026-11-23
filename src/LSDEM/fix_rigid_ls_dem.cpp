@@ -55,6 +55,13 @@ static constexpr int RECOMMENDED_MAX_NGRID = 1000; // For local node grid, 10x10
 
 /* ---------------------------------------------------------------------- */
 
+bool FixRigidLSDEM::grains_by_molecule() const
+{
+  return rstyle == RigidConst::MOLECULE;
+}
+
+/* ---------------------------------------------------------------------- */
+
 FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
     FixRigid(lmp, narg, arg), id_fix(nullptr),  global_grids(nullptr),
     grid_style(nullptr), grid_min(nullptr), grid_stride(nullptr), grid_scale(nullptr),
@@ -206,9 +213,8 @@ void FixRigidLSDEM::init()
   }
 
   // Pair cutoff sets size of LS around nodes for distributed case
-  if (!utils::strmatch(force->pair_style,"^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/ls/dem");
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  auto *pair = dynamic_cast<PairLSDEM *>(force->pair_match("^ls/dem", 0));
+  if (!pair) error->all(FLERR, "Fix rigid/ls/dem requires a single ls/dem pair style");
   maxcut = pair->maxcut;
 
   if (ls_read_flag) {

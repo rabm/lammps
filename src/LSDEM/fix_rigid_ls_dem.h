@@ -53,6 +53,7 @@ class FixRigidLSDEM : public FixRigid {
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
   inline int get_storage_model() { return storage_mode; };
+  bool grains_by_molecule() const;
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
