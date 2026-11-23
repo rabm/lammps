@@ -171,7 +171,8 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
   void copy_mol_data_to_bodies();
   void copy_in_data_to_bodies();
   void compute_forces_and_torques() override;
-  void compute_grain_properties(int, int*, double*, double*);
+  void set_grid_geometry(int, int *, double *);
+  void compute_grain_properties(int, int *, double *, double, double *);
   void read_infile();
   void read_gridfile(int, std::string, double *);
   void grow_body_ls();

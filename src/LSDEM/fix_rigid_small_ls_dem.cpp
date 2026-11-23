@@ -42,6 +42,7 @@
 #include <map>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -700,15 +701,14 @@ void FixRigidSmallLSDEM::process_levelsets()
     // This does not compress atom tags, so for best performance
     //   all atoms in a body should have sequential tags
     tagint max_node_index = -1;
-    for (ibody = 0; ibody < nlocal_bodyLS + nghost_bodyLS; ibody++) {
-      for (i = 0; i < nlocal; i++) {
-        if (!(mask[i] & groupbit)) continue;
-        if (atom2body[i] != ibody) continue;
-        node_index[i] = tag[i] - bodyLS[ibody].tagmin;
-        if (node_index[i] < 0)
-          error->one(FLERR, "Negative node index for atom {} i {} tagmin {} negative! on body {}", tag[i], i, bodyLS[ibody].tagmin, ibody);
-        max_node_index = MAX(max_node_index, node_index[i]);
-      }
+    for (i = 0; i < nlocal; i++) {
+      if (!(mask[i] & groupbit)) continue;
+      ibody = atom2body[i];
+      if ((ibody < 0) || (ibody >= nlocal_bodyLS + nghost_bodyLS)) continue;
+      node_index[i] = tag[i] - bodyLS[ibody].tagmin;
+      if (node_index[i] < 0)
+        error->one(FLERR, "Negative node index for atom {} i {} tagmin {} negative! on body {}", tag[i], i, bodyLS[ibody].tagmin, ibody);
+      max_node_index = MAX(max_node_index, node_index[i]);
     }
 
     MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
@@ -721,31 +721,60 @@ void FixRigidSmallLSDEM::process_levelsets()
   // Read and store level sets      //
   // ------------------------------ //
 
+  // The size, minimum corner, and stride of the grid of each body only depend on the header
+  //   of its grid file, so they are set for all bodies before the files are read and are
+  //   sent to the ghost bodies once, rather than once per grid file
+
+  for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
+    LSData &bodydata = gridfile_data[id_to_gridfile[bodyLS[ibody].file_id]];
+    set_grid_geometry(ibody, bodydata.grid_size, bodydata.grid_min);
+  }
+
+  // Manually calculate & communicate xcom before static_bodies called
+  //   Needed to map nodes to bins, may not be necessary for all combinations of options
+  calculate_xcom();
+  nghost_bodyLS = 0;
+  commflag_ls = FULL_BODY_LS;
+  comm->forward_comm(this, 1 + bodysizeLS);
+  commflag_ls = PARENT;
+
+  // List the local bodies and the local atoms using each grid file once,
+  //   so the loop over grid files does not search all bodies and atoms for every file
+
+  std::map<int, std::vector<int>> file_bodies, file_atoms;
+  for (ibody = 0; ibody < nlocal_bodyLS; ibody++)
+    file_bodies[bodyLS[ibody].file_id].push_back(ibody);
+  for (i = 0; i < nlocal; i++) {
+    if (!(mask[i] & groupbit)) continue;
+    ibody = atom2body[i];
+    if (ibody < 0) continue;
+    file_atoms[bodyLS[ibody].file_id].push_back(i);
+  }
+  const std::vector<int> no_items;
+
   double dx[3], gmin[3];
   int error_code, error_code_global, nx[3];
   for (const auto& pair : gridfile_data) {
     gridfile = pair.first;
 
+    auto found_bodies = file_bodies.find(pair.second.id);
+    const std::vector<int> &my_bodies =
+        (found_bodies == file_bodies.end()) ? no_items : found_bodies->second;
+    auto found_atoms = file_atoms.find(pair.second.id);
+    const std::vector<int> &my_atoms =
+        (found_atoms == file_atoms.end()) ? no_items : found_atoms->second;
+
     read_gridfile(1, gridfile, temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
 
-    for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
-      if (pair.second.id != bodyLS[ibody].file_id)
-        continue;
-      compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
-    }
+    for (int ibody : my_bodies)
+      compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min,
+                               gridfile_data[gridfile].stride, temp_grid_values);
+
     int index_global_grid;
     if (gridfile_data[gridfile].style == GLOBAL)
       index_global_grid = gridfile_data[gridfile].grid_index;
-
-    // Manually calculate & communicate xcom before static_bodies called
-    //   Needed to map nodes to bins, may not be necessary for all combinations of options
-    calculate_xcom();
-    nghost_bodyLS = 0;
-    commflag_ls = FULL_BODY_LS;
-    comm->forward_comm(this, 1 + bodysizeLS);
-    commflag_ls = PARENT;
 
     if (storage_mode == ARRAY) {
       if (gridfile_data[gridfile].style == GLOBAL) {
@@ -755,13 +784,8 @@ void FixRigidSmallLSDEM::process_levelsets()
           global_grids[index_global_grid][n] = temp_grid_values[n];
       } else {
         int max_error = -1;
-        for (i = 0; i < atom->nlocal; i++) {
-          if (!(mask[i] & groupbit)) continue;
+        for (int i : my_atoms) {
           ibody = atom2body[i];
-
-          // Ideally use list of all atoms in body... not sure this exists
-          if (pair.second.id != bodyLS[ibody].file_id)
-            continue;
 
           MathExtra::sub3(x[i], body[ibody].xcm, dx);
           domain->minimum_image(FLERR, dx[0], dx[1], dx[2]);
@@ -785,17 +809,13 @@ void FixRigidSmallLSDEM::process_levelsets()
 
       // Among all bodies with the same file, pick the one with the smallest id
       tagint target_body = MAXTAGINT;
-      for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
-        if (pair.second.id != bodyLS[ibody].file_id)
-          continue;
+      for (int ibody : my_bodies)
         target_body = MIN(target_body, tag[body[ibody].ilocal]);
-      }
       MPI_Allreduce(MPI_IN_PLACE, &target_body, 1, MPI_LMP_TAGINT, MPI_MIN, world);
 
       // Then, calculate the max node index needed for this gridfile
       tagint max_node_index = -1;
-      for (i = 0; i < nlocal; i++) {
-        if (!(mask[i] & groupbit)) continue;
+      for (int i : my_atoms) {
         if (bodytag[i] != target_body) continue;
 
         max_node_index = MAX(max_node_index, node_index[i]);
@@ -822,8 +842,7 @@ void FixRigidSmallLSDEM::process_levelsets()
         global_node_bins[k] = -1;
 
       // Check if this processor owns any nodes in that body
-      for (i = 0; i < nlocal; i++) {
-        if (!(mask[i] & groupbit)) continue;
+      for (int i : my_atoms) {
         if (bodytag[i] != target_body) continue;
 
         ibody = atom2body[i];
@@ -982,11 +1001,7 @@ void FixRigidSmallLSDEM::process_levelsets()
         }
       } else {
         int ni, size_sum;
-        for (i = 0; i < nlocal; i++) {
-          if (!(mask[i] & groupbit)) continue;
-          ibody = atom2body[i];
-          if (pair.second.id != bodyLS[ibody].file_id) continue;
-
+        for (int i : my_atoms) {
           ni = node_index[i];
           size_sum = (int) (node_bins[ni].size() + node_buffer_bins[ni].size());
           max_bins_per_node = MAX(max_bins_per_node, size_sum);
@@ -999,6 +1014,12 @@ void FixRigidSmallLSDEM::process_levelsets()
       }
     }
   }
+
+  // send the grain properties computed above (volume, area...) to the ghost bodies
+  nghost_bodyLS = 0;
+  commflag_ls = FULL_BODY_LS;
+  comm->forward_comm(this, 1 + bodysizeLS);
+  commflag_ls = PARENT;
 
   if (duplicate_data && global_flag)
     duplicate_global_grids(grid_size_flat);
@@ -2486,15 +2507,36 @@ void FixRigidSmallLSDEM::read_gridfile(int which, std::string filename, double *
 }
 
 /* ----------------------------------------------------------------------
-   Using a full level set, calculate properites of grain
+   Set the size, scaled minimum corner, and scaled stride of the grid of a grain,
+   these only depend on the header of the grid file and the scale of the grain
 ------------------------------------------------------------------------- */
 
-void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, double *grid_min, double *grid_values)
+void FixRigidSmallLSDEM::set_grid_geometry(int ibody, int *grid_size, double *grid_min)
+{
+  double scale = bodyLS[ibody].grid_scale;
+
+  bodyLS[ibody].grid_size[0] = grid_size[0];
+  bodyLS[ibody].grid_size[1] = grid_size[1];
+  bodyLS[ibody].grid_size[2] = grid_size[2];
+
+  bodyLS[ibody].grid_min[0] = grid_min[0] * scale;
+  bodyLS[ibody].grid_min[1] = grid_min[1] * scale;
+  bodyLS[ibody].grid_min[2] = grid_min[2] * scale;
+
+  bodyLS[ibody].grid_stride *= scale;
+}
+
+/* ----------------------------------------------------------------------
+   Using a full level set, calculate properites of grain,
+   stride and grid_min are the unscaled values from the grid file
+------------------------------------------------------------------------- */
+
+void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, double *grid_min, double stride, double *grid_values)
 {
   int dimension = domain->dimension;
   double com_temp[3];
 
-  bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, bodyLS[ibody].grid_stride, grid_values, com_temp, itensor_custom[ibody], dimension);
+  bodyLS[ibody].grid_vol = compute_grid_properties(grid_size, stride, grid_values, com_temp, itensor_custom[ibody], dimension);
 
   if (bodyLS[ibody].grid_vol < 0)
     error->all(FLERR, "Non-inertial reference frame for level set in {}", id_to_gridfile[bodyLS[ibody].file_id]);
@@ -2502,35 +2544,24 @@ void FixRigidSmallLSDEM::compute_grain_properties(int ibody, int *grid_size, dou
   // Check CoM misalignment, would apply forces/rotations at incorrect positions
   double sum[3];
   MathExtra::add3(grid_min, com_temp, sum);
-  if (MathExtra::len3(sum) > (0.5 * bodyLS[ibody].grid_stride))
+  if (MathExtra::len3(sum) > (0.5 * stride))
     error->all(FLERR, "Centre of mass computed from LS grid does not agree with provided value, grid min at {} {} {} and CoM computed at {} {} {}",
     grid_min[0], grid_min[1], grid_min[2], com_temp[0], com_temp[1], com_temp[2]);
 
   // Surface area calculation
   //   default epsilon (diff between inner and outer) = 2x grid stride.
 
-  double area = compute_surface_area(dimension, grid_size, bodyLS[ibody].grid_stride, grid_values);
+  double area = compute_surface_area(dimension, grid_size, stride, grid_values);
   if (!((area > 0.0) && std::isfinite(area)))
     error->all(FLERR, "Invalid surface area calculated {}", area);
   bodyLS[ibody].node_area = area;
 
-  // Copy size/min to body structure
-
-  bodyLS[ibody].grid_size[0] = grid_size[0];
-  bodyLS[ibody].grid_size[1] = grid_size[1];
-  bodyLS[ibody].grid_size[2] = grid_size[2];
-
-  bodyLS[ibody].grid_min[0] = grid_min[0] * bodyLS[ibody].grid_scale;
-  bodyLS[ibody].grid_min[1] = grid_min[1] * bodyLS[ibody].grid_scale;
-  bodyLS[ibody].grid_min[2] = grid_min[2] * bodyLS[ibody].grid_scale;
-
-  // Scale relevant quantities by grain size
+  // Scale relevant quantities by grain size, the grid geometry was scaled in set_grid_geometry()
 
   double scale = bodyLS[ibody].grid_scale;
   double scale2 = scale * scale;
   double scale3 = scale * scale2;
   double density = mass_custom[ibody] / bodyLS[ibody].grid_vol;
-  bodyLS[ibody].grid_stride *= scale;
   if (dimension == 3) {
     bodyLS[ibody].node_area *= scale2;
     bodyLS[ibody].grid_vol *= scale3;
