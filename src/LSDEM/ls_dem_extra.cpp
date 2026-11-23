@@ -19,6 +19,7 @@
 #include "math_extra.h"
 #include "rigid_ls_dem_const.h"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -290,6 +291,31 @@ double get_ws_ls_value(int mybin, std::unordered_map<int, double> *mytable, std:
   it = mybuffer->find(mybin);
   if (it != mybuffer->end()) return it->second;
   return BIG;
+}
+
+/* ----------------------------------------------------------------------
+  Bound a rigid shape in its unscaled grain frame, before partitioning the grid.
+  A cell with a nonpositive interpolated value has at least one nonpositive
+  corner. Include one cell diagonal and the same roundoff margin as before.
+------------------------------------------------------------------------- */
+
+double full_grid_bound(const int *size, const double *origin, double stride, const double *values)
+{
+  const int count = size[0] * size[1] * size[2];
+  double maxabs = 0.0;
+  for (int i = 0; i < count; i++) maxabs = std::max(maxabs, fabs(values[i]));
+  const double limit = 1.0e-9 * maxabs;
+
+  double maxrsq = -1.0;
+  for (int i = 0; i < count; i++) {
+    if (values[i] > limit) continue;
+    const double x = origin[0] + (i % size[0]) * stride;
+    const double y = origin[1] + (i / size[0] % size[1]) * stride;
+    const double z = origin[2] + (i / (size[0] * size[1])) * stride;
+    maxrsq = std::max(maxrsq, x*x + y*y + z*z);
+  }
+  if (maxrsq < 0.0) return -1.0;
+  return (sqrt(maxrsq) + sqrt(3.0) * stride) * (1.0 + 1.0e-6);
 }
 
 /* ----------------------------------------------------------------------

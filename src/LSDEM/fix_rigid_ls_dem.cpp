@@ -106,6 +106,7 @@ FixRigidLSDEM::FixRigidLSDEM(LAMMPS *lmp, int narg, char **arg) :
   memory->create(grid_scale, nbody, "rigid/ls/dem:grid_scale");
   memory->create(grid_index, nbody, "rigid/ls/dem:grid_index");
   memory->create(grid_size, nbody, 3, "rigid/ls/dem:grid_size");
+  grid_radius.resize(nbody);
   memory->create(grid_vol, nbody, "rigid/ls/dem:grid_vol");
   memory->create(node_area, nbody, "rigid/ls/dem:node_area");
   memory->create(quatd2g, nbody, 4, "rigid/ls/dem:quatd2g");
@@ -359,11 +360,15 @@ void FixRigidLSDEM::init()
   for (const auto& pair : file_map) { // Loop over <filename, [bodyIDs]>
     filename = pair.first;
     read_gridfile(-1, 1, filename, nullptr, temp_grid_values);
+    const int first = *pair.second.begin();
+    const double radius = full_grid_bound(grid_size[first], grid_min[first], grid_stride[first],
+                                          temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
     for (ibody = 0; ibody < nbody; ibody++) {
       if (pair.second.find(ibody) == pair.second.end())
         continue;
+      grid_radius[ibody] = radius < 0.0 ? radius : radius * grid_scale[ibody];
       compute_grain_properties(ibody, temp_grid_values, filename);
     }
 
@@ -975,6 +980,7 @@ double FixRigidLSDEM::memory_usage()
   bytes += memory->usage(grid_scale, nbody);
   bytes += memory->usage(grid_index, nbody);
   bytes += memory->usage(grid_size, nbody, 3);
+  bytes += grid_radius.capacity() * sizeof(double);
   bytes += memory->usage(grid_vol, nbody);
   bytes += memory->usage(node_area, nbody);
   bytes += memory->usage(quatd2g, nbody, 4);

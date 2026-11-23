@@ -65,6 +65,7 @@ class FixRigidSmallLSDEM : public FixRigidSmall {
     // These are only needed by local bodies
     int ilocal;            // index of owning atom, duplicate from Body
     int file_id;           // integer id of file
+    double grid_radius;    // scaled bound, exchanged with the complete BodyLS record
     double grid_vol;       // volume of LS grid
     double node_area;      // area associated with each grid node
 

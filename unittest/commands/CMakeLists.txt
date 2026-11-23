@@ -198,6 +198,12 @@ if(PKG_REAXFF)
                   ENVIRONMENT "LAMMPS_POTENTIALS=${LAMMPS_POTENTIALS_DIR}")
 endif()
 
+if(PKG_LSDEM AND PKG_RIGID AND Python_Interpreter_FOUND)
+  add_test(NAME LSDEMSharedGridRadius
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_shared_radius.py
+            $<TARGET_FILE:lmp>)
+endif()
+
 add_executable(test_mpi_load_balancing test_mpi_load_balancing.cpp)
 target_link_libraries(test_mpi_load_balancing PRIVATE lammps GTest::GMock)
 add_mpi_test(NAME MPILoadBalancing NUM_PROCS 4 COMMAND $<TARGET_FILE:test_mpi_load_balancing>)

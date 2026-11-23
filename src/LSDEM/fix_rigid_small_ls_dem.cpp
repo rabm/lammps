@@ -727,12 +727,16 @@ void FixRigidSmallLSDEM::process_levelsets()
     gridfile = pair.first;
 
     read_gridfile(1, gridfile, temp_grid_values);
+    const auto &shape = pair.second;
+    const double radius = full_grid_bound(shape.grid_size, shape.grid_min, shape.stride,
+                                          temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
 
     for (ibody = 0; ibody < nlocal_bodyLS; ibody++) {
       if (pair.second.id != bodyLS[ibody].file_id)
         continue;
+      bodyLS[ibody].grid_radius = radius < 0.0 ? radius : radius * bodyLS[ibody].grid_scale;
       compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min, temp_grid_values);
     }
     int index_global_grid;

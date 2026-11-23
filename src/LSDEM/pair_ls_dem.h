@@ -78,6 +78,7 @@ class PairLSDEM : public Pair {
   //   grp: 0 = not in an ls/dem group, 1 = rigid/small/ls/dem, 2 = rigid/ls/dem
 
   struct BodyInfo {
+    double radius;
     double vol;
     double area;
     int bID;
@@ -105,6 +106,7 @@ class PairLSDEM : public Pair {
     char poff;
     char tie;
     char dup;
+    double bsq;    // squared bounding radius of the opposing grain
     std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;

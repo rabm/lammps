@@ -40,6 +40,7 @@
 #include <unordered_set>
 #include <vector>
 
+static constexpr double BIG = 1.0e20;
 static constexpr double EPSILON = 1e-12;
 // default for "pair_style ls/dem auto": node-node cutoff = factor x largest node spacing
 static constexpr double AUTO_CUT_FACTOR = 2.0;
@@ -141,10 +142,12 @@ void PairLSDEM::cache_body_info(int ntotal)
   int *mask = atom->mask;
   tagint *molecule = atom->molecule;
   int *mybody_large = nullptr, *mybody_small = nullptr;
+  const double *large_radii = nullptr;
   double *grain_vol = nullptr, *node_area = nullptr;
   FixRigidSmallLSDEM::BodyLS *bodyLS = nullptr;
   if (fix_rigid) {
     mybody_large = fix_rigid->get_body_array();
+    large_radii = fix_rigid->get_grid_radii();
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
   }
@@ -162,6 +165,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = ib;
       b.bID = ib;
       b.off = 0;
+      b.radius = (ib >= 0) ? large_radii[ib] : BIG;
       b.vol = (ib >= 0) ? grain_vol[ib] : 0.0;
       b.area = (ib >= 0) ? node_area[ib] : 0.0;
     } else if (fix_rigid_small && (mask[a] & groupbit_small)) {
@@ -170,6 +174,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = ib;
       b.bID = (int) molecule[a];
       b.off = 1;
+      b.radius = (ib >= 0) ? bodyLS[ib].grid_radius : BIG;
       b.vol = (ib >= 0) ? bodyLS[ib].grid_vol : 0.0;
       b.area = (ib >= 0) ? bodyLS[ib].node_area : 0.0;
     } else {
@@ -177,6 +182,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = -1;
       b.bID = -1;
       b.off = 0;
+      b.radius = BIG;
       b.vol = 0.0;
       b.area = 0.0;
     }
@@ -253,6 +259,17 @@ void PairLSDEM::build_rep_segments()
         add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
+
+  // bound of the grain of the candidates of each segment
+
+  for (int r = 0; r < ntotal; r++)
+    for (Seg &seg : rep_segs[r]) {
+      const double bnd = binfo[seg.cand[0].idx].radius;
+      if (bnd < 0.0)
+        seg.bsq = -1.0;
+      else
+        seg.bsq = (bnd >= BIG) ? BIG : bnd * bnd;
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -270,7 +287,7 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
       seg.cand.push_back(cand);
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, BIG, {cand}});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -467,6 +484,8 @@ void PairLSDEM::compute(int eflag, int vflag)
   //   depends on the order of the neighbor list, so pair ls/dem/kk with a neighbor list built
   //   on the device gives the same results bit for bit. It costs some time, so it is optional.
 
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
   contacts.clear();
   wsbins.clear();
   for (int irep = 0; irep < ntotal; irep++) {
@@ -488,6 +507,17 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
       const int c0 = seg.cand[first].idx;
       if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
+
+      // a node beyond the bound of the grain of the candidates has no contact with it, unless
+      //   it touched that grain before and its shear history has to be reset
+      if (seg.bsq < BIG) {
+        double del[3] = {xitmp - grain_com[c0][0], yitmp - grain_com[c0][1],
+                         zitmp - grain_com[c0][2]};
+        domain->minimum_image(FLERR, del);
+        if ((del[0] * del[0] + del[1] * del[1] + del[2] * del[2] > seg.bsq) &&
+            (touch_id[irep] != binfo[c0].bID))
+          continue;
+      }
 
       if (watershed_flag) {
         while ((first < ncand) && (seg.cand[first].key < 0)) first++;
