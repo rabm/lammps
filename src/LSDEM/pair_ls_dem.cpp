@@ -1356,6 +1356,7 @@ void PairLSDEM::init_style()
   const double auto_cut = auto_cut_factor * spacing;
   if (cutoff_mode != FIXED_CUTOFF) maxcut = 0.0;
   bool used_auto = false;
+  double node_cutoff = 0.0;
   for (int i = 1; i <= atom->ntypes; i++) {
     for (int j = i; j <= atom->ntypes; j++) {
       if (!setflag[i][j]) continue;
@@ -1372,6 +1373,7 @@ void PairLSDEM::init_style()
         cut[i][j] = maxcut;
       } else cut[i][j] = input;
 
+      node_cutoff = MAX(node_cutoff, cut[i][j]);
       if (cutoff_mode != FIXED_CUTOFF) maxcut = MAX(maxcut, cut[i][j]);
       else if (cut[i][j] > maxcut)
         error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}",
@@ -1437,7 +1439,33 @@ void PairLSDEM::init_style()
   // watershed: bin ownership needs no other nodes, the neighbor cutoff is enough
   // compare with cutghostuser, neighbor->cutneighmax is not yet set by neighbor->init()
 
-  if (!watershed_flag) {
+  if (!fixlist2.empty() && fixlist2.front()->comm_multi_flag && (comm->mode == Comm::SINGLE)) {
+    const double mincut = (watershed_flag ? node_cutoff : 2.0 * node_cutoff) + neighbor->skin;
+    const double warncut = mincut + node_cutoff;
+    const double requested = comm->cutghostuser;
+    const char *storage = watershed_flag ? "watershed" : "array";
+
+    // Comm keeps the user setting and our automatic array cutoff in the same field.
+    // Recalculate our own value when the node cutoff or skin changes between runs.
+    if (requested == 0.0 || requested == auto_halo) {
+      auto_halo = watershed_flag ? 0.0 : mincut;
+      comm->cutghostuser = auto_halo;
+    } else {
+      auto_halo = 0.0;
+      // Allow one unit of roundoff when comparing decimal input to a calculated limit.
+      if (requested < std::nextafter(mincut, 0.0))
+        error->all(FLERR, "Pair ls/dem {} storage with ghost/multi yes: regular communication "
+                   "cutoff {} is too short and would miss interactions; recommended cutoff is {}",
+                   storage, requested, mincut);
+      if (!halo_warned && (std::nextafter(requested, 0.0) > warncut)) {
+        halo_warned = true;
+        if (comm->me == 0)
+          error->warning(FLERR, "Pair ls/dem {} storage with ghost/multi yes: regular communication "
+                         "cutoff {} may be inefficient; recommended cutoff is {} unless another "
+                         "style needs more", storage, requested, mincut);
+      }
+    }
+  } else if (!watershed_flag) {
     const double mincut = 2.0 * maxcut + neighbor->skin;
     if (comm->mode == Comm::SINGLE) {
       if (comm->cutghostuser < mincut) {

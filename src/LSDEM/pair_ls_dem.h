@@ -56,7 +56,8 @@ class PairLSDEM : public Pair {
   //   that is reported, the deepest overlap found so far on this processor, and whether it was
   double overlap_det, overlap_limit, maxoverlap;
   int overlap_warned;
-  bool cutoff_warned = false, exclusion_warned = false;
+  bool cutoff_warned = false, exclusion_warned = false, halo_warned = false;
+  double auto_halo = 0.0;    // last regular communication cutoff set by this style
   void check_overlap();
 
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
