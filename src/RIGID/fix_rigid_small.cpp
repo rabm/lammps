@@ -3187,7 +3187,7 @@ int FixRigidSmall::unpack_border(int n, int first, double *buf)
 
 double FixRigidSmall::comm_multi_cutoff()
 {
-  return maxextent + extra_extent;
+  return maxextent + extra_extent + neighbor->skin;
 }
 
 /* ----------------------------------------------------------------------
