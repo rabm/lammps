@@ -139,7 +139,10 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
   commflag_rev_ls = RPARENT;
   comm_forward += 1 + bodysizeLS;
 
-  if (storage_mode == WATERSHED)
+  // watershed storage sends node data with ghost atoms,
+  //   the callback is already registered by FixRigidSmall with ghost/multi
+
+  if ((storage_mode == WATERSHED) && !comm_multi_flag)
     atom->add_callback(Atom::BORDER);
 
   if (langflag)
@@ -154,6 +157,11 @@ FixRigidSmallLSDEM::FixRigidSmallLSDEM(LAMMPS *lmp, int narg, char **arg) :
 
 FixRigidSmallLSDEM::~FixRigidSmallLSDEM()
 {
+  // unregister the border callback this class added, FixRigidSmall removes its own
+
+  if ((storage_mode == WATERSHED) && !comm_multi_flag && modify->get_fix_by_id(id))
+    atom->delete_callback(id, Atom::BORDER);
+
   // delete extra property/atom fixes
 
   if (id_fix && modify->nfix) modify->delete_fix(id_fix);
@@ -1038,7 +1046,8 @@ void FixRigidSmallLSDEM::process_levelsets()
   maxexchange = 2 + bodysizeLS;
 
   if (storage_mode == WATERSHED) {
-    comm_border = 2; // node index
+    comm_border = comm_multi_flag ? 1 : 0; // body ID from FixRigidSmall for ghost/multi
+    comm_border += 2; // node index
     maxexchange += 1; // node index
     if (distributed_flag) {
       int max_nbins = 0;
@@ -1691,10 +1700,13 @@ void FixRigidSmallLSDEM::set_molecule(int nlocalprev, tagint tagprev, int imol,
 
 int FixRigidSmallLSDEM::pack_border(int n, int *list, double *buf)
 {
-  if (storage_mode != WATERSHED) return 0;
-  if (!ls_read_flag) return 0;
+  // body IDs for ghost/multi first, then the watershed node data
 
-  return pack_watershed(n, list, buf);
+  int m = 0;
+  if (comm_multi_flag) m += FixRigidSmall::pack_border(n, list, buf);
+  if ((storage_mode != WATERSHED) || !ls_read_flag) return m;
+
+  return m + pack_watershed(n, list, &buf[m]);
 }
 
 /* ----------------------------------------------------------------------
@@ -1798,10 +1810,11 @@ void FixRigidSmallLSDEM::unpack_watershed_chunk(int n, int first, double *buf)
 
 int FixRigidSmallLSDEM::unpack_border(int n, int first, double *buf)
 {
-  if (storage_mode != WATERSHED) return 0;
-  if (!ls_read_flag) return 0;
+  int m = 0;
+  if (comm_multi_flag) m += FixRigidSmall::unpack_border(n, first, buf);
+  if ((storage_mode != WATERSHED) || !ls_read_flag) return m;
 
-  return unpack_watershed(n, first, buf);
+  return m + unpack_watershed(n, first, &buf[m]);
 }
 
 /* ----------------------------------------------------------------------

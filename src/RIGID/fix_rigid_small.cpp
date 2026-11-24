@@ -3181,12 +3181,13 @@ int FixRigidSmall::unpack_border(int n, int first, double *buf)
 }
 
 /* ----------------------------------------------------------------------
-   ghost cutoff needed by the atoms that own a body for ghost/multi
+   ghost cutoff needed by the atoms that own a body for ghost/multi,
+   extra_extent is set by child classes whose ghost atoms also need their body
 ------------------------------------------------------------------------- */
 
 double FixRigidSmall::comm_multi_cutoff()
 {
-  return maxextent;
+  return maxextent + extra_extent;
 }
 
 /* ----------------------------------------------------------------------
