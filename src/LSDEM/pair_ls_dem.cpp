@@ -1557,7 +1557,10 @@ double PairLSDEM::auto_node_spacing()
   auto fixlist = modify->get_fix_by_style("^rigid/ls/dem");
   if (fixlist.empty()) return spacing;
   if (!atom->molecule_flag)
-    error->all(FLERR, "Pair ls/dem cutoff auto with fix rigid/ls/dem requires molecule IDs");
+    if (cutoff_mode != FIXED_CUTOFF)
+      error->all(FLERR, "Pair ls/dem cutoff auto with fix rigid/ls/dem requires molecule IDs");
+    else
+      return 0.0;
 
   // gather the unwrapped coordinates and molecule IDs of all atoms in the fix group
 
@@ -1587,7 +1590,10 @@ double PairLSDEM::auto_node_spacing()
     ntotal += recvcounts[iproc];
   }
   if (ntotal > MAXSMALLINT)
-    error->all(FLERR, "Too many atoms in fix rigid/ls/dem for pair ls/dem cutoff auto");
+    if (cutoff_mode != FIXED_CUTOFF)
+      error->all(FLERR, "Too many atoms in fix rigid/ls/dem for pair ls/dem cutoff auto");
+    else
+      return -1;
   if (sendbuf.empty()) sendbuf.push_back(0.0);
   std::vector<double> recvbuf(MAX(ntotal, 1));
   MPI_Allgatherv(sendbuf.data(), nsend, MPI_DOUBLE, recvbuf.data(), recvcounts.data(),
