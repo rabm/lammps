@@ -45,7 +45,8 @@ class PairLSDEM : public Pair {
   void write_data_all(FILE *) override;
 
   double maxcut;
-  int cutoff_auto;           // 1 if the cutoff is estimated from the node spacing
+  int cutoff_mode;           // fixed, explicit auto, or inherited per type pair
+  int exact_order;           // 1 if results do not depend on the order of the neighbor list
   double auto_cut_factor;    // multiple of the node spacing used for the auto cutoff
 
  protected:
@@ -55,9 +56,12 @@ class PairLSDEM : public Pair {
   //   that is reported, the deepest overlap found so far on this processor, and whether it was
   double overlap_det, overlap_limit, maxoverlap;
   int overlap_warned;
+  bool cutoff_warned = false, exclusion_warned = false;
   void check_overlap();
 
   double **kn, **kt, **mu, **etan, **etat, **knp, **cut, **decayn1, **etan1, **decayt1, **etat1;
+
+  double **input_cut;        // supplied coefficient cutoff, or a marker for inheritance/automatic selection
 
   int groupbit_small, groupbit_large;
   int watershed_flag;
@@ -77,6 +81,7 @@ class PairLSDEM : public Pair {
   //   grp: 0 = not in an ls/dem group, 1 = rigid/small/ls/dem, 2 = rigid/ls/dem
 
   struct BodyInfo {
+    double radius;
     double vol;
     double area;
     int bID;
@@ -104,6 +109,7 @@ class PairLSDEM : public Pair {
     char poff;
     char tie;
     char dup;
+    double bsq;    // squared bounding radius of the opposing grain
     std::vector<Cand> cand;
   };
   std::vector<std::vector<Seg>> rep_segs;
@@ -120,7 +126,7 @@ class PairLSDEM : public Pair {
   std::vector<WsBin> wsbins;
 
   // contacts of the closest nodes (array) or of the nodes owning the bin (watershed),
-  //   evaluated by process_contact() in the order of key
+  //   evaluated by process_contact() in the order of i, then j
   //   i is the atom whose neighbor list holds the pair, calc = 1 if i is the node used
   //   ws: index in wsbins, -1 for array
 

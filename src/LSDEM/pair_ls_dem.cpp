@@ -20,6 +20,7 @@
 #include "fix_rigid_ls_dem.h"
 #include "fix_rigid_small_ls_dem.h"
 #include "force.h"
+#include "group.h"
 #include "math_const.h"
 #include "math_extra.h"
 #include "memory.h"
@@ -40,9 +41,14 @@
 #include <unordered_set>
 #include <vector>
 
+static constexpr double BIG = 1.0e20;
 static constexpr double EPSILON = 1e-12;
 // default for "pair_style ls/dem auto": node-node cutoff = factor x largest node spacing
+enum { FIXED_CUTOFF, AUTO_CUTOFF, COEFF_CUTOFF };  // values stored in restart files
 static constexpr double AUTO_CUT_FACTOR = 2.0;
+// Negative input markers are distinct from an explicitly supplied zero cutoff.
+static constexpr double INHERIT_CUTOFF = -1.0;
+static constexpr double AUTO_COEFF_CUTOFF = -2.0;
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -99,8 +105,9 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
 {
   writedata = 1;
   single_enable = 0;
-  cutoff_auto = 0;
+  cutoff_mode = FIXED_CUTOFF;
   auto_cut_factor = AUTO_CUT_FACTOR;
+  exact_order = 0;
   contact_build_fast = 1;
   overlap_det = overlap_limit = maxoverlap = 0.0;
   overlap_warned = 0;
@@ -123,6 +130,7 @@ PairLSDEM::~PairLSDEM()
     memory->destroy(etat);
     memory->destroy(knp);
     memory->destroy(cut);
+    memory->destroy(input_cut);
     memory->destroy(decayn1);
     memory->destroy(etan1);
     memory->destroy(decayt1);
@@ -140,10 +148,12 @@ void PairLSDEM::cache_body_info(int ntotal)
   int *mask = atom->mask;
   tagint *molecule = atom->molecule;
   int *mybody_large = nullptr, *mybody_small = nullptr;
+  const double *large_radii = nullptr;
   double *grain_vol = nullptr, *node_area = nullptr;
   FixRigidSmallLSDEM::BodyLS *bodyLS = nullptr;
   if (fix_rigid) {
     mybody_large = fix_rigid->get_body_array();
+    large_radii = fix_rigid->get_grid_radii();
     grain_vol = fix_rigid->get_vol_array();
     node_area = fix_rigid->get_area_array();
   }
@@ -161,6 +171,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = ib;
       b.bID = ib;
       b.off = 0;
+      b.radius = (ib >= 0) ? large_radii[ib] : BIG;
       b.vol = (ib >= 0) ? grain_vol[ib] : 0.0;
       b.area = (ib >= 0) ? node_area[ib] : 0.0;
     } else if (fix_rigid_small && (mask[a] & groupbit_small)) {
@@ -169,6 +180,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = ib;
       b.bID = (int) molecule[a];
       b.off = 1;
+      b.radius = (ib >= 0) ? bodyLS[ib].grid_radius : BIG;
       b.vol = (ib >= 0) ? bodyLS[ib].grid_vol : 0.0;
       b.area = (ib >= 0) ? bodyLS[ib].node_area : 0.0;
     } else {
@@ -176,6 +188,7 @@ void PairLSDEM::cache_body_info(int ntotal)
       b.bidx = -1;
       b.bID = -1;
       b.off = 0;
+      b.radius = BIG;
       b.vol = 0.0;
       b.area = 0.0;
     }
@@ -183,9 +196,12 @@ void PairLSDEM::cache_body_info(int ntotal)
 }
 
 /* ----------------------------------------------------------------------
-   for each node, list the neighbor nodes on each other grain in the order of the
-   neighbor list, under the node of the grain whose nodes are used,
-   grains of equal volume are listed both ways since their choice depends on position
+   One segment holds the candidate surface nodes of grain B for one node
+   of grain A. Rebuild these lists with the neighbor list and reuse them
+   between rebuilds to find the closest node (array) or the bin owner
+   (watershed). The grain radius plus skin rejects segments that cannot
+   reach contact before the next rebuild. Equal-volume grains can choose
+   either direction as they move, so store both directions.
 ------------------------------------------------------------------------- */
 
 void PairLSDEM::build_rep_segments()
@@ -209,7 +225,38 @@ void PairLSDEM::build_rep_segments()
   auto segkey = [](int r, int bid, int off) {
     return ((uint64_t) (uint32_t) r << 32) | ((uint64_t) (uint32_t) bid << 1) | (uint64_t) off;
   };
-  std::unordered_set<uint64_t> live;
+
+  // a node farther from the center of the other grain than its bound plus the skin cannot reach
+  //   it before the next reneighboring, since nodes and centers move less than half the skin,
+  //   so that segment would be skipped at each step (see compute()) and is not built,
+  //   unless the node still has shear history with that grain
+
+  double **x = atom->x;
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
+  const double skin = neighbor->skin;
+  auto near = [&](int r, int c) {
+    const double bnd = binfo[c].radius;
+    if ((bnd >= BIG) || (touch_id[r] == binfo[c].bID)) return true;
+    if (bnd < 0.0) return false;
+    double del[3] = {x[r][0] - grain_com[c][0], x[r][1] - grain_com[c][1],
+                     x[r][2] - grain_com[c][2]};
+    domain->minimum_image(FLERR, del);
+    return del[0] * del[0] + del[1] * del[1] + del[2] * del[2] <= (bnd + skin) * (bnd + skin);
+  };
+
+  // All candidate nodes in a group refer to the same opposing grain.
+  // Store both outcomes so a rejected group is tested only once as well.
+  std::unordered_map<uint64_t, bool> accepted;
+  auto classify = [&](int node, int candidate) {
+    const auto &body = binfo[candidate];
+    auto result = accepted.try_emplace(segkey(node, body.bID, body.off), false);
+    if (result.second) result.first->second = near(node, candidate);
+  };
+  auto is_accepted = [&](int node, const BodyInfo &body) {
+    auto it = accepted.find(segkey(node, body.bID, body.off));
+    return it != accepted.end() && it->second;
+  };
   for (int ii = 0; ii < allnum; ii++) {
     const int i = ilist[ii];
     const BodyInfo &bi = binfo[i];
@@ -225,8 +272,8 @@ void PairLSDEM::build_rep_segments()
       if (bj.grp == 0)
         error->one(FLERR, "Atom {} does not belong to a fix rigid ls/dem group", tag[j]);
       if (ii >= inum) continue;
-      if (bi.vol <= bj.vol) live.insert(segkey(i, bj.bID, bj.off));
-      if (bi.vol >= bj.vol) live.insert(segkey(j, bi.bID, bi.off));
+      if (bi.vol <= bj.vol) classify(i, j);
+      if (bi.vol >= bj.vol) classify(j, i);
     }
   }
 
@@ -244,14 +291,28 @@ void PairLSDEM::build_rep_segments()
       if (special_lj[sbmask(j)] == 0) continue;
       j &= NEIGHMASK;
       const BodyInfo &bj = binfo[j];
+      const int sij = (bi.vol <= bj.vol) && is_accepted(i, bj);
+      const int sji = (bi.vol >= bj.vol) && is_accepted(j, bi);
+      if (!sij && !sji) continue;
       const int key = (ii < inum) ? ipair++ : -1;
       const int tie = (bi.vol == bj.vol);
-      if ((bi.vol <= bj.vol) && live.count(segkey(i, bj.bID, bj.off)))
+      if (sij)
         add_rep_candidate(i, bj.bID, bj.off, j, tie, key, 1);
-      if ((bi.vol >= bj.vol) && live.count(segkey(j, bi.bID, bi.off)))
+      if (sji)
         add_rep_candidate(j, bi.bID, bi.off, i, tie, key, 0);
     }
   }
+
+  // bound of the grain of the candidates of each segment
+
+  for (int r = 0; r < ntotal; r++)
+    for (Seg &seg : rep_segs[r]) {
+      const double bnd = binfo[seg.cand[0].idx].radius;
+      if (bnd < 0.0)
+        seg.bsq = -1.0;
+      else
+        seg.bsq = (bnd >= BIG) ? BIG : bnd * bnd;
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -269,7 +330,7 @@ void PairLSDEM::add_rep_candidate(int r, int pbody, int poff, int c, int tie, in
       seg.cand.push_back(cand);
       return;
     }
-  segs.push_back({pbody, (char) poff, (char) tie, 0, {cand}});
+  segs.push_back({pbody, (char) poff, (char) tie, 0, BIG, {cand}});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -445,14 +506,21 @@ void PairLSDEM::compute(int eflag, int vflag)
   }
 
   // Array: find the closest node on each other grain for each node of the grain whose nodes
-  //   are used, in the order of the neighbor list, so the first of equally close nodes wins.
+  //   are used, of equally close nodes the first one wins.
   //   Comparing squared distances (rsq) gives the same closest node as comparing r.
   //   Each pair of the closest node and a node with its tag (periodic images) in the
   //   neighbor list of a local atom is a contact.
-  // Watershed: find the bin of the node in the grid of each other grain once, from the first
-  //   candidate in the neighbor list of a local atom, each candidate owning that bin is a contact.
+  // Watershed: find the bin of the node in the grid of each other grain once, from the
+  //   first candidate in the neighbor list of a local atom, each candidate owning that bin
+  //   is a contact.
   // The contacts are then evaluated in neighbor list order.
+  // With the exact order, the lowest atom index takes the place of the first candidate and
+  //   contacts are evaluated in the order of the atom indices of their pair. None of this then
+  //   depends on the order of the neighbor list, so pair ls/dem/kk with a neighbor list built
+  //   on the device gives the same results bit for bit. It costs some time, so it is optional.
 
+  double **grain_com = atom->xcom;
+  int *touch_id = atom->ivector[index_ls_dem_touch_id];
   contacts.clear();
   wsbins.clear();
   for (int irep = 0; irep < ntotal; irep++) {
@@ -462,13 +530,31 @@ void PairLSDEM::compute(int eflag, int vflag)
     yitmp = x[irep][1];
     zitmp = x[irep][2];
     for (Seg &seg : segs) {
-      // grains of equal volume choose whose nodes are used by their current positions
-      const int c0 = seg.cand[0].idx;
-      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
       const int ncand = seg.cand.size();
+      int first = 0;
+      if (exact_order) {
+        // Use the lowest-index candidate from a local neighbor pair.
+        first = -1;
+        for (int m = 0; m < ncand; m++)
+          if (seg.cand[m].key >= 0 && (first < 0 || seg.cand[m].idx < seg.cand[first].idx))
+            first = m;
+        if (first < 0) continue;
+      }
+      const int c0 = seg.cand[first].idx;
+      if (seg.tie && !use_nodes_of_i(irep, c0, binfo[irep].vol, binfo[c0].vol)) continue;
+
+      // a node beyond the bound of the grain of the candidates has no contact with it, unless
+      //   it touched that grain before and its shear history has to be reset
+      if (seg.bsq < BIG) {
+        double del[3] = {xitmp - grain_com[c0][0], yitmp - grain_com[c0][1],
+                         zitmp - grain_com[c0][2]};
+        domain->minimum_image(FLERR, del);
+        if ((del[0] * del[0] + del[1] * del[1] + del[2] * del[2] > seg.bsq) &&
+            (touch_id[irep] != binfo[c0].bID))
+          continue;
+      }
 
       if (watershed_flag) {
-        int first = 0;
         while ((first < ncand) && (seg.cand[first].key < 0)) first++;
         if (first == ncand) continue;
         // the grid and watershed of the other grain are found through its body
@@ -484,7 +570,7 @@ void PairLSDEM::compute(int eflag, int vflag)
           wb.bin = fix_rigid->get_bin(irep, seg.cand[first].idx, wb.xl);
         const int ws = wsbins.size();
         wsbins.push_back(wb);
-        for (int m = first; m < ncand; m++) {
+        for (int m = 0; m < ncand; m++) {
           const Cand &cand = seg.cand[m];
           if (cand.key < 0) continue;
           const int owns = seg.poff ? fix_rigid_small->check_watershed_bin(wb.bin, cand.idx)
@@ -507,7 +593,8 @@ void PairLSDEM::compute(int eflag, int vflag)
         delz = zitmp - x[c][2];
         rsq = delx * delx + dely * dely + delz * delz;
         if (rsq > maxcutsq) continue;
-        if ((win < 0) || (rsq < minrsq)) {
+        if ((win < 0) || (rsq < minrsq) ||
+            (exact_order && (rsq == minrsq) && (c < seg.cand[win].idx))) {
           minrsq = rsq;
           win = m;
         }
@@ -522,9 +609,13 @@ void PairLSDEM::compute(int eflag, int vflag)
       }
     }
   }
-  std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
-    return a.key < b.key;
-  });
+  if (exact_order)
+    std::sort(contacts.begin(), contacts.end(), [](const Contact &a, const Contact &b) {
+      return (a.i < b.i) || ((a.i == b.i) && (a.j < b.j));
+    });
+  else
+    std::sort(contacts.begin(), contacts.end(),
+              [](const Contact &a, const Contact &b) { return a.key < b.key; });
 
   double x_local[3];
   for (const Contact &ct : contacts) {
@@ -1064,6 +1155,7 @@ void PairLSDEM::allocate()
   memory->create(etat, np1, np1, "pair:etat");
   memory->create(knp, np1, np1, "pair:knp");
   memory->create(cut, np1, np1, "pair:cut");
+  memory->create(input_cut, np1, np1, "pair:input_cut");
   memory->create(decayn1, np1, np1, "pair:decayn1");
   memory->create(etan1, np1, np1, "pair:etan1");
   memory->create(decayt1, np1, np1, "pair:decayt1");
@@ -1076,19 +1168,16 @@ void PairLSDEM::allocate()
 
 void PairLSDEM::settings(int narg, char **arg)
 {
-  if (narg < 1) utils::missing_cmd_args(FLERR, "pair_style ls/dem", error);
-
-  // "auto" estimates the node-node cutoff from the node spacing of the grains in init_style()
-  //   with an optional factor, otherwise the cutoff is the given number.  Contact building uses
-  //   the faster cached candidate path by default; the transparent path is useful for debugging.
+  exact_order = 0;
   contact_build_fast = 1;
-  int iarg = 1;
-  if (strcmp(arg[0], "auto") == 0) {
-    cutoff_auto = 1;
-    maxcut = -1.0;
-    auto_cut_factor = AUTO_CUT_FACTOR;
-    if ((iarg < narg) && (strcmp(arg[iarg], "fast") != 0) &&
-        (strcmp(arg[iarg], "transparent") != 0) && (strcmp(arg[iarg], "method") != 0)) {
+  cutoff_mode = COEFF_CUTOFF;
+  auto_cut_factor = AUTO_CUT_FACTOR;
+  maxcut = -1.0;
+  int iarg = 0;
+  if (narg && strcmp(arg[0], "auto") == 0) {
+    cutoff_mode = AUTO_CUTOFF;
+    iarg++;
+    if (iarg < narg && utils::is_double(arg[iarg])) {
       auto_cut_factor = utils::numeric(FLERR, arg[iarg], false, lmp);
       if (auto_cut_factor <= 0.0)
         error->all(FLERR, "The pair ls/dem auto cutoff factor {} must be positive",
@@ -1100,12 +1189,21 @@ void PairLSDEM::settings(int narg, char **arg)
                        auto_cut_factor);
       iarg++;
     }
-  } else {
-    cutoff_auto = 0;
-    maxcut = utils::numeric(FLERR, arg[0], false, lmp);
+  } else if (narg && utils::is_double(arg[0])) {
+    cutoff_mode = FIXED_CUTOFF;
+    maxcut = utils::numeric(FLERR, arg[iarg++], false, lmp);
+    if (maxcut <= 0.0) error->all(FLERR, "Pair ls/dem cutoff must be positive");
   }
 
   while (iarg < narg) {
+    if (strcmp(arg[iarg], "order") == 0) {
+      if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem order", error);
+      if (strcmp(arg[iarg + 1], "exact") == 0) exact_order = 1;
+      else if (strcmp(arg[iarg + 1], "list") == 0) exact_order = 0;
+      else error->all(FLERR, "Unknown pair_style ls/dem order {}", arg[iarg + 1]);
+      iarg += 2;
+      continue;
+    }
     if (strcmp(arg[iarg], "method") == 0) {
       if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "pair_style ls/dem method", error);
       iarg++;
@@ -1130,7 +1228,7 @@ void PairLSDEM::settings(int narg, char **arg)
 
 void PairLSDEM::coeff(int narg, char **arg)
 {
-  if (narg != 9 && narg != 11 && narg != 13)
+  if (narg < 8 || narg > 13)
     error->all(FLERR, "Incorrect number of args for pair coefficients");
   if (!allocated) allocate();
 
@@ -1144,17 +1242,27 @@ void PairLSDEM::coeff(int narg, char **arg)
   double etan_0 = utils::numeric(FLERR, arg[5], false, lmp);
   double etat_0 = utils::numeric(FLERR, arg[6], false, lmp);
   double knp_0 = utils::numeric(FLERR, arg[7], false, lmp);
-  double cut_one = utils::numeric(FLERR, arg[8], false, lmp);
-
-  double kn_1, kt_1, etan_1, etat_1;
-  if (narg > 9) {
-    kn_1 = utils::numeric(FLERR, arg[9], false, lmp);
-    etan_1 = utils::numeric(FLERR, arg[10], false, lmp);
+  // Maxwell arms take two coefficients each. An additional argument before
+  // the arms specifies the cutoff; an omitted cutoff inherits the style default.
+  const int first_arm = 8 + narg % 2;
+  double cut_one = INHERIT_CUTOFF;
+  if (first_arm == 9) {
+    if (strcmp(arg[8], "auto") == 0) cut_one = AUTO_COEFF_CUTOFF;
+    else {
+      cut_one = utils::numeric(FLERR, arg[8], false, lmp);
+      if (cut_one < 0.0) error->all(FLERR, "Pair ls/dem coefficient cutoff must be nonnegative");
+    }
   }
 
-  if (narg > 11) {
-    kt_1 = utils::numeric(FLERR, arg[11], false, lmp);
-    etat_1 = utils::numeric(FLERR, arg[12], false, lmp);
+  double kn_1, kt_1, etan_1, etat_1;
+  if (narg > first_arm) {
+    kn_1 = utils::numeric(FLERR, arg[first_arm], false, lmp);
+    etan_1 = utils::numeric(FLERR, arg[first_arm + 1], false, lmp);
+  }
+
+  if (narg > first_arm + 2) {
+    kt_1 = utils::numeric(FLERR, arg[first_arm + 2], false, lmp);
+    etat_1 = utils::numeric(FLERR, arg[first_arm + 3], false, lmp);
   }
 
   if (kn_0 < 0.0) error->all(FLERR, "The normal stiffness {} must be postitive", kn_0);
@@ -1164,7 +1272,7 @@ void PairLSDEM::coeff(int narg, char **arg)
   if (etat_0 < 0.0) error->all(FLERR, "The tangential damping {} must be postitive", etat_0);
 
   // Values of knp_0 can be both positive and negative.
-  if (narg > 9) {
+  if (narg > first_arm) {
     if (kn_1 < 0.0) error->all(FLERR, "The extra maxwell normal stiffness {} must be postitive", kn_1);
     if (etan_1 < 0.0) error->all(FLERR, "The extra maxwell normal damping {} must be postitive", etan_1);
     // If active, neither k or eta in a Maxwell arm are allowed to be zero. Check if both zero or both positive.
@@ -1173,7 +1281,7 @@ void PairLSDEM::coeff(int narg, char **arg)
     }
   }
 
-  if (narg > 11) {
+  if (narg > first_arm + 2) {
     if (kt_1 < 0.0) error->all(FLERR, "The extra maxwell tangential stiffness {} must be postitive", kt_1);
     if (etat_1 < 0.0) error->all(FLERR, "The extra maxwell tangential damping {} must be postitive", etat_1);
     if ((kt_1 == 0.0) || (etat_1 == 0.0)) {
@@ -1204,16 +1312,16 @@ void PairLSDEM::coeff(int narg, char **arg)
       etan[i][j] = etan_0;
       etat[i][j] = etat_0;
       knp[i][j] = knp_0;
-      cut[i][j] = cut_one;
+      input_cut[i][j] = cut_one;
 
-      if (narg > 9) {
+      if (narg > first_arm) {
         decayn1[i][j] = exp(-dt * kn_1 / etan_1);
         etan1[i][j] = etan_1;
       } else {
         decayn1[i][j] = 0.0;
         etan1[i][j] = 0.0;
       }
-      if (narg > 11) {
+      if (narg > first_arm + 2) {
         decayt1[i][j] = exp(-dt * kt_1 / etat_1);
         etat1[i][j] = etat_1;
       } else {
@@ -1241,26 +1349,45 @@ void PairLSDEM::init_style()
   if (!atom->xcom_flag || !atom->omega_flag || !atom->quat_flag  || !atom->grid_index_flag)
     error->all(FLERR, "Pair ls/dem requires atom style ls/dem");
 
-  // resolve an "auto" cutoff before Pair::init() calls init_one(), so it sets the neighbor cutoff
-
+  // An explicit "auto" keeps its historical meaning: it selects the
+  // spacing-based cutoff even for decks containing a numeric pair_coeff cutoff.
+  // With no style cutoff, each supplied coefficient cutoff takes precedence.
   const double spacing = auto_node_spacing();
-  if (cutoff_auto) {
-    if (spacing <= 0.0)
-      error->all(FLERR,
-                 "Pair ls/dem cutoff auto found no grains to estimate the node spacing "
-                 "from, set the cutoff explicitly instead");
+  const double auto_cut = auto_cut_factor * spacing;
+  if (cutoff_mode != FIXED_CUTOFF) maxcut = 0.0;
+  bool used_auto = false;
+  for (int i = 1; i <= atom->ntypes; i++) {
+    for (int j = i; j <= atom->ntypes; j++) {
+      if (!setflag[i][j]) continue;
+      const double input = input_cut[i][j];
+      if (cutoff_mode == AUTO_CUTOFF || input == AUTO_COEFF_CUTOFF) {
+        if (spacing <= 0.0)
+          error->all(FLERR, "Pair ls/dem found no grains to estimate node spacing; supply a cutoff");
+        cut[i][j] = auto_cut;
+        used_auto = true;
+      } else if (input == INHERIT_CUTOFF) {
+        if (cutoff_mode == COEFF_CUTOFF)
+          error->all(FLERR, "Pair ls/dem requires a numeric cutoff or explicit auto for types {} {} "
+                     "on pair_style or pair_coeff", i, j);
+        cut[i][j] = maxcut;
+      } else cut[i][j] = input;
 
-    maxcut = auto_cut_factor * spacing;
-    if (allocated)
-      for (int i = 1; i <= atom->ntypes; i++)
-        for (int j = i; j <= atom->ntypes; j++)
-          if (setflag[i][j]) cut[i][j] = maxcut;
+      if (cutoff_mode != FIXED_CUTOFF) maxcut = MAX(maxcut, cut[i][j]);
+      else if (cut[i][j] > maxcut)
+        error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}",
+                   maxcut, cut[i][j]);
+    }
+  }
+  if (used_auto && comm->me == 0)
+    utils::logmesg(lmp, "pair ls/dem: auto node-node cutoff = {:.8g} ({:g} x largest node "
+                   "spacing {:.8g})\n", auto_cut, auto_cut_factor, spacing);
 
+  const double recommended = AUTO_CUT_FACTOR * spacing;
+  if (!cutoff_warned && recommended > 0.0 && maxcut >= 2.0 * recommended) {
+    cutoff_warned = true;
     if (comm->me == 0)
-      utils::logmesg(lmp,
-                     "pair ls/dem: auto node-node cutoff = {:.8g} ({:g} x largest node "
-                     "spacing {:.8g})\n",
-                     maxcut, auto_cut_factor, spacing);
+      error->warning(FLERR, "Pair ls/dem cutoff {:.8g} may be inefficient for this node spacing; "
+                     "consider pair_style ls/dem auto or a cutoff near {:.8g}", maxcut, recommended);
   }
 
   // get fix data
@@ -1346,10 +1473,40 @@ void PairLSDEM::init_style()
   maxoverlap = 0.0;
   overlap_warned = 0;
 
-  if (watershed_flag == 0)
-    neighbor->add_request(this, NeighConst::REQ_GHOST);
-  else
-    neighbor->add_request(this);
+  // A molecule-based exclusion is meaningful only when molecule IDs define the grains.
+  // Recommend the rigid fix's group so the user can decide whether other styles need these pairs.
+  auto missing_exclusion = [&](int igroup) {
+    int excluded_groups = 0;
+    for (int i = 0; i < neighbor->nex_mol; ++i) {
+      if (!neighbor->ex_mol_intra[i]) continue;
+      const int excluded = neighbor->ex_mol_group[i];
+      if (excluded == 0 || excluded == igroup) return false;
+      excluded_groups |= group->bitmask[excluded];
+    }
+    if (!excluded_groups) return true;
+
+    // A differently named exclusion group may cover the same atoms.
+    int incomplete_groups = 0;
+    for (int i = 0; i < atom->nlocal; ++i)
+      if (atom->mask[i] & group->bitmask[igroup]) incomplete_groups |= ~atom->mask[i];
+    MPI_Allreduce(MPI_IN_PLACE, &incomplete_groups, 1, MPI_INT, MPI_BOR, world);
+    return (excluded_groups & ~incomplete_groups) == 0;
+  };
+  if (!exclusion_warned) {
+    int missing = -1;
+    if (igroup_large >= 0 && fix_rigid->grains_by_molecule() && missing_exclusion(igroup_large))
+      missing = igroup_large;
+    else if (igroup_small >= 0 && fix_rigid_small->grains_by_molecule() && missing_exclusion(igroup_small))
+      missing = igroup_small;
+    if (missing >= 0) {
+      exclusion_warned = true;
+      if (comm->me == 0)
+        error->warning(FLERR, "Pair ls/dem neighbor lists may be inefficient without intramolecular "
+                       "exclusion; consider neigh_modify exclude molecule/intra {} if other pair "
+                       "styles do not need those pairs", group->names[missing]);
+    }
+  }
+  neighbor->add_request(this, watershed_flag ? NeighConst::REQ_DEFAULT : NeighConst::REQ_GHOST);
 }
 
 /* ----------------------------------------------------------------------
@@ -1461,15 +1618,6 @@ void PairLSDEM::setup()
   binfo_lastbuild = -1;
   segs_lastbuild = -1;
 
-  int n = atom->ntypes;
-  double maxcut2 = -1;
-  for (int i = 1; i <= n; i++)
-    for (int j = 1; j <= n; j++)
-      maxcut2 = MAX(maxcut2, cut[i][j]); // Can we compute a sensible value for this somehow?
-
-  if (maxcut < maxcut2)
-    error->all(FLERR, "Maximum cutoff {} less than cutoff defined in pair coefficients {}", maxcut, maxcut2);
-
   int tmp1, tmp2;
   index_ls_dem_n = atom->find_custom("ls_dem_n", tmp1, tmp2);
   index_ls_dem_fs = atom->find_custom("ls_dem_fs", tmp1, tmp2);
@@ -1536,7 +1684,7 @@ void PairLSDEM::write_restart(FILE *fp)
         fwrite(&etan[i][j], sizeof(double), 1, fp);
         fwrite(&etat[i][j], sizeof(double), 1, fp);
         fwrite(&knp[i][j], sizeof(double), 1, fp);
-        fwrite(&cut[i][j], sizeof(double), 1, fp);
+        fwrite(&input_cut[i][j], sizeof(double), 1, fp);
         fwrite(&decayn1[i][j], sizeof(double), 1, fp);
         fwrite(&etan1[i][j], sizeof(double), 1, fp);
         fwrite(&decayt1[i][j], sizeof(double), 1, fp);
@@ -1568,7 +1716,7 @@ void PairLSDEM::read_restart(FILE *fp)
           utils::sfread(FLERR, &etan[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etat[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &knp[i][j], sizeof(double), 1, fp, nullptr, error);
-          utils::sfread(FLERR, &cut[i][j], sizeof(double), 1, fp, nullptr, error);
+          utils::sfread(FLERR, &input_cut[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &decayn1[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &etan1[i][j], sizeof(double), 1, fp, nullptr, error);
           utils::sfread(FLERR, &decayt1[i][j], sizeof(double), 1, fp, nullptr, error);
@@ -1580,7 +1728,7 @@ void PairLSDEM::read_restart(FILE *fp)
         MPI_Bcast(&etan[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etat[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&knp[i][j], 1, MPI_DOUBLE, 0, world);
-        MPI_Bcast(&cut[i][j], 1, MPI_DOUBLE, 0, world);
+        MPI_Bcast(&input_cut[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&decayn1[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&etan1[i][j], 1, MPI_DOUBLE, 0, world);
         MPI_Bcast(&decayt1[i][j], 1, MPI_DOUBLE, 0, world);
@@ -1596,9 +1744,10 @@ void PairLSDEM::read_restart(FILE *fp)
 void PairLSDEM::write_restart_settings(FILE *fp)
 {
   fwrite(&maxcut, sizeof(double), 1, fp);
-  fwrite(&cutoff_auto, sizeof(int), 1, fp);
+  fwrite(&cutoff_mode, sizeof(int), 1, fp);
   fwrite(&auto_cut_factor, sizeof(double), 1, fp);
-  fwrite(&contact_build_fast, sizeof(int), 1, fp);
+  const int mode = contact_build_fast | (exact_order << 1);
+  fwrite(&mode, sizeof(int), 1, fp);
 }
 
 /* ----------------------------------------------------------------------
@@ -1609,14 +1758,16 @@ void PairLSDEM::read_restart_settings(FILE *fp)
 {
   if (comm->me == 0) {
     utils::sfread(FLERR, &maxcut, sizeof(double), 1, fp, nullptr, error);
-    utils::sfread(FLERR, &cutoff_auto, sizeof(int), 1, fp, nullptr, error);
+    utils::sfread(FLERR, &cutoff_mode, sizeof(int), 1, fp, nullptr, error);
     utils::sfread(FLERR, &auto_cut_factor, sizeof(double), 1, fp, nullptr, error);
     utils::sfread(FLERR, &contact_build_fast, sizeof(int), 1, fp, nullptr, error);
   }
   MPI_Bcast(&maxcut, 1, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&cutoff_auto, 1, MPI_INT, 0, world);
+  MPI_Bcast(&cutoff_mode, 1, MPI_INT, 0, world);
   MPI_Bcast(&auto_cut_factor, 1, MPI_DOUBLE, 0, world);
   MPI_Bcast(&contact_build_fast, 1, MPI_INT, 0, world);
+  exact_order = (contact_build_fast >> 1) & 1;
+  contact_build_fast &= 1;
 }
 
 /* ----------------------------------------------------------------------

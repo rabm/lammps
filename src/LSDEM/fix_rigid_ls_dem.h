@@ -47,11 +47,13 @@ class FixRigidLSDEM : public FixRigid {
 
   double memory_usage() override;
 
+  const double *get_grid_radii() const { return grid_radius.data(); }
   inline double *get_vol_array() { return grid_vol; };
   inline double *get_area_array() { return node_area; };
   inline int *get_body_array() { return body; };
   inline int get_nbody() { return nbody; };
   inline int get_storage_model() { return storage_mode; };
+  bool grains_by_molecule() const;
 
   double get_ls_value(int, int, int, double*, double*);
   int get_bin(int, int, double*);
@@ -74,6 +76,7 @@ class FixRigidLSDEM : public FixRigid {
   int *grid_index;              // index of body's global memory, -1 distributed
   double **grid_min;            // minimum xyz coordinates of LS grid
   double *grid_stride;          // the LS grid stride, assumed equal in all directions
+  std::vector<double> grid_radius;
   double *grid_vol;
   double *node_area;
 

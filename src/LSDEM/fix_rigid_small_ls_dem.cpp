@@ -234,9 +234,8 @@ void FixRigidSmallLSDEM::init()
   }
 
   // Pair cutoff sets size of LS around nodes for distributed case
-  if (!utils::strmatch(force->pair_style, "^ls/dem"))
-    error->all(FLERR, "Must use pair ls/dem with fix rigid/small/ls/dem");
-  auto pair = dynamic_cast<PairLSDEM *>(force->pair);
+  auto *pair = dynamic_cast<PairLSDEM *>(force->pair_match("^ls/dem", 0));
+  if (!pair) error->all(FLERR, "Fix rigid/small/ls/dem requires a single ls/dem pair style");
   maxcut = pair->maxcut;
 
   // Fix rigid/small ensures communication cutoff is large enough so that any owned atom in a body
@@ -773,12 +772,17 @@ void FixRigidSmallLSDEM::process_levelsets()
         (found_atoms == file_atoms.end()) ? no_items : found_atoms->second;
 
     read_gridfile(1, gridfile, temp_grid_values);
+    const auto &shape = pair.second;
+    const double radius = full_grid_bound(shape.grid_size, shape.grid_min, shape.stride,
+                                          temp_grid_values);
 
     // Compute grain properties (volume, area, inertia...) for each body using this grid
 
-    for (int ibody : my_bodies)
+    for (int ibody : my_bodies) {
+      bodyLS[ibody].grid_radius = radius < 0.0 ? radius : radius * bodyLS[ibody].grid_scale;
       compute_grain_properties(ibody, gridfile_data[gridfile].grid_size, gridfile_data[gridfile].grid_min,
                                gridfile_data[gridfile].stride, temp_grid_values);
+    }
 
     int index_global_grid;
     if (gridfile_data[gridfile].style == GLOBAL)
