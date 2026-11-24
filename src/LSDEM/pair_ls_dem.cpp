@@ -315,7 +315,7 @@ void PairLSDEM::compute(int eflag, int vflag)
     wsbins.clear();
 
     if (watershed_flag == 0) {
-      using NodeBodyKey = std::tuple<tagint, int, int>;
+      using NodeBodyKey = std::tuple<int, int, int>;
       std::map<NodeBodyKey, std::pair<double, Contact>> min_distances;
       int ipair = 0;
 
@@ -346,10 +346,10 @@ void PairLSDEM::compute(int eflag, int vflag)
           NodeBodyKey mapkey;
           Contact contact;
           if (use_nodes_of_i(i, j, bi.vol, bj.vol)) {
-            mapkey = NodeBodyKey(tag[i], bj.bID, bj.off);
+            mapkey = NodeBodyKey(i, bj.bID, bj.off);
             contact = {i, j, 1, key, -1};
           } else {
-            mapkey = NodeBodyKey(tag[j], bi.bID, bi.off);
+            mapkey = NodeBodyKey(j, bi.bID, bi.off);
             contact = {i, j, 0, key, -1};
           }
 
@@ -381,9 +381,6 @@ void PairLSDEM::compute(int eflag, int vflag)
         const int i = ilist[ii];
         const BodyInfo &bi = binfo[i];
         if (bi.bidx < 0) continue;
-        xitmp = x[i][0];
-        yitmp = x[i][1];
-        zitmp = x[i][2];
         int *jlist = firstneigh[i];
         const int jnum = numneigh[i];
 
@@ -394,11 +391,6 @@ void PairLSDEM::compute(int eflag, int vflag)
           j &= NEIGHMASK;
           const BodyInfo &bj = binfo[j];
           if (bj.bidx < 0) continue;
-
-          delx = xitmp - x[j][0];
-          dely = yitmp - x[j][1];
-          delz = zitmp - x[j][2];
-          rsq = delx * delx + dely * dely + delz * delz;
 
           const int calc = use_nodes_of_i(i, j, bi.vol, bj.vol);
           const int inode = calc ? i : j;
@@ -431,7 +423,7 @@ void PairLSDEM::compute(int eflag, int vflag)
             checked_bins[ipartner].insert(tmp_bin);
           }
 
-          if (rsq > maxcutsq) continue;
+          // No need to check cutoff distance, as the node owning the bin is a contact regardless
 
           found_watershed[node_body_key] = 1;
           contacts.push_back({i, j, calc, key, -1});
