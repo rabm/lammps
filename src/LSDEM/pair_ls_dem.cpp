@@ -1431,6 +1431,28 @@ void PairLSDEM::init_style()
       error->all(FLERR, "Must use same storage option for rigid/ls/dem and rigid/small/ls/dem");
   watershed_flag = MAX(ws_large, ws_small);
 
+  // array: a contact between a ghost node r and a local node c needs every node of c's grain
+  //   closer to r than c, those are within 2 x cutoff of c, and atoms move up to half the skin
+  //   between rebuilds, so the ghost cutoff must be 2 x cutoff + skin
+  // watershed: bin ownership needs no other nodes, the neighbor cutoff is enough
+  // compare with cutghostuser, neighbor->cutneighmax is not yet set by neighbor->init()
+
+  if (!watershed_flag) {
+    const double mincut = 2.0 * maxcut + neighbor->skin;
+    if (comm->mode == Comm::SINGLE) {
+      if (comm->cutghostuser < mincut) {
+        if (comm->me == 0)
+          error->warning(FLERR, "Increasing communication cutoff to {:.8g} for pair ls/dem with "
+                         "array storage (2 x cutoff + skin)", mincut);
+        comm->cutghostuser = mincut;
+      }
+    } else if (comm->me == 0) {
+      error->warning(FLERR, "Pair ls/dem with array storage requires a communication cutoff of at "
+                     "least {:.8g} (2 x cutoff + skin) for all atoms, it is not set automatically "
+                     "with comm_modify mode multi", mincut);
+    }
+  }
+
   if (groupbit_small == -1 && igroup_large != 0)
     error->all(FLERR, "If only using fix rigid/ls/dem, it must use group all");
 

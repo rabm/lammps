@@ -50,3 +50,12 @@ the LS-DEM pair cutoff. Use :doc:`comm_modify cutoff <comm_modify>` when
 the neighbor cutoff is shorter. For a small number of large grains,
 ``fix rigid/ls/dem`` stores body information on every rank and avoids
 this owner-distance requirement at the cost of global reductions.
+
+With array storage, the closest node to a ghost query node must be chosen
+among all nodes of the partner grain near it, which can lie up to twice the
+pair cutoff from the local atoms. The pair style therefore raises the
+communication cutoff to at least twice the pair cutoff plus the neighbor
+skin and prints a warning when it does so. The neighbor lists keep the pair
+cutoff plus skin. Watershed storage needs only the usual neighbor cutoff.
+With ``comm_modify mode multi`` the cutoff is not adjusted automatically
+and a warning gives the required value.
