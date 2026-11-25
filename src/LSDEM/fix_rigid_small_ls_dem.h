@@ -68,56 +68,23 @@ template <class Base> class FixRigidSmallLSDEMT : public Base, public FixRigidSm
   friend class ComputeRigidLSDEMLocal;
 
  protected:
-  typedef typename Base::Body Body;
-  using Base::atom;
-  using Base::comm;
-  using Base::displace;
-  using Base::domain;
-  using Base::eflags;
-  using Base::error;
-  using Base::force;
-  using Base::lmp;
-  using Base::memory;
-  using Base::modify;
-  using Base::update;
-  using Base::world;
-  using Base::atom2body;
-  using Base::body;
-  using Base::bodyown;
-  using Base::bodytag;
-  using Base::commflag;
-  using Base::comm_multi_flag;
-  using Base::extended;
-  using Base::grav_group_bit;
-  using Base::grow_body;
-  using Base::gvec;
-  using Base::id_gravity;
-  using Base::inpfile;
-  using Base::itensor_custom;
-  using Base::langflag;
-  using Base::mass_custom;
-  using Base::maxmol;
-  using Base::n_extra_attributes;
-  using Base::nbody;
-  using Base::nghost_body;
-  using Base::nlocal_body;
-  using Base::nmax_body;
-  using Base::onemols;
-  using Base::reinitflag;
-  using Base::reset_atom2body;
-  using Base::setupflag;
-  using Base::xcm_custom;
-  using Base::xcmimage;
+  using Body = typename Base::Body;
+
+  // Base depends on the template argument. Bring its members into scope for the shared LS-DEM code.
+  using Base::atom, Base::comm, Base::domain, Base::error, Base::force;
+  using Base::lmp, Base::memory, Base::modify, Base::update, Base::world;
+
+  using Base::atom2body, Base::body, Base::bodyown, Base::bodytag, Base::reset_atom2body;
+  using Base::grow_body, Base::nbody, Base::nghost_body, Base::nlocal_body, Base::nmax_body;
+  using Base::displace, Base::eflags, Base::extended, Base::xcmimage;
+  using Base::itensor_custom, Base::mass_custom, Base::xcm_custom;
+  using Base::grav_group_bit, Base::gvec, Base::id_gravity, Base::langflag;
+  using Base::inpfile, Base::maxmol, Base::onemols, Base::reinitflag, Base::setupflag;
+  using Base::commflag, Base::comm_multi_flag, Base::n_extra_attributes;
 
  public:
-  using Base::comm_border;
-  using Base::comm_forward;
-  using Base::extra_extent;
-  using Base::groupbit;
-  using Base::id;
-  using Base::maxexchange;
-  using Base::restart_file;
-  using Base::style;
+  using Base::comm_border, Base::comm_forward, Base::extra_extent, Base::maxexchange;
+  using Base::groupbit, Base::id, Base::restart_file, Base::style;
 
   FixRigidSmallLSDEMT(class LAMMPS *, int, char **);
   ~FixRigidSmallLSDEMT() override;
