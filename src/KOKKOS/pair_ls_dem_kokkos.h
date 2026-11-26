@@ -26,6 +26,7 @@ PairStyle(ls/dem/kk/host,PairLSDEMKokkos<LMPHostType>);
 #include "pair_ls_dem.h"
 #include "pair_kokkos.h"
 #include "kokkos_type.h"
+#include "kokkos_base.h"
 
 #include <unordered_map>
 
@@ -206,7 +207,7 @@ struct PairLSDEMKernelsKokkos {
 /* ---------------------------------------------------------------------- */
 
 template <class DeviceType>
-class PairLSDEMKokkos : public PairLSDEM {
+class PairLSDEMKokkos : public PairLSDEM, public KokkosBase {
  public:
   typedef DeviceType device_type;
   typedef ArrayTypes<DeviceType> AT;
@@ -218,6 +219,8 @@ class PairLSDEMKokkos : public PairLSDEM {
   void init_style() override;
   double init_one(int, int) override;
   void setup() override;
+  int pack_forward_comm_kokkos(int, DAT::tdual_int_1d, DAT::tdual_double_1d &, int, int *) override;
+  void unpack_forward_comm_kokkos(int, int, DAT::tdual_double_1d &) override;
 
   // public so its device lambdas can be compiled for CUDA
   void build_segments();

@@ -9,7 +9,7 @@ import tempfile
 from lsdem_spheres import write_shapes
 
 
-def forces(directory, executable, center, arms, launcher=()):
+def forces(directory, executable, flags, center, arms, launcher=()):
     # Rotating the large sphere puts two equally high surface nodes on either
     # side of the sliding path. At the box edge the second is a periodic image.
     deck = f"""units lj
@@ -36,10 +36,12 @@ pair_coeff * * 20 10 0.5 0 0 0 1.8 {arms}
 run 45
 write_dump all custom forces id fx fy fz modify sort id format float %.17g
 """
-    result = subprocess.run([*launcher, executable], input=deck, cwd=directory, text=True,
+    result = subprocess.run([*launcher, executable, *flags], input=deck, cwd=directory, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(result.stdout)
+    if flags and "pair ls/dem/kk," not in result.stdout:
+        raise AssertionError("The Kokkos pair style must be active")
     rows = (directory / "forces").read_text().split("ITEM: ATOMS id fx fy fz\n")[1]
     return {int(a): tuple(map(float, f)) for a, *f in map(str.split, rows.splitlines())}
 
@@ -48,10 +50,15 @@ with tempfile.TemporaryDirectory() as tmp:
     directory = Path(tmp)
     write_shapes(directory, (1, 2))
     exe = str(Path(sys.argv[1]).resolve())
+    # Optional arguments are an MPI launcher followed by -- and LAMMPS arguments.
     launcher = sys.argv[2:]
+    flags = []
+    if "--" in launcher:
+        split = launcher.index("--")
+        launcher, flags = launcher[:split], launcher[split+1:]
     for arms in ("", "5 0.05 3 0.02"):
-        expected = forces(directory, exe, 0.0, arms)
-        actual = forces(directory, exe, 4.99, arms, launcher)
+        expected = forces(directory, exe, [], 0.0, arms)
+        actual = forces(directory, exe, flags, 4.99, arms, launcher)
         assert expected.keys() == actual.keys() == set(range(1, 13))
         assert max(abs(fx) for fx, _, _ in expected.values()) > 0.1
         for tag in expected:

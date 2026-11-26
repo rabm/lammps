@@ -241,6 +241,9 @@ if(PKG_LSDEM AND PKG_RIGID AND PKG_KOKKOS AND Python_Interpreter_FOUND)
   add_test(NAME LSDEMSharedGridRadiusKokkos
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_shared_radius.py
             $<TARGET_FILE:lmp> -k on ${lsdem_kokkos_args} -sf kk)
+  add_test(NAME LSDEMContactHandoffKokkos
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_contact_handoff.py
+            $<TARGET_FILE:lmp> -- -k on ${lsdem_kokkos_args} -sf kk -pk kokkos neigh half newton off)
   add_test(NAME LSDEMNoGhostSegments
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_segments.py
             $<TARGET_FILE:lmp> ${lsdem_kokkos_args})

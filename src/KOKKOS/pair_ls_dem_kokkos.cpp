@@ -16,7 +16,8 @@
 
 #include "atom_kokkos.h"
 #include "atom_masks.h"
-#include "comm.h"
+#include "comm_kokkos.h"
+#include "comm_tiled_kokkos.h"
 #include "domain.h"
 #include "error.h"
 #include "fix_rigid_ls_dem.h"
@@ -802,6 +803,22 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
   auto &k_hist_n = atomKK->k_darray.view_host()[index_ls_dem_n].k_view;
   auto &k_hist_fs = atomKK->k_darray.view_host()[index_ls_dem_fs].k_view;
+  // The brick communicator can stage its packed buffer when MPI is not GPU-aware.
+  // Honor an explicitly requested host exchange and ordinary host communicators.
+  auto *brick = dynamic_cast<CommKokkos *>(comm);
+  const bool pack_on_brick = brick && std::is_same_v<DeviceType, LMPDeviceType> &&
+      !lmp->pair_only_flag && (!brick->forward_pair_comm_legacy || lmp->kokkos->forward_pair_comm_changed);
+  const bool pack_on_tiled = execution_space == Device && dynamic_cast<CommTiledKokkos *>(comm) &&
+      !lmp->kokkos->forward_pair_comm_legacy;
+  if (!pack_on_brick && !pack_on_tiled) {
+    atomKK->sync(Host, IVECTOR_MASK | DVECTOR_MASK);
+    k_hist_n.sync_host();
+    k_hist_fs.sync_host();
+    comm->forward_comm(this);
+    atomKK->modified(Host, IVECTOR_MASK | DVECTOR_MASK);
+    k_hist_n.modify_host();
+    k_hist_fs.modify_host();
+  }
   atomKK->sync(execution_space, IVECTOR_MASK | DVECTOR_MASK);
   k_hist_n.template sync<DeviceType>();
   k_hist_fs.template sync<DeviceType>();
@@ -812,6 +829,8 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   kern.touch_row = index_ls_dem_touch_id;
   kern.fn1_row = index_ls_dem_fn1;
   kern.fs1_row = index_ls_dem_fs1;
+  if (pack_on_brick) brick->forward_comm_device<LMPDeviceType>(this);
+  else if (pack_on_tiled) comm->forward_comm(this);
 
   kern.nlocal = nlocal;
   kern.dimension = domain->dimension;
@@ -896,6 +915,57 @@ void PairLSDEMKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   check_overlap();
 
   if (vflag_fdotr) pair_virial_fdotr_compute(this);
+}
+
+/* ----------------------------------------------------------------------
+   Forward contact history in the same order as pair ls/dem. Capture only
+   the history views and their row indices in the communication kernels.
+------------------------------------------------------------------------- */
+
+template<class DeviceType>
+int PairLSDEMKokkos<DeviceType>::pack_forward_comm_kokkos(
+    int n, DAT::tdual_int_1d list, DAT::tdual_double_1d &buffer, int, int *)
+{
+  auto send = list.view<DeviceType>();
+  auto buf = buffer.view<DeviceType>();
+  auto normal = kern.d_hist_n, shear = kern.d_hist_fs;
+  auto touch = Kokkos::subview(kern.d_ivector, kern.touch_row, Kokkos::ALL);
+  auto fn1 = Kokkos::subview(kern.d_dvector, kern.fn1_row, Kokkos::ALL);
+  auto fs1 = Kokkos::subview(kern.d_dvector, kern.fs1_row, Kokkos::ALL);
+  Kokkos::parallel_for("ls/dem:pack_history", Kokkos::RangePolicy<DeviceType>(0,n),
+    KOKKOS_LAMBDA(int k) {
+      const int i = send(k), m = 9*k;
+      buf(m) = touch(i);
+      for (int j = 0; j < 3; ++j) {
+        buf(m+1+j) = normal(i,j);
+        buf(m+4+j) = shear(i,j);
+      }
+      buf(m+7) = fn1(i);
+      buf(m+8) = fs1(i);
+    });
+  return 9*n;
+}
+
+template<class DeviceType>
+void PairLSDEMKokkos<DeviceType>::unpack_forward_comm_kokkos(
+    int n, int first, DAT::tdual_double_1d &buffer)
+{
+  auto buf = buffer.view<DeviceType>();
+  auto normal = kern.d_hist_n, shear = kern.d_hist_fs;
+  auto touch = Kokkos::subview(kern.d_ivector, kern.touch_row, Kokkos::ALL);
+  auto fn1 = Kokkos::subview(kern.d_dvector, kern.fn1_row, Kokkos::ALL);
+  auto fs1 = Kokkos::subview(kern.d_dvector, kern.fs1_row, Kokkos::ALL);
+  Kokkos::parallel_for("ls/dem:unpack_history", Kokkos::RangePolicy<DeviceType>(0,n),
+    KOKKOS_LAMBDA(int k) {
+      const int i = first+k, m = 9*k;
+      touch(i) = static_cast<int>(buf(m));
+      for (int j = 0; j < 3; ++j) {
+        normal(i,j) = buf(m+1+j);
+        shear(i,j) = buf(m+4+j);
+      }
+      fn1(i) = buf(m+7);
+      fs1(i) = buf(m+8);
+    });
 }
 
 /* ----------------------------------------------------------------------
