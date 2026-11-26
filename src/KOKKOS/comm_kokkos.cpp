@@ -1054,7 +1054,9 @@ void CommKokkos::exchange()
   atomKK->sync(Host,atomKK->avecKK->datamask_exchange);
   int prev_auto_sync = lmp->kokkos->auto_sync;
   lmp->kokkos->auto_sync = 1;
+  atomKK->avecKK->sync_host_comm_darrays();
   CommBrick::exchange();
+  atomKK->avecKK->modified_host_comm_darrays();
   lmp->kokkos->auto_sync = prev_auto_sync;
   atomKK->modified(Host,atomKK->avecKK->datamask_exchange);
 }
@@ -1511,7 +1513,9 @@ void CommKokkos::borders()
     k_sendlist.sync_host();
     int prev_auto_sync = lmp->kokkos->auto_sync;
     lmp->kokkos->auto_sync = 1;
+    atomKK->avecKK->sync_host_comm_darrays();
     CommBrick::borders();
+    atomKK->avecKK->modified_host_comm_darrays();
     lmp->kokkos->auto_sync = prev_auto_sync;
     k_sendlist.modify_host();
     if (ghost_velocity)

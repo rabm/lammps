@@ -400,7 +400,9 @@ void CommTiledKokkos::exchange()
 
   int prev_auto_sync = lmp->kokkos->auto_sync;
   lmp->kokkos->auto_sync = 1;
+  atomKK->avecKK->sync_host_comm_darrays();
   CommTiled::exchange();
+  atomKK->avecKK->modified_host_comm_darrays();
   lmp->kokkos->auto_sync = prev_auto_sync;
 
   atomKK->modified(Host,atomKK->avecKK->datamask_exchange);
@@ -426,7 +428,9 @@ void CommTiledKokkos::borders()
 
   int prev_auto_sync = lmp->kokkos->auto_sync;
   lmp->kokkos->auto_sync = 1;
+  atomKK->avecKK->sync_host_comm_darrays();
   CommTiled::borders();
+  atomKK->avecKK->modified_host_comm_darrays();
   lmp->kokkos->auto_sync = prev_auto_sync;
 
   k_sendlist.modify_host();

@@ -244,4 +244,7 @@ if(PKG_LSDEM AND PKG_RIGID AND PKG_KOKKOS AND Python_Interpreter_FOUND)
   add_test(NAME LSDEMNoGhostSegments
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_segments.py
             $<TARGET_FILE:lmp> ${lsdem_kokkos_args})
+  add_test(NAME LSDEMGhostHistory
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_ghost_history.py
+            $<TARGET_FILE:lmp> ${lsdem_kokkos_args})
 endif()

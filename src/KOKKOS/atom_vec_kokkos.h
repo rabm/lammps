@@ -19,6 +19,7 @@
 
 #include "kokkos_type.h"
 #include <type_traits>
+#include <vector>
 
 #include <Kokkos_Sort.hpp>
 
@@ -153,6 +154,11 @@ class AtomVecKokkos : virtual public AtomVec {
   uint64_t datamask_border_vel;
   uint64_t datamask_exchange;
   uint64_t datamask_bonus;
+
+  // Custom double arrays packed by fix property/atom during host exchange and borders.
+  std::vector<int> host_comm_darrays;
+  void sync_host_comm_darrays();
+  void modified_host_comm_darrays();
 
   virtual void set_size_exchange();
 

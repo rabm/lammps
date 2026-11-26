@@ -25,6 +25,20 @@ using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
 
+void AtomVecKokkos::sync_host_comm_darrays()
+{
+  for (int index : host_comm_darrays)
+    atomKK->k_darray.view_host()[index].k_view.sync_host();
+}
+
+void AtomVecKokkos::modified_host_comm_darrays()
+{
+  for (int index : host_comm_darrays)
+    atomKK->k_darray.view_host()[index].k_view.modify_host();
+}
+
+/* ---------------------------------------------------------------------- */
+
 AtomVecKokkos::AtomVecKokkos(LAMMPS *lmp) : AtomVec(lmp)
 {
   if (!lmp->kokkos || !lmp->kokkos->kokkos_exists)

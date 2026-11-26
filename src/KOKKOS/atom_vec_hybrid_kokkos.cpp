@@ -47,6 +47,13 @@ void AtomVecHybridKokkos::init()
   AtomVecHybrid::init();
 
   set_atom_masks();
+
+  host_comm_darrays.clear();
+  for (int k = 0; k < nstyles; k++) {
+    if (!stylesKK[k]) continue;
+    const auto &arrays = stylesKK[k]->host_comm_darrays;
+    host_comm_darrays.insert(host_comm_darrays.end(), arrays.begin(), arrays.end());
+  }
 }
 
 /* ---------------------------------------------------------------------- */

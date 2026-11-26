@@ -40,6 +40,15 @@ void AtomVecLSDEMKokkos::init()
   AtomVecLSDEM::init();
 
   set_atom_masks();
+
+  // The pair updates these histories on the device. The host property/atom
+  // packers move them with each node and refresh them in reused ghost slots.
+  host_comm_darrays.clear();
+  for (const char *name : {"ls_dem_n", "ls_dem_fs"}) {
+    int flag, cols;
+    const int index = atom->find_custom(name, flag, cols);
+    if ((index >= 0) && (flag == 1) && (cols == 3)) host_comm_darrays.push_back(index);
+  }
 }
 
 /* ----------------------------------------------------------------------
