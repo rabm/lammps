@@ -32,6 +32,8 @@ class PairLSDEM : public Pair {
   PairLSDEM(class LAMMPS *);
   ~PairLSDEM() override;
   void compute(int, int) override;
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
   void coeff(int, char **) override;
   void settings(int, char **) override;
   void init_style() override;

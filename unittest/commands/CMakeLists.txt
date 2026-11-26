@@ -202,6 +202,15 @@ if(PKG_LSDEM AND PKG_RIGID AND Python_Interpreter_FOUND)
   add_test(NAME LSDEMNeighborPolicy
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_neighbor_policy.py
             $<TARGET_FILE:lmp>)
+  add_test(NAME LSDEMContactHandoff
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_contact_handoff.py
+            $<TARGET_FILE:lmp>)
+  if(BUILD_MPI AND MPIEXEC_EXECUTABLE AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 2)
+    add_test(NAME LSDEMContactHandoffMPI
+      COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_contact_handoff.py
+              $<TARGET_FILE:lmp> ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2)
+    set_tests_properties(LSDEMContactHandoffMPI PROPERTIES PROCESSORS 2)
+  endif()
   add_test(NAME LSDEMSharedGridRadius
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_shared_radius.py
             $<TARGET_FILE:lmp>)

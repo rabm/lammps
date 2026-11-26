@@ -103,6 +103,7 @@ PairLSDEM::PairLSDEM(LAMMPS *_lmp) : Pair(_lmp),
   knp(nullptr),kt(nullptr), mu(nullptr), fix_rigid(nullptr),
   fix_rigid_small(nullptr)
 {
+  comm_forward = 9;
   writedata = 1;
   single_enable = 0;
   cutoff_mode = FIXED_CUTOFF;
@@ -354,6 +355,10 @@ void PairLSDEM::compute(int eflag, int vflag)
   // Compare squared distances against the squared cutoff so the closest-node
   // search avoids a sqrt for every neighbour pair (ordering is preserved).
   double maxcutsq = maxcut * maxcut;
+
+  // If the nearest partner changes ranks between neighbor rebuilds, its rank needs
+  // the previous contact history from the rank that owns the probing atom.
+  comm->forward_comm(this);
 
   // body info of local and ghost atoms only changes when the neighbor list is rebuilt
 
@@ -1680,6 +1685,44 @@ void PairLSDEM::setup()
   index_ls_dem_touch_id = atom->find_custom("ls_dem_touch_id", tmp1, tmp2);
   index_ls_dem_fn1 = atom->find_custom("ls_dem_fn1", tmp1, tmp2);
   index_ls_dem_fs1 = atom->find_custom("ls_dem_fs1", tmp1, tmp2);
+}
+
+/* ----------------------------------------------------------------------
+   Forward the atom's previous contact state to its copies in the ghost region.
+------------------------------------------------------------------------- */
+
+int PairLSDEM::pack_forward_comm(int n, int *list, double *buf, int, int *)
+{
+  double **normal = atom->darray[index_ls_dem_n], **shear = atom->darray[index_ls_dem_fs];
+  int *touch = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1], *fs1 = atom->dvector[index_ls_dem_fs1];
+  int m = 0;
+  for (int k = 0; k < n; ++k) {
+    const int i = list[k];
+    buf[m++] = touch[i];
+    std::copy_n(normal[i], 3, buf + m);
+    std::copy_n(shear[i], 3, buf + m + 3);
+    m += 6;
+    buf[m++] = fn1[i];
+    buf[m++] = fs1[i];
+  }
+  return m;
+}
+
+void PairLSDEM::unpack_forward_comm(int n, int first, double *buf)
+{
+  double **normal = atom->darray[index_ls_dem_n], **shear = atom->darray[index_ls_dem_fs];
+  int *touch = atom->ivector[index_ls_dem_touch_id];
+  double *fn1 = atom->dvector[index_ls_dem_fn1], *fs1 = atom->dvector[index_ls_dem_fs1];
+  int m = 0;
+  for (int i = first; i < first + n; ++i) {
+    touch[i] = static_cast<int>(buf[m++]);
+    std::copy_n(buf + m, 3, normal[i]);
+    std::copy_n(buf + m + 3, 3, shear[i]);
+    m += 6;
+    fn1[i] = buf[m++];
+    fs1[i] = buf[m++];
+  }
 }
 
 /* ----------------------------------------------------------------------
