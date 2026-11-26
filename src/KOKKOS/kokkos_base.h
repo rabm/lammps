@@ -33,6 +33,9 @@ class KokkosBase {
   virtual void unpack_reverse_comm_kokkos(int, DAT::tdual_int_1d,
                                           DAT::tdual_double_1d &) {}
 
+  // A ghost/multi fix whose entire border payload is one body-owner tag per atom.
+  virtual DAT::tdual_tagint_1d *ghost_multi_bodytag() { return nullptr; }
+
   // Exchange
   virtual int pack_exchange_kokkos(const int & /*nsend*/, DAT::tdual_double_2d_lr & /*k_buf*/,
                                    DAT::tdual_int_1d /*k_sendlist*/,

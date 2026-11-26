@@ -98,6 +98,8 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   void set_molecule(int, tagint, int, double *, double *, double *) override;
   void resample_momenta(int, int, class RanPark *, double) override;
 
+  DAT::tdual_tagint_1d *ghost_multi_bodytag() override { return &k_bodytag; }
+
   int pack_exchange_kokkos(const int &nsend, DAT::tdual_double_2d_lr &buf,
                            DAT::tdual_int_1d k_sendlist, DAT::tdual_int_1d k_copylist,
                            ExecutionSpace space) override;
