@@ -276,9 +276,6 @@ void Comm::init()
     if (neighbor->style == Neighbor::MULTI)
       error->all(FLERR, "Fix {} ghost/multi cannot be used with neighbor style multi",
                  fix->style);
-    if (lmp->kokkos)
-      error->all(FLERR, "Fix {} ghost/multi is not supported with the KOKKOS package",
-                 fix->style);
     fix_multi = 1;
     cutghost_fix_multi = MAX(cutghost_fix_multi, fix->comm_multi_cutoff());
   }

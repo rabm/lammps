@@ -35,6 +35,7 @@
 #include "kokkos_few.h"
 #include "domain_kokkos.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -1814,7 +1815,10 @@ void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
   } else if (host_holds_bookkeeping && (bodyown != nullptr)) {
     nsave = MIN(prev_size, nmax);
     save_bodyown.assign(bodyown, bodyown+nsave);
-    save_bodytag.assign(bodytag, bodytag+nsave);
+    // A setup-time ghost/multi border swap may already have written ghost
+    // tags on the device. In that case resize keeps the current tags.
+    if (!comm_multi_flag || !k_bodytag.need_sync_host())
+      save_bodytag.assign(bodytag, bodytag+nsave);
     save_atom2body.assign(atom2body, atom2body+nsave);
     save_xcmimage.assign(xcmimage, xcmimage+nsave);
     save_displace.resize((size_t)nsave*3);
@@ -1867,9 +1871,9 @@ void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
   }
 
   // restore the preserved contents into the new host mirrors
+  std::copy(save_bodytag.begin(), save_bodytag.end(), bodytag);
   for (int i = 0; i < nsave; i++) {
     bodyown[i] = save_bodyown[i];
-    bodytag[i] = save_bodytag[i];
     atom2body[i] = save_atom2body[i];
     xcmimage[i] = save_xcmimage[i];
     for (int k = 0; k < 3; k++) displace[i][k] = save_displace[(size_t)i*3+k];

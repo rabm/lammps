@@ -18,6 +18,8 @@
 #include "comm_brick.h"
 #include "kokkos_type.h"
 
+#include <vector>
+
 namespace LAMMPS_NS {
 
 class CommKokkos : public CommBrick {
@@ -74,6 +76,8 @@ class CommKokkos : public CommBrick {
  protected:
   DAT::tdual_int_2d_lr k_sendlist;
   DAT::tdual_int_scalar k_total_send;
+  std::vector<DAT::tdual_tagint_1d *> multi_bodytags;
+  DAT::tdual_int_1d k_collection;
   DAT::tdual_double_2d_lr k_buf_send,k_buf_recv;
   DAT::tdual_int_1d k_exchange_sendlist,k_exchange_copylist,k_indices;
   DAT::tdual_int_1d k_exchange_sendlist_bonus,k_exchange_copylist_bonus;
