@@ -602,6 +602,8 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
 
   // watershed bins of a node ordered by bin, a bin of its table is not also taken from its buffer
 
+  constexpr bool separate_device =
+    !std::is_same_v<typename DeviceType::memory_space, typename LMPHostType::memory_space>;
   std::vector<std::pair<int, double>> wsbin;
   auto add_ws = [&](std::vector<int> &keys, std::vector<double> &values) {
     wsbin.clear();
@@ -614,7 +616,7 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
         error->one(FLERR, "Watershed bin {} out of range for pair ls/dem/kk", wsbin[m].first);
       wsbin[m].first = 2 * wsbin[m].first + (m < nown);
     }
-    std::sort(wsbin.begin(), wsbin.end());
+    if (g.global || !separate_device) std::sort(wsbin.begin(), wsbin.end());
     for (const auto &e : wsbin) {
       keys.push_back(e.first);
       values.push_back(e.second);
@@ -683,6 +685,22 @@ void PairLSDEMKokkos<DeviceType>::build_segments()
     upload(kern.gnws, h_gnws, "pair:gnws");
     upload(kern.dwkey, h_dwkey, "pair:dwkey");
     if (newglobal || (kern.gwkey.extent(0) == 0)) upload(kern.gwkey, h_gwkey, "pair:gwkey");
+    if (separate_device && !h_dwkey.empty()) {
+      // Each distributed node has its own contiguous range of bins.
+      const auto counts = kern.gnws;
+      const auto offsets = kern.goff;
+      const auto styles = kern.gstyle;
+      const auto keys = kern.dwkey;
+      const auto values = kern.dgrid;
+      Kokkos::parallel_for("ls/dem:sort_watershed_bins", Team(ntotal, Kokkos::AUTO),
+        KOKKOS_LAMBDA(const TeamMember &t) {
+          const int a = t.league_rank();
+          if (styles(a) != 0 || counts(a) < 2) return;
+          auto range = Kokkos::make_pair(offsets(a), offsets(a) + counts(a));
+          Kokkos::Experimental::sort_by_key_team(t, Kokkos::subview(keys, range),
+                                                 Kokkos::subview(values, range));
+        });
+    }
     if ((int) kern.seg_bin.extent(0) < MAX(nseg, 1)) {
       kern.seg_bin = Kokkos::View<int *, DeviceType>("pair:seg_bin", MAX(nseg, 1));
       kern.seg_xl = Kokkos::View<KK_FLOAT *, DeviceType>("pair:seg_xl", 3 * MAX(nseg, 1));
