@@ -54,9 +54,17 @@ static void upload(ViewType &d, const std::vector<T> &h, const char *name)
   if (d.extent(0) < MAX(n, (size_t) 1))
     d = ViewType(Kokkos::view_alloc(std::string(name), Kokkos::WithoutInitializing), MAX(n, (size_t) 1));
   if (n == 0) return;
-  auto h_view = Kokkos::create_mirror_view(Kokkos::subview(d, std::make_pair((size_t) 0, n)));
-  for (size_t m = 0; m < n; m++) h_view(m) = static_cast<V>(h[m]);
-  Kokkos::deep_copy(Kokkos::subview(d, std::make_pair((size_t) 0, n)), h_view);
+  auto target = Kokkos::subview(d, std::make_pair((size_t) 0, n));
+  if constexpr (std::is_same_v<T,V>) {
+    // The blocking copy finishes while the vector still owns the host storage.
+    using HostView = Kokkos::View<const T *, typename ViewType::array_layout, Kokkos::HostSpace,
+                                  Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+    Kokkos::deep_copy(target, HostView(h.data(), n));
+  } else {
+    auto mirror = Kokkos::create_mirror_view(target);
+    for (size_t m = 0; m < n; m++) mirror(m) = static_cast<V>(h[m]);
+    Kokkos::deep_copy(target, mirror);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
