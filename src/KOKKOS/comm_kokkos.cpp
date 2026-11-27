@@ -37,6 +37,8 @@
 #include "modify.h"
 #include "output.h"
 #include "pair.h"
+#include "update.h"
+#include "verlet_kokkos.h"
 
 #include <Kokkos_Sort.hpp>
 
@@ -50,8 +52,9 @@ template<class Target, class Source>
 static void copy_message(Target target, Source source, int count)
 {
   if (count == 0 || target.data() == source.data()) return;
-  const auto range = std::make_pair(0, count);
-  Kokkos::deep_copy(Kokkos::subview(target, range), Kokkos::subview(source, range));
+  using Dst = Kokkos::View<double *, typename Target::memory_space, Kokkos::MemoryUnmanaged>;
+  using Src = Kokkos::View<const double *, typename Source::memory_space, Kokkos::MemoryUnmanaged>;
+  Kokkos::deep_copy(Dst(target.data(),count), Src(source.data(),count));
 }
 
 
@@ -142,6 +145,13 @@ void CommKokkos::init()
   reverse_comm_on_host = lmp->kokkos->reverse_comm_on_host;
 
   CommBrick::init();
+
+  // With host-buffer MPI, the brick velocity path can stage just the packed message.
+  // Keep host packing for atom styles with extra forward fields or bonus records.
+  if (lmp->kokkos->forward_comm_changed && !lmp->kokkos->gpu_aware_flag &&
+      !lmp->pair_only_flag && nprocs > 1 && ghost_velocity && atom->avec->comm_x_only &&
+      update->whichflag == 1 && dynamic_cast<VerletKokkos *>(update->integrate))
+    forward_comm_legacy = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -223,9 +233,12 @@ void CommKokkos::forward_comm_device()
           }
 
         } else if (ghost_velocity) {
+          auto recv = k_buf_recv.view<DeviceType>();
+          auto send = k_buf_send.view<DeviceType>();
+          const bool stage = !lmp->kokkos->gpu_aware_flag && recv.data() != buf_recv;
           if (size_forward_recv[iswap]) {
             DeviceType().fence();
-            MPI_Irecv(k_buf_recv.view<DeviceType>().data(),
+            MPI_Irecv(stage ? buf_recv : recv.data(),
                       size_forward_recv[iswap],MPI_DOUBLE,
                       recvproc[iswap],0,world,&request);
           }
@@ -234,12 +247,14 @@ void CommKokkos::forward_comm_device()
                                          k_buf_send,pbc_flag[iswap],pbc[iswap]);
           if (n) {
             DeviceType().fence();
-            MPI_Send(k_buf_send.view<DeviceType>().data(),n,
+            if (stage) copy_message(k_buf_send.view_host(),send,n);
+            MPI_Send(stage ? buf_send : send.data(),n,
                      MPI_DOUBLE,sendproc[iswap],0,world);
           }
           if (size_forward_recv[iswap]) {
             MPI_Wait(&request,MPI_STATUS_IGNORE);
             DeviceType().fence();
+            if (stage) copy_message(recv,k_buf_recv.view_host(),size_forward_recv[iswap]);
           }
           atomKK->avecKK->unpack_comm_vel_kokkos(recvnum[iswap],firstrecv[iswap],k_buf_recv);
         } else {
@@ -1507,9 +1522,20 @@ void CommKokkos::exchange_device()
 
 void CommKokkos::borders()
 {
+  multi_bodytags.clear();
+  if (fix_multi)
+    for (int i = 0; i < atom->nextra_border; i++) {
+      Fix *fix = modify->fix[atom->extra_border[i]];
+      auto *kk = dynamic_cast<KokkosBase *>(fix);
+      if (fix->comm_multi_flag && fix->comm_border == 1 && kk && kk->ghost_multi_bodytag())
+        multi_bodytags.push_back(kk->ghost_multi_bodytag());
+    }
+
   if (!exchange_comm_legacy) {
 
-    if (atom->nextra_border || mode != Comm::SINGLE || bordergroup) {
+    if ((fix_multi && multi_bodytags.empty()) ||
+        atom->nextra_border != static_cast<int>(multi_bodytags.size()) ||
+        mode != Comm::SINGLE || bordergroup) {
 
       if (comm->me == 0) {
         error->warning(FLERR,"Required border comm not yet implemented in Kokkos communication, "
@@ -1531,9 +1557,11 @@ void CommKokkos::borders()
     k_sendlist.sync_host();
     int prev_auto_sync = lmp->kokkos->auto_sync;
     lmp->kokkos->auto_sync = 1;
+    for (auto *bodytag : multi_bodytags) bodytag->sync_host();
     atomKK->avecKK->sync_host_comm_darrays();
     CommBrick::borders();
     atomKK->avecKK->modified_host_comm_darrays();
+    for (auto *bodytag : multi_bodytags) bodytag->modify_host();
     lmp->kokkos->auto_sync = prev_auto_sync;
     k_sendlist.modify_host();
     if (ghost_velocity)
@@ -1553,7 +1581,8 @@ template<class DeviceType>
 struct BuildBorderListFunctor {
         typedef DeviceType device_type;
         typedef ArrayTypes<DeviceType> AT;
-  double lo,hi;
+  double lo[2], hi[2];
+  typename AT::t_int_1d collection;
   typename AT::t_kkfloat_1d_3_lr x;
   int iswap,maxsendlist;
   int nfirst,nlast,dim;
@@ -1564,9 +1593,12 @@ struct BuildBorderListFunctor {
                          DAT::tdual_int_2d_lr _sendlist,
                          DAT::tdual_int_scalar _nsend,int _nfirst,
                          int _nlast, int _dim,
-                         double _lo, double _hi, int _iswap,
+                         const double *_lo, const double *_hi,
+                         typename AT::t_int_1d _collection, int _iswap,
                          int _maxsendlist):
-    lo(_lo),hi(_hi),x(_x.template view<DeviceType>()),iswap(_iswap),
+    lo{_lo[0], _collection.data() ? _lo[1] : _lo[0]},
+    hi{_hi[0], _collection.data() ? _hi[1] : _hi[0]},
+    collection(_collection),x(_x.template view<DeviceType>()),iswap(_iswap),
     maxsendlist(_maxsendlist),nfirst(_nfirst),nlast(_nlast),dim(_dim),
     sendlist(_sendlist.template view<DeviceType>()),
     nsend(_nsend.template view<DeviceType>()) {}
@@ -1575,20 +1607,35 @@ struct BuildBorderListFunctor {
 // NOLINTNEXTLINE
   KOKKOS_INLINE_FUNCTION
   void operator() (typename Kokkos::TeamPolicy<DeviceType>::member_type dev) const {
+    if (collection.data()) build<true>(dev);
+    else build<false>(dev);
+  }
+
+  template<bool MULTI>
+  KOKKOS_INLINE_FUNCTION
+  bool in_slab(int i) const {
+    const int c = MULTI ? collection(i) : 0;
+    const double coord = x(i,dim);
+    return coord >= lo[c] && coord <= hi[c];
+  }
+
+  template<bool MULTI>
+  KOKKOS_INLINE_FUNCTION
+  void build(typename Kokkos::TeamPolicy<DeviceType>::member_type dev) const {
     const int chunk = ((nlast - nfirst + dev.league_size() - 1 ) /
                        dev.league_size());
     const int teamstart = chunk*dev.league_rank() + nfirst;
     const int teamend = (teamstart + chunk) < nlast?(teamstart + chunk):nlast;
     int mysend = 0;
     for (int i=teamstart + dev.team_rank(); i<teamend; i+=dev.team_size()) {
-      if (static_cast<double>(x(i,dim)) >= lo && static_cast<double>(x(i,dim)) <= hi) mysend++;
+      if (in_slab<MULTI>(i)) mysend++;
     }
     const int my_store_pos = dev.team_scan(mysend,&nsend());
 
     if (my_store_pos+mysend < maxsendlist) {
     mysend = my_store_pos;
       for (int i=teamstart + dev.team_rank(); i<teamend; i+=dev.team_size()) {
-        if (static_cast<double>(x(i,dim)) >= lo && static_cast<double>(x(i,dim)) <= hi) {
+        if (in_slab<MULTI>(i)) {
           sendlist(iswap,mysend++) = i;
         }
       }
@@ -1605,11 +1652,31 @@ template<class DeviceType>
 void CommKokkos::borders_device() {
   int n,iswap,dim,ineed,twoneed,smax,rmax;
   int nsend,nrecv,sendflag,nfirst,nlast;
-  double lo,hi;
   MPI_Request request;
 
   ExecutionSpace exec_space = ExecutionSpaceFromDevice<DeviceType>::space;
-  atomKK->sync(exec_space,X_MASK);
+  atomKK->sync(exec_space,fix_multi ? X_MASK | TAG_MASK : X_MASK);
+
+  // Classify owned atoms once. Incoming ghosts are classified when unpacked
+  // so later swaps can relay an owner across more than one subdomain.
+  typename ArrayTypes<DeviceType>::t_int_1d collection;
+  if (fix_multi) {
+    k_collection.clear_sync_state();  // each rebuild replaces the flags
+    if (k_collection.extent(0) < static_cast<size_t>(atom->nmax))
+      k_collection = DAT::tdual_int_1d("comm:collection_fix_multi",atom->nmax);
+    collection = k_collection.template view<DeviceType>();
+    auto tag = atomKK->k_tag.template view<DeviceType>();
+    bool first = true;
+    for (auto *tags : multi_bodytags) {
+      tags->template sync<DeviceType>();
+      auto bodytag = tags->template view<DeviceType>();
+      Kokkos::parallel_for("Comm::classify_owners", Kokkos::RangePolicy<DeviceType>(0,atom->nlocal),
+        KOKKOS_LAMBDA(int i) {
+          collection(i) = bodytag(i) == tag(i) || (!first && collection(i));
+        });
+      first = false;
+    }
+  }
 
   k_sendlist.sync<DeviceType>();
 
@@ -1633,13 +1700,8 @@ void CommKokkos::borders_device() {
       //   for later swaps in a dim, only check newly arrived ghosts
       // store sent atom indices in list for use in future timesteps
 
-      // borders() sends every mode other than Comm::SINGLE down the legacy
-      // path, so only the single-cutoff slab bounds are ever needed here; the
-      // multi cutoffs the commented-out blocks below refer to would have to be
-      // looked up again by whoever implements them
-
-      lo = slablo[iswap];
-      hi = slabhi[iswap];
+      const double *lo = fix_multi ? multilo[iswap] : &slablo[iswap];
+      const double *hi = fix_multi ? multihi[iswap] : &slabhi[iswap];
 
       if (ineed % 2 == 0) {
         nfirst = nlast;
@@ -1668,7 +1730,7 @@ void CommKokkos::borders_device() {
             k_total_send.sync_device();
 
             BuildBorderListFunctor<DeviceType> f(atomKK->k_x,k_sendlist,
-                k_total_send,nfirst,nlast,dim,lo,hi,iswap,maxsendlist[iswap]);
+                k_total_send,nfirst,nlast,dim,lo,hi,collection,iswap,maxsendlist[iswap]);
             Kokkos::TeamPolicy<DeviceType> config((nlast-nfirst+team_size-1)/team_size,team_size);
             Kokkos::parallel_for(config,f);
 
@@ -1685,7 +1747,7 @@ void CommKokkos::borders_device() {
               k_total_send.sync_device();
 
               BuildBorderListFunctor<DeviceType> f(atomKK->k_x,k_sendlist,
-                  k_total_send,nfirst,nlast,dim,lo,hi,iswap,maxsendlist[iswap]);
+                  k_total_send,nfirst,nlast,dim,lo,hi,collection,iswap,maxsendlist[iswap]);
               Kokkos::TeamPolicy<DeviceType> config((nlast-nfirst+team_size-1)/team_size,team_size);
               Kokkos::parallel_for(config,f);
 
@@ -1758,6 +1820,19 @@ void CommKokkos::borders_device() {
                              pbc_flag[iswap],pbc[iswap],exec_space);
       }
 
+      // Append each fix's body tags after the atom-vector payload, as in AtomVec.
+      if (nsend && fix_multi) {
+        auto list = k_sendlist.template view<DeviceType>();
+        double *buf = k_buf_send.template view<DeviceType>().data() + n;
+        for (auto *tags : multi_bodytags) {
+          auto bodytag = tags->template view<DeviceType>();
+          Kokkos::parallel_for("Comm::pack_owner_tags", Kokkos::RangePolicy<DeviceType>(0,nsend),
+            KOKKOS_LAMBDA(int i) { buf[i] = d_ubuf(bodytag(list(iswap,i))).d; });
+          buf += nsend;
+          n += nsend;
+        }
+      }
+
       // swap atoms with other proc
       // no MPI calls except SendRecv if nsend/nrecv = 0
       // put incoming ghosts at end of my atom arrays
@@ -1806,6 +1881,35 @@ void CommKokkos::borders_device() {
         } else {
           atomKK->avecKK->unpack_border_kokkos(nrecv,atom->nlocal+atom->nghost,
                                      k_buf_send,exec_space);
+        }
+      }
+      if (nrecv && fix_multi) {
+        const int first = atom->nlocal + atom->nghost;
+        // The atom-vector unpack can grow all per-atom arrays. Reacquire their views.
+        if (collection.extent(0) < static_cast<size_t>(atom->nmax)) {
+          k_collection.template modify<DeviceType>();
+          k_collection.resize(atom->nmax);
+          k_collection.template sync<DeviceType>();
+          collection = k_collection.template view<DeviceType>();
+        }
+        auto tag = atomKK->k_tag.template view<DeviceType>();
+        auto &buffer = sendproc[iswap] == me ? k_buf_send : k_buf_recv;
+        const int atom_width = atomKK->avecKK->size_border +
+                               (ghost_velocity ? atomKK->avecKK->size_velocity : 0);
+        const double *buf = buffer.template view<DeviceType>().data() + nrecv * atom_width;
+        bool first_fix = true;
+        for (auto *tags : multi_bodytags) {
+          tags->template sync<DeviceType>();
+          auto bodytag = tags->template view<DeviceType>();
+          Kokkos::parallel_for("Comm::unpack_owner_tags", Kokkos::RangePolicy<DeviceType>(0,nrecv),
+            KOKKOS_LAMBDA(int i) {
+              const int j = first + i;
+              bodytag(j) = (tagint) d_ubuf(buf[i]).i;
+              collection(j) = bodytag(j) == tag(j) || (!first_fix && collection(j));
+            });
+          tags->template modify<DeviceType>();
+          buf += nrecv;
+          first_fix = false;
         }
       }
       // set all pointers & counters
@@ -2006,7 +2110,7 @@ void CommKokkos::grow_swap(int n)
 {
   free_swap();
   allocate_swap(n);
-  if (mode == Comm::MULTI) {
+  if (multi_collections) {
     free_multi();
     allocate_multi(n);
   }

@@ -98,6 +98,8 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   void set_molecule(int, tagint, int, double *, double *, double *) override;
   void resample_momenta(int, int, class RanPark *, double) override;
 
+  DAT::tdual_tagint_1d *ghost_multi_bodytag() override { return &k_bodytag; }
+
   int pack_exchange_kokkos(const int &nsend, DAT::tdual_double_2d_lr &buf,
                            DAT::tdual_int_1d k_sendlist, DAT::tdual_int_1d k_copylist,
                            ExecutionSpace space) override;
@@ -147,6 +149,7 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
 
  protected:
   void set_xv_kokkos(int);
+  void grow_cvatom(int);
 
   using ImageIntView1D = typename AT::t_imageint_1d;
   using TagIntView1D = typename AT::t_tagint_1d;
@@ -181,14 +184,13 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   DAT::tdual_tagint_1d k_bodytag;
   DAT::tdual_int_1d k_atom2body;
   DAT::tdual_imageint_1d k_xcmimage;
-  DAT::tdual_double_2d_lr k_displace, k_vatom, k_langextra;
+  DAT::tdual_double_2d_lr k_displace, k_vatom, k_cvatom, k_langextra;
 
   IntView1D d_bodyown;
   TagIntView1D d_bodytag;
   IntView1D d_atom2body;
   ImageIntView1D d_xcmimage;
-  View2D d_displace, d_vatom, d_langextra;
-  View2D d_cvatom;    // per-atom centroid virial, device only (not migrated)
+  View2D d_displace, d_vatom, d_cvatom, d_langextra;
 
   // extended-particle per-atom data (tied DualViews), only allocated when the
   // body contains finite-size particles (sphere/ellipsoid/line/tri/dipole).
@@ -220,9 +222,8 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   // 1 once grow_kokkos owns the base per-atom pointers
   bool tied_initialized = false;
 
-  // set while the host body rebuild runs in setup_pre_neighbor() on the 2nd and
-  // later runs, so the pre_neighbor()/reset_atom2body()/image_shift() overrides
-  // take their host fallback even though setupflag is already 1 by then
+  // The host owns the bodies from setup_pre_neighbor() through setup_device_push(),
+  // and while resample_momenta() uses the host implementation.
   bool setup_host_rebuild = false;
 
   // set from pre_exchange() until pre_neighbor()

@@ -85,10 +85,11 @@ FixRigidSmallKokkos<DeviceType>::FixRigidSmallKokkos(LAMMPS *lmp, int narg, char
   // per-sent-atom header (1 double, the offset of that atom's data) followed by
   // the atom's variable-length payload.  The largest payload is a body owner:
   // bodytag + xcmimage + displace[3] + vatom[6] + own-flag (12) + Body
-  // (bodysize).  maxexchange must bound header + payload so CommKokkos sizes the
+  // (bodysize), plus nine centroid virial values when requested. maxexchange
+  // must bound header + payload so CommKokkos sizes the
   // send buffer (nsend*maxexchange) large enough.  (The host path uses the base
   // class's own smaller variable packing; over-sizing the buffer is harmless.)
-  maxexchange = 1 + 12 + bodysize;
+  maxexchange = 1 + 12 + 9 + bodysize;
 
   grow_arrays(atom->nmax);
 
@@ -137,6 +138,7 @@ FixRigidSmallKokkos<DeviceType>::~FixRigidSmallKokkos()
   memoryKK->destroy_kokkos(k_xcmimage, xcmimage);
   memoryKK->destroy_kokkos(k_displace, displace);
   memoryKK->destroy_kokkos(k_vatom, vatom);
+  memoryKK->destroy_kokkos(k_cvatom, cvatom);
   // guard on the pointers, not on extended/orientflag/dorientflag: those are
   // re-derived by setup_bodies_static() on every run, so a flag that has
   // flipped back to 0 would leave a Kokkos-owned buffer for the base class
@@ -268,6 +270,10 @@ void FixRigidSmallKokkos<DeviceType>::pre_exchange()
   k_xcmimage.sync_host();
   k_displace.sync_host();
   k_vatom.sync_host();
+  if (cvflag_atom) {
+    k_cvatom.sync_host();
+    k_cvatom.modify_host();
+  }
   // the extended-particle arrays migrate with the atoms too, and pre_neighbor()
   // marks them host-modified after the host exchange, so they have to be flushed
   // here as well or that modify_host() collides with an outstanding device claim
@@ -351,6 +357,7 @@ void FixRigidSmallKokkos<DeviceType>::claim_host_bookkeeping(bool copied)
   k_xcmimage.modify_host();
   k_displace.modify_host();
   if (vflag_atom) k_vatom.modify_host();
+  if (cvflag_atom) k_cvatom.modify_host();
 
   if (copied) {
     if (extended) {
@@ -473,7 +480,6 @@ void FixRigidSmallKokkos<DeviceType>::setup_pre_neighbor()
   reverse_comm_device = 0;
   setup_host_rebuild = true;
   FixRigidSmall::setup_pre_neighbor();
-  setup_host_rebuild = false;
   forward_comm_device = saved_forward_comm_device;
   reverse_comm_device = saved_reverse_comm_device;
 
@@ -551,6 +557,7 @@ void FixRigidSmallKokkos<DeviceType>::setup(int vflag)
   forward_comm_device = 0;
   reverse_comm_device = 0;
 
+  if ((vflag & VIRIAL_CENTROID) && thermo_virial) grow_cvatom(atom->nmax);
   FixRigidSmall::setup(vflag);
 
   forward_comm_device = saved_forward_comm_device;
@@ -583,6 +590,12 @@ template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::setup_device_push()
 {
   check_second_setup();
+
+  // The host setup initialized the complete centroid tally for this step.
+  if (cvflag_atom) {
+    k_cvatom.clear_sync_state();
+    k_cvatom.modify_host();
+  }
 
   // FixRigidSmall::setup() populated the host per-atom arrays, which are the
   // host mirrors of the tied DualViews -> mark host-modified and push to device.
@@ -651,8 +664,7 @@ void FixRigidSmallKokkos<DeviceType>::setup_device_push()
       d_dorient = k_dorient.template view<DeviceType>();
       extended_per_atom += 3;                    // dorient cols
     }
-    // each migrating body atom now also carries extended_per_atom doubles
-    maxexchange = 1 + 12 + extended_per_atom + bodysize;
+    maxexchange = MAX(maxexchange, 1 + 12 + 9 + extended_per_atom + bodysize);
 
     // per-step set_xv/set_v writes these atom-style views for extended particles
     extended_datamask = 0;
@@ -672,6 +684,7 @@ void FixRigidSmallKokkos<DeviceType>::setup_device_push()
   k_body.sync_host();
   k_body.resize(nmax_body);
   copy_body_device();
+  setup_host_rebuild = false;
 
   // size the per-body Langevin buffer to match (grow_body does this during the
   // run, but it is not necessarily called before the first post_force)
@@ -915,11 +928,7 @@ void FixRigidSmallKokkos<DeviceType>::initial_integrate(int vflag)
 
   // the per-atom virial is a dual view grown in grow_arrays(), so the plain
   // base-class array must not be allocated (alloc = 0)
-  // v_init() with alloc = 0 raises maxcvatom without growing cvatom, so keep
-  // the old value; set_xv_kokkos() grows the host cvatom itself
-  int maxcvatom_old = maxcvatom;
   v_init(vflag,0);
-  maxcvatom = maxcvatom_old;
 
   // forward communicate updated info of all bodies
 
@@ -1473,17 +1482,10 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
     Kokkos::deep_copy(d_vatom, 0.0);
     k_vatom.modify_device();
   }
-  // The per-atom centroid virial is summed on the device in d_cvatom and copied
-  // to the host cvatom after each half.  Like the host cvatom it is not moved
-  // with the atoms, since it is only needed between set_xv() and set_v().
-  if (evflag && cvflag_atom) {
-    if ((int) d_cvatom.extent(0) < nlocal) Kokkos::resize(d_cvatom, atom->nmax, 9);
+  if (cvflag_atom) {
+    grow_cvatom(atom->nmax);
+    k_cvatom.template sync<DeviceType>();
     if (setxflag) Kokkos::deep_copy(d_cvatom, 0.0);
-    if (maxcvatom < nlocal) {
-      maxcvatom = atom->nmax;
-      memory->destroy(cvatom);
-      memory->create(cvatom, maxcvatom, 9, "fix:cvatom");
-    }
   }
   copymode = 1;
   if (setxflag) {
@@ -1504,11 +1506,10 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
       k_vatom.modify_device();
       k_vatom.sync_host();
     }
-    if (cvflag_atom && nlocal > 0) {
-      Kokkos::View<double**, Kokkos::LayoutRight, LMPHostType,
-                   Kokkos::MemoryTraits<Kokkos::Unmanaged>> h_cvatom(cvatom[0], nlocal, 9);
-      Kokkos::deep_copy(h_cvatom, Kokkos::subview(d_cvatom, std::make_pair(0, nlocal),
-                                                  Kokkos::ALL()));
+    if (cvflag_atom) {
+      // Host computes read only owned atoms. Both halves publish this same prefix.
+      k_cvatom.template modify<DeviceType>();
+      Kokkos::subview(k_cvatom, std::make_pair(0,nlocal), Kokkos::ALL()).sync_host();
     }
   }
   atomKK->modified(execution_space, datamask_modify);
@@ -1700,11 +1701,12 @@ void FixRigidSmallKokkos<DeviceType>::resample_momenta(int groupbit_in, int mom_
   const int saved_reverse_comm_device = reverse_comm_device;
   forward_comm_device = 0;
   reverse_comm_device = 0;
+  const bool saved_host_rebuild = setup_host_rebuild;
   setup_host_rebuild = true;
 
   FixRigidSmall::resample_momenta(groupbit_in, mom_flag, random_in, KT);
 
-  setup_host_rebuild = false;
+  setup_host_rebuild = saved_host_rebuild;
   forward_comm_device = saved_forward_comm_device;
   reverse_comm_device = saved_reverse_comm_device;
 
@@ -1748,6 +1750,18 @@ void FixRigidSmallKokkos<DeviceType>::refresh_atom_views()
     if (dorientflag) d_dorient = k_dorient.template view<DeviceType>();
   }
 }
+
+template<class DeviceType>
+void FixRigidSmallKokkos<DeviceType>::grow_cvatom(int nmax)
+{
+  if (nmax <= k_cvatom.extent_int(0)) return;
+  memoryKK->grow_kokkos(k_cvatom, cvatom, nmax, 9, "fix:cvatom");
+  k_cvatom.sync_host();
+  d_cvatom = k_cvatom.template view<DeviceType>();
+  maxcvatom = nmax;
+}
+
+/* ---------------------------------------------------------------------- */
 
 template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
@@ -1812,6 +1826,8 @@ void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
     tied_initialized = true;
     prev_size = nsave;
   } else if (host_holds_bookkeeping && (bodyown != nullptr)) {
+    // A setup-time sort or border exchange may already have updated the device.
+    if (comm_multi_flag && using_device_exchange && !setup_host_rebuild) sync_host_for_sort();
     nsave = MIN(prev_size, nmax);
     save_bodyown.assign(bodyown, bodyown+nsave);
     save_bodytag.assign(bodytag, bodytag+nsave);
@@ -1840,6 +1856,7 @@ void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
   memoryKK->grow_kokkos(k_atom2body, atom2body, nmax, "rigid/small:atom2body");
   memoryKK->grow_kokkos(k_xcmimage, xcmimage, nmax, "rigid/small:xcmimage");
   memoryKK->grow_kokkos(k_displace, displace, nmax, 3, "rigid/small:displace");
+  if (cvflag_atom) grow_cvatom(nmax);
   if (nmax > maxvatom) {
     maxvatom = atom->nmax;
     memoryKK->grow_kokkos(k_vatom, vatom, maxvatom, 6, "fix:vatom");
@@ -2001,6 +2018,9 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
   const int bodysize = this->bodysize;
   const int nsend_local = nsend;
 
+  const int ncentroid = cvflag_atom ? 9 : 0;
+  auto d_cvatom = this->d_cvatom;
+  if (cvflag_atom) k_cvatom.template sync<DeviceType>();
   // extended-particle per-atom data carried alongside each migrating body atom
   const int ext = extended_per_atom;            // 0 if not extended
   const int oflag = orientflag;
@@ -2049,8 +2069,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
 
       int size;
       if (btag == 0) size = 1;
-      else if (bown < 0) size = 12 + ext;
-      else size = 12 + ext + bodysize;
+      else size = 12 + ext + ncentroid + (bown < 0 ? 0 : bodysize);
 
       if (is_final) {
         int m = nsend_local + offset;
@@ -2062,6 +2081,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
           d_buf(m++) = d_displace(i,1);
           d_buf(m++) = d_displace(i,2);
           for (int k = 0; k < 6; k++) d_buf(m++) = d_vatom(i,k);
+          for (int k = 0; k < ncentroid; k++) d_buf(m++) = d_cvatom(i,k);
           if (ext) {                            // extended-particle data
             d_buf(m++) = d_ubuf(d_eflags(i)).d;
             for (int k = 0; k < oflag; k++) d_buf(m++) = d_orient(i,k);
@@ -2086,6 +2106,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
           d_bodyown(i) = d_bodyown(j);
           for (int k = 0; k < 3; k++) d_displace(i,k) = d_displace(j,k);
           for (int k = 0; k < 6; k++) d_vatom(i,k) = d_vatom(j,k);
+          for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = d_cvatom(j,k);
           if (ext) {
             d_eflags(i) = d_eflags(j);
             for (int k = 0; k < oflag; k++) d_orient(i,k) = d_orient(j,k);
@@ -2148,6 +2169,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
   k_xcmimage.template modify<DeviceType>();
   k_displace.template modify<DeviceType>();
   k_vatom.template modify<DeviceType>();
+  if (cvflag_atom) k_cvatom.template modify<DeviceType>();
   k_atom2body.template modify<DeviceType>();
   k_bodyown.template modify<DeviceType>();
   if (ext) {
@@ -2190,6 +2212,9 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
   k_bodyown.template sync<DeviceType>();
   refresh_atom_views();
 
+  const int ncentroid = cvflag_atom ? 9 : 0;
+  auto d_cvatom = this->d_cvatom;
+  if (cvflag_atom) k_cvatom.template sync<DeviceType>();
   const int ext = extended_per_atom;
   const int oflag = orientflag;
   const int dflag = dorientflag;
@@ -2249,12 +2274,15 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
         for(int k = 0; k < 6; k++){
           d_vatom(i,k) = d_buf(m++);
         }
+        for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = d_buf(m++);
         if (ext) {
           d_eflags(i) = (int) d_ubuf(d_buf(m++)).i;
           for (int k = 0; k < oflag; k++) d_orient(i,k) = d_buf(m++);
           if (dflag) { d_dorient(i,0)=d_buf(m++); d_dorient(i,1)=d_buf(m++); d_dorient(i,2)=d_buf(m++); }
         }
         if (d_buf(m++) > 0) count++;
+      } else {
+        for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = 0.0;
       }
     },
     n_new_body
@@ -2278,8 +2306,8 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
       int m = (int) d_buf(irecv);
       if (irecv >= nrecv1_local)
         m = nrecv1extra_local + (int) d_buf(nrecv1extra_local + irecv - nrecv1_local);
-      // payload: bodytag(1) xcmimage(1) displace(3) vatom(6) extended(ext) -> flag
-      m += 11 + ext;
+      // Skip the per-atom fields to reach the body owner flag.
+      m += 11 + ncentroid + ext;
 
       // if owning body
       if (d_buf(m) > 0) {
@@ -2301,6 +2329,7 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
   k_xcmimage.template modify<DeviceType>();
   k_displace.template modify<DeviceType>();
   k_vatom.template modify<DeviceType>();
+  if (cvflag_atom) k_cvatom.template modify<DeviceType>();
   k_bodyown.template modify<DeviceType>();
   if (ext) {
     k_eflags.template modify<DeviceType>();
@@ -2835,6 +2864,7 @@ void FixRigidSmallKokkos<DeviceType>::sync_host_for_sort()
   k_xcmimage.sync_host();
   k_displace.sync_host();
   k_vatom.sync_host();
+  if (cvflag_atom) k_cvatom.sync_host();
   if (extended) {
     k_eflags.sync_host();
     if (orientflag) k_orient.sync_host();
@@ -2853,6 +2883,7 @@ void FixRigidSmallKokkos<DeviceType>::modified_host_for_sort()
   k_xcmimage.modify_host();
   k_displace.modify_host();
   k_vatom.modify_host();
+  if (cvflag_atom) k_cvatom.modify_host();
   if (extended) {
     k_eflags.modify_host();
     if (orientflag) k_orient.modify_host();
@@ -2912,6 +2943,11 @@ void FixRigidSmallKokkos<DeviceType>::sort_kokkos(Kokkos::BinSort<KeyViewType, B
   Sorter.sort(space, k_displace.template view<LMPDeviceType>());
   Sorter.sort(space, k_vatom.template view<LMPDeviceType>());
   Sorter.sort(space, k_atom2body.template view<LMPDeviceType>());
+  if (cvflag_atom) {
+    k_cvatom.template sync<LMPDeviceType>();
+    Sorter.sort(space, k_cvatom.template view<LMPDeviceType>());
+    k_cvatom.modify_device();
+  }
 
   k_bodytag.modify_device();
   k_bodyown.modify_device();
@@ -3234,13 +3270,10 @@ double FixRigidSmallKokkos<DeviceType>::compute_scalar()
 template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::copy_body_host(){
   Kokkos::Profiling::pushRegion("rigid/small copy body host");
-  // k_body is not sized until setup_device_push().  Callers can run before that
-  // even with setupflag already set -- setup_pre_neighbor() sets it, and
-  // ModifyKokkos::setup() then runs compute temp -> dof() before the fix setup()
-  // loop is reached.  Until the device array exists the host body[] that
-  // create_bodies() filled is the authoritative copy, so there is nothing to
-  // bring down.
-  if (k_body.view_device().extent_int(0) < nlocal_body + nghost_body) {
+  // A host rebuild can allocate device capacity when receiving ghost bodies.
+  // The host body[] remains current for setup-time dof() and other callbacks
+  // until setup_device_push() copies the completed bodies to the device.
+  if (setup_host_rebuild || k_body.view_device().extent_int(0) < nlocal_body + nghost_body) {
     Kokkos::Profiling::popRegion();
     return;
   }

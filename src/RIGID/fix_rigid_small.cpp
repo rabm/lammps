@@ -2885,6 +2885,20 @@ void FixRigidSmall::grow_arrays(int nmax)
 }
 
 /* ----------------------------------------------------------------------
+   An exchange can bring atoms to a rank that was empty at virial setup.
+   Sorting also uses a spare atom row beyond the local atoms.
+------------------------------------------------------------------------- */
+
+double *FixRigidSmall::centroid_row(int i)
+{
+  if (i >= maxcvatom) {
+    maxcvatom = atom->nmax;
+    memory->grow(cvatom,maxcvatom,9,"fix:cvatom");
+  }
+  return cvatom[i];
+}
+
+/* ----------------------------------------------------------------------
    copy values within local atom-based arrays
 ------------------------------------------------------------------------- */
 
@@ -2907,12 +2921,15 @@ void FixRigidSmall::copy_arrays(int i, int j, int delflag)
     }
   }
 
-  // must also copy vatom if per-atom virial calculated on this timestep
-  // since vatom is calculated before and after atom migration
+  // Keep the first integration half's per-atom virials with the atom.
 
   if (vflag_atom)
     for (int k = 0; k < 6; k++)
       vatom[j][k] = vatom[i][k];
+  if (cvflag_atom) {
+    double *row = centroid_row(j);
+    for (int k = 0; k < 9; k++) row[k] = cvatom[i][k];
+  }
 
   // if deleting atom J via delflag and J owns a body, then delete it
 
@@ -2949,6 +2966,10 @@ void FixRigidSmall::set_arrays(int i)
   if (vflag_atom)
     for (int k = 0; k < 6; k++)
       vatom[i][k] = 0.0;
+  if (cvflag_atom) {
+    double *row = centroid_row(i);
+    for (int k = 0; k < 9; k++) row[k] = 0.0;
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -3082,6 +3103,8 @@ int FixRigidSmall::pack_exchange(int i, double *buf)
   if (vflag_atom)
     for (int k = 0; k < 6; k++)
       buf[m++] = vatom[i][k];
+  if (cvflag_atom)
+    for (int k = 0; k < 9; k++) buf[m++] = cvatom[i][k];
 
   // atom does not own its rigid body
 
@@ -3128,6 +3151,10 @@ int FixRigidSmall::unpack_exchange(int nlocal, double *buf)
 
   if (!bodytag[nlocal]) {
     bodyown[nlocal] = -1;
+    if (cvflag_atom) {
+      double *row = centroid_row(nlocal);
+      for (int k = 0; k < 9; k++) row[k] = 0.0;
+    }
     return m;
   }
 
@@ -3137,6 +3164,10 @@ int FixRigidSmall::unpack_exchange(int nlocal, double *buf)
   if (vflag_atom)
     for (int k = 0; k < 6; k++)
       vatom[nlocal][k] = buf[m++];
+  if (cvflag_atom) {
+    double *row = centroid_row(nlocal);
+    for (int k = 0; k < 9; k++) row[k] = buf[m++];
+  }
 
   // atom does not own its rigid body
 
@@ -3820,6 +3851,7 @@ double FixRigidSmall::memory_usage()
     if (orientflag) bytes = (double)nmax*orientflag * sizeof(double);
     if (dorientflag) bytes = (double)nmax*3 * sizeof(double);
   }
+  bytes += (double)maxcvatom*9 * sizeof(double);
   bytes += (double)nmax_body * sizeof(Body);
   return bytes;
 }

@@ -218,6 +218,7 @@ class FixRigidSmall : public Fix {
   virtual void enforce2d();
   void readfile(int, double **, int *);
   virtual void grow_body();
+  double *centroid_row(int);
   virtual void reset_atom2body();
 
   // callback function for rendezvous communication

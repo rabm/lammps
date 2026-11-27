@@ -299,6 +299,7 @@ void FixRigidNHSmallKokkos<DeviceType>::setup(int vflag)
   this->forward_comm_device = 0;
   this->reverse_comm_device = 0;
 
+  if ((vflag & VIRIAL_CENTROID) && this->thermo_virial) this->grow_cvatom(atom->nmax);
   // NOLINTNEXTLINE(bugprone-parent-virtual-call)
   FixRigidSmall::setup(vflag);
 

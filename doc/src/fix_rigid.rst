@@ -972,7 +972,7 @@ build, where the two share one memory space, :doc:`fix deposit
 Run the other affected inputs without the KOKKOS package.
 
 The *ghost/multi* keyword is only available for the *rigid/small*
-styles and is not supported with the KOKKOS package, with
+styles, including their KOKKOS variants.  It is not supported with
 :doc:`comm_style tiled <comm_style>`, with :doc:`comm_modify mode multi
 <comm_modify>`, or with :doc:`neighbor <neighbor>` style *multi*.
 

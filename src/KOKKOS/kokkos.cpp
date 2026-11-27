@@ -589,6 +589,7 @@ void KokkosLMP::accelerator(int narg, char **arg)
 
         exchange_comm_on_host = forward_comm_on_host = reverse_comm_on_host = 0;
       } else error->all(FLERR,"Illegal package kokkos command");
+      forward_comm_changed = 0;
       iarg += 2;
     } else if (strcmp(arg[iarg],"comm/exchange") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal package kokkos command");
