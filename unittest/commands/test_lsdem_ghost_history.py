@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare forces after periodic ghost slots change during a sliding contact."""
+"""Compare forces and contact partners after ghost slots change during sliding."""
 import math
 from pathlib import Path
 import subprocess
@@ -9,15 +9,18 @@ import tempfile
 from lsdem_spheres import write_shapes
 
 
-def forces(directory, executable, flags):
-    run = subprocess.run([executable, *flags, "-in", "in.slide"], cwd=directory,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def state(directory, executable, rigid, flags):
+    small = rigid == "rigid/small/ls/dem"
+    run = subprocess.run([executable, *flags, "-var", "small", str(int(small)),
+                          "-var", "save_bodies", str(int(small and not flags)), "-in", "in.slide"], cwd=directory,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if run.returncode:
         raise RuntimeError(run.stdout)
     if flags and "pair ls/dem/kk," not in run.stdout:
         raise AssertionError("The Kokkos pair style must be active")
-    rows = (directory / "forces").read_text().split("ITEM: ATOMS id fx fy fz\n")[1]
-    return {int(row[0]): tuple(map(float, row[1:])) for row in map(str.split, rows.splitlines())}
+    rows = (directory / "forces").read_text().split("ITEM: ATOMS id i_ls_dem_touch_id fx fy fz\n")[1]
+    return {int(tag): (int(partner), tuple(map(float, force)))
+            for tag, partner, *force in map(str.split, rows.splitlines())}
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -42,19 +45,26 @@ velocity all set 3 0 0 units box
 velocity moving set NULL 1 0 units box
 neighbor 0.01 bin
 neigh_modify every 1 delay 0 check no exclude molecule/intra all
-fix bodies all rigid/small/ls/dem molecule
+if "${small} == 1" then "fix bodies all rigid/small/ls/dem molecule" &
+  else "fix bodies all rigid/ls/dem molecule infile initial.restart.rigid"
 pair_style ls/dem 0.75 order exact
 pair_coeff * * 100 25 0.5 0 0 0 0.75
 timestep 0.001
+run 0
+if "${save_bodies} == 1" then "write_restart initial.restart"
 run 11
-write_dump all custom forces id fx fy fz modify sort id format float %.17g
+write_dump all custom forces id i_ls_dem_touch_id fx fy fz modify sort id format float %.17g
 """)
     executable = str(Path(sys.argv[1]).resolve())
-    reference = forces(directory, executable, [])
-    actual = forces(directory, executable, ["-k", "on", *sys.argv[2:], "-sf", "kk",
-                                            "-pk", "kokkos", "neigh", "half", "newton", "off"])
-    assert reference.keys() == actual.keys() == set(range(1, 19))
-    assert max(abs(fy) for _, fy, _ in reference.values()) > 1.0
-    for tag in reference:
-        for got, expected in zip(actual[tag], reference[tag]):
-            assert math.isclose(got, expected, rel_tol=1.e-6, abs_tol=1.e-7), (tag, got, expected)
+    for rigid in ("rigid/small/ls/dem", "rigid/ls/dem"):
+        reference = state(directory, executable, rigid, [])
+        actual = state(directory, executable, rigid, ["-k", "on", *sys.argv[2:], "-sf", "kk",
+                                                      "-pk", "kokkos", "neigh", "half", "newton", "off"])
+        assert reference.keys() == actual.keys() == set(range(1, 19))
+        partners = {partner for partner, _ in reference.values()}
+        assert -1 in partners and len(partners) > 1
+        assert max(abs(force[1]) for _, force in reference.values()) > 1.0
+        for tag, (partner, force) in reference.items():
+            assert actual[tag][0] == partner, (rigid, tag, actual[tag][0], partner)
+            for got, expected in zip(actual[tag][1], force):
+                assert math.isclose(got, expected, rel_tol=1.e-6, abs_tol=1.e-7), (rigid, tag, got, expected)

@@ -75,12 +75,16 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::init()
 template <class DeviceType>
 void FixRigidSmallLSDEMKokkos<DeviceType>::setup_pre_neighbor()
 {
+  // The first level-set setup writes the no-contact sentinel through atom->ivector.
+  const bool init_touch = !this->ls_read_flag;
+  if (init_touch) this->atomKK->k_ivector.sync_host();
   host_phase = true;
   {
     HostComm hc(this);
     Parent::setup_pre_neighbor();
   }
   host_phase = false;
+  if (init_touch) this->atomKK->k_ivector.modify_host();
 }
 
 /* ---------------------------------------------------------------------- */

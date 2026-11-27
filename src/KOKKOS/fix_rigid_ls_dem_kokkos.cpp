@@ -64,7 +64,11 @@ FixRigidLSDEMKokkos<DeviceType>::FixRigidLSDEMKokkos(LAMMPS *lmp, int narg, char
 template <class DeviceType>
 void FixRigidLSDEMKokkos<DeviceType>::init()
 {
+  // The first level-set setup writes the no-contact sentinel through atom->ivector.
+  const bool init_touch = !ls_read_flag;
+  if (init_touch) atomKK->k_ivector.sync_host();
   FixRigidLSDEM::init();
+  if (init_touch) atomKK->k_ivector.modify_host();
   exchange_comm_device = 0;
   sort_device = 0;
 
