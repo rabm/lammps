@@ -188,6 +188,22 @@ void FixPropertyAtomKokkos::grow_arrays(int nmax)
 
 /* ---------------------------------------------------------------------- */
 
+// Host exchange packs every custom scalar. Only ghost-enabled fixes pack borders.
+
+uint64_t FixPropertyAtomKokkos::scalar_comm_mask(const AtomKokkos *atomKK, bool borders)
+{
+  uint64_t mask = EMPTY_MASK;
+  for (int n = 0; n < atomKK->nprop_atom; n++) {
+    const auto *fix = atomKK->fix_prop_atom[n];
+    if (borders && !fix->comm_border) continue;
+    if (fix->ivector_flag) mask |= IVECTOR_MASK;
+    if (fix->dvector_flag) mask |= DVECTOR_MASK;
+  }
+  return mask;
+}
+
+/* ---------------------------------------------------------------------- */
+
 void FixPropertyAtomKokkos::sync(ExecutionSpace space, uint64_t mask)
 {
   if (space == Device) {

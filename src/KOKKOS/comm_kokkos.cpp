@@ -30,6 +30,7 @@
 #include "dump.h"
 #include "error.h"
 #include "fix.h"
+#include "fix_property_atom_kokkos.h"
 #include "force.h"
 #include "kokkos.h"
 #include "kokkos_base.h"
@@ -1048,12 +1049,14 @@ void CommKokkos::exchange()
     return;
   }
 
-  atomKK->sync(Host,atomKK->avecKK->datamask_exchange);
+  const auto mask = atomKK->avecKK->datamask_exchange |
+    FixPropertyAtomKokkos::scalar_comm_mask(atomKK,false);
+  atomKK->sync(Host,mask);
   int prev_auto_sync = lmp->kokkos->auto_sync;
   lmp->kokkos->auto_sync = 1;
   CommBrick::exchange();
   lmp->kokkos->auto_sync = prev_auto_sync;
-  atomKK->modified(Host,atomKK->avecKK->datamask_exchange);
+  atomKK->modified(Host,mask);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1501,20 +1504,17 @@ void CommKokkos::borders()
     if (exchange_comm_on_host) borders_device<LMPHostType>();
     else borders_device<LMPDeviceType>();
   } else {
-    if (ghost_velocity)
-      atomKK->sync(Host,atomKK->avecKK->datamask_border_vel);
-    else
-      atomKK->sync(Host,atomKK->avecKK->datamask_border);
+    const auto mask = (ghost_velocity ? atomKK->avecKK->datamask_border_vel :
+                       atomKK->avecKK->datamask_border) |
+      FixPropertyAtomKokkos::scalar_comm_mask(atomKK,true);
+    atomKK->sync(Host,mask);
     k_sendlist.sync_host();
     int prev_auto_sync = lmp->kokkos->auto_sync;
     lmp->kokkos->auto_sync = 1;
     CommBrick::borders();
     lmp->kokkos->auto_sync = prev_auto_sync;
     k_sendlist.modify_host();
-    if (ghost_velocity)
-      atomKK->modified(Host,atomKK->avecKK->datamask_border_vel);
-    else
-      atomKK->modified(Host,atomKK->avecKK->datamask_border);
+    atomKK->modified(Host,mask);
   }
 
   if (comm->nprocs == 1 && !ghost_velocity && !forward_comm_legacy)
