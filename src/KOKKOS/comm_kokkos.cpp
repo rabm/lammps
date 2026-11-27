@@ -37,6 +37,8 @@
 #include "modify.h"
 #include "output.h"
 #include "pair.h"
+#include "update.h"
+#include "verlet_kokkos.h"
 
 #include <Kokkos_Sort.hpp>
 
@@ -50,8 +52,9 @@ template<class Target, class Source>
 static void copy_message(Target target, Source source, int count)
 {
   if (count == 0 || target.data() == source.data()) return;
-  const auto range = std::make_pair(0, count);
-  Kokkos::deep_copy(Kokkos::subview(target, range), Kokkos::subview(source, range));
+  using Dst = Kokkos::View<double *, typename Target::memory_space, Kokkos::MemoryUnmanaged>;
+  using Src = Kokkos::View<const double *, typename Source::memory_space, Kokkos::MemoryUnmanaged>;
+  Kokkos::deep_copy(Dst(target.data(),count), Src(source.data(),count));
 }
 
 
@@ -142,6 +145,13 @@ void CommKokkos::init()
   reverse_comm_on_host = lmp->kokkos->reverse_comm_on_host;
 
   CommBrick::init();
+
+  // With host-buffer MPI, the brick velocity path can stage just the packed message.
+  // Keep host packing for atom styles with extra forward fields or bonus records.
+  if (lmp->kokkos->forward_comm_changed && !lmp->kokkos->gpu_aware_flag &&
+      !lmp->pair_only_flag && nprocs > 1 && ghost_velocity && atom->avec->comm_x_only &&
+      update->whichflag == 1 && dynamic_cast<VerletKokkos *>(update->integrate))
+    forward_comm_legacy = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -223,9 +233,12 @@ void CommKokkos::forward_comm_device()
           }
 
         } else if (ghost_velocity) {
+          auto recv = k_buf_recv.view<DeviceType>();
+          auto send = k_buf_send.view<DeviceType>();
+          const bool stage = !lmp->kokkos->gpu_aware_flag && recv.data() != buf_recv;
           if (size_forward_recv[iswap]) {
             DeviceType().fence();
-            MPI_Irecv(k_buf_recv.view<DeviceType>().data(),
+            MPI_Irecv(stage ? buf_recv : recv.data(),
                       size_forward_recv[iswap],MPI_DOUBLE,
                       recvproc[iswap],0,world,&request);
           }
@@ -234,12 +247,14 @@ void CommKokkos::forward_comm_device()
                                          k_buf_send,pbc_flag[iswap],pbc[iswap]);
           if (n) {
             DeviceType().fence();
-            MPI_Send(k_buf_send.view<DeviceType>().data(),n,
+            if (stage) copy_message(k_buf_send.view_host(),send,n);
+            MPI_Send(stage ? buf_send : send.data(),n,
                      MPI_DOUBLE,sendproc[iswap],0,world);
           }
           if (size_forward_recv[iswap]) {
             MPI_Wait(&request,MPI_STATUS_IGNORE);
             DeviceType().fence();
+            if (stage) copy_message(recv,k_buf_recv.view_host(),size_forward_recv[iswap]);
           }
           atomKK->avecKK->unpack_comm_vel_kokkos(recvnum[iswap],firstrecv[iswap],k_buf_recv);
         } else {
