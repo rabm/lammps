@@ -16,10 +16,15 @@
 
 #include "atom_kokkos.h"
 #include "atom_masks.h"
+#include "atom_vec_kokkos.h"
 #include "comm_kokkos.h"
 #include "error.h"
 #include "math_extra_kokkos.h"
+#include "modify.h"
+#include "neighbor.h"
 #include "rigid_const.h"
+#include "update.h"
+#include "verlet_kokkos.h"
 
 #include <Kokkos_NestedSort.hpp>
 
@@ -136,6 +141,14 @@ void FixRigidSmallLSDEMKokkos<DeviceType>::pre_force(int vflag)
     pre_force_host(vflag);
     return;
   }
+
+  // Between neighbor rebuilds the ghost slots and their body indices stay in place.
+  // Verlet's atom forward exchange has already copied the node fields for this step.
+  // Keep the fix exchange when another pre-force callback could have changed them.
+  if (this->neighbor->ago > 0 && this->comm->ghost_velocity && this->modify->n_pre_force == 1 &&
+      (this->atomKK->avecKK->datamask_comm_vel & NODE_MASK) == NODE_MASK &&
+      dynamic_cast<VerletKokkos *>(this->update->integrate))
+    return;
 
   this->atomKK->sync(this->execution_space, NODE_MASK);
   this->k_bodytag.template sync<DeviceType>();
