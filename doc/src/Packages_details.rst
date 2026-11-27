@@ -71,6 +71,7 @@ gives those details.
    * :ref:`KSPACE <PKG-KSPACE>`
    * :ref:`LATBOLTZ <PKG-LATBOLTZ>`
    * :ref:`LEPTON <PKG-LEPTON>`
+   * :ref:`LSDEM <PKG-LSDEM>`
    * :ref:`MACHDYN <PKG-MACHDYN>`
    * :ref:`MANIFOLD <PKG-MANIFOLD>`
    * :ref:`MANYBODY <PKG-MANYBODY>`
@@ -1580,6 +1581,19 @@ the :doc:`Build extras <Build_extras>` page.
 * :doc:`angle_style lepton <angle_lepton>`
 * :doc:`dihedral_style lepton <dihedral_lepton>`
 * ``examples/LEPTON``
+
+----------
+
+.. _PKG-LSDEM:
+
+LSDEM package
+-------------
+
+Model contact between rigid grains using surface nodes and level sets.
+Use :doc:`pair_style ls/dem <pair_ls_dem>` for contact forces and
+:doc:`fix rigid/ls/dem or rigid/small/ls/dem <fix_rigid_ls_dem>`
+for time integration.  Enable the :ref:`RIGID package <PKG-RIGID>`
+when building LSDEM.
 
 ----------
 

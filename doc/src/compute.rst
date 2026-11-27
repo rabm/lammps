@@ -298,6 +298,7 @@ The individual style names on the :doc:`Commands compute <Commands_compute>` pag
 * :doc:`reduce/region <compute_reduce>` - same as compute reduce, within a region
 * :doc:`rheo/property/atom <compute_rheo_property_atom>` - convert atom attributes in RHEO package to per-atom vectors/arrays
 * :doc:`rigid/local <compute_rigid_local>` - extract rigid body attributes
+* :doc:`rigid/ls/dem/local <compute_rigid_ls_dem_local>` - extract LS-DEM body and grid attributes
 * :doc:`saed <compute_saed>` - electron diffraction intensity on a mesh of reciprocal lattice nodes
 * :doc:`slcsa/atom <compute_slcsa_atom>` - perform Supervised Learning Crystal Structure Analysis (SL-CSA)
 * :doc:`slice <compute_slice>` - extract values from global vector or array

@@ -288,6 +288,11 @@ whether an extra library is needed to build and use the package:
      - :doc:`pair_style lepton <pair_lepton>`
      - ``PACKAGES/lepton``
      - int
+   * - :ref:`LSDEM <PKG-LSDEM>`
+     - level-set discrete elements
+     - :doc:`pair_style ls/dem <pair_ls_dem>`
+     - n/a
+     - no
    * - :ref:`MACHDYN <PKG-MACHDYN>`
      - smoothed Mach dynamics
      - `SMD User Guide <PDF/MACHDYN_LAMMPS_userguide.pdf>`_

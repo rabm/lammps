@@ -405,6 +405,7 @@ accelerated styles exist.
 * :doc:`rheo/viscosity <fix_rheo_pressure>` - viscosity calculation for the RHEO package
 * :doc:`rhok <fix_rhok>` - add bias potential for long-range ordered systems
 * :doc:`rigid <fix_rigid>` - constrain one or more clusters of atoms to move as a rigid body with NVE integration
+* :doc:`rigid/ls/dem <fix_rigid_ls_dem>` - integrate LS-DEM rigid bodies
 * :doc:`rigid/meso <fix_rigid_meso>` - constrain clusters of mesoscopic SPH/SDPD particles to move as a rigid body
 * :doc:`rigid/nph <fix_rigid>` - constrain one or more clusters of atoms to move as a rigid body with NPH integration
 * :doc:`rigid/nph/small <fix_rigid>` - constrain many small clusters of atoms to move as a rigid body with NPH integration
@@ -415,6 +416,7 @@ accelerated styles exist.
 * :doc:`rigid/nvt <fix_rigid>` - constrain one or more clusters of atoms to move as a rigid body with NVT integration
 * :doc:`rigid/nvt/small <fix_rigid>` - constrain many small clusters of atoms to move as a rigid body with NVT integration
 * :doc:`rigid/small <fix_rigid>` - constrain many small clusters of atoms to move as a rigid body with NVE integration
+* :doc:`rigid/small/ls/dem <fix_rigid_ls_dem>` - integrate LS-DEM rigid bodies distributed among processors
 * :doc:`rx <fix_rx>` - solve reaction kinetic ODEs for a defined reaction set
 * :doc:`saed/vtk <fix_saed_vtk>` - time-average the intensities from :doc:`compute saed <compute_saed>`
 * :doc:`set <fix_set>` - reset an atom property via an atom-style variable every N steps
