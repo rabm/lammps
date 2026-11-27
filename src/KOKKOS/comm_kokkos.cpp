@@ -45,6 +45,16 @@ using namespace LAMMPS_NS;
 static constexpr double BUFFACTOR = 1.5;
 static constexpr int BUFMIN = 10000;
 
+// Communication buffers are scratch views. Copy only the packed MPI message.
+template<class Target, class Source>
+static void copy_message(Target target, Source source, int count)
+{
+  if (count == 0 || target.data() == source.data()) return;
+  const auto range = std::make_pair(0, count);
+  Kokkos::deep_copy(Kokkos::subview(target, range), Kokkos::subview(source, range));
+}
+
+
 /* ----------------------------------------------------------------------
    setup MPI and allocate buffer space
 ------------------------------------------------------------------------- */
@@ -421,6 +431,9 @@ void CommKokkos::forward_comm_device(Fix *fix, int size)
       grow_buf_fix(n);
   }
 
+  const bool stage = !lmp->kokkos->gpu_aware_flag &&
+      k_buf_recv_fix.view<DeviceType>().data() != k_buf_recv_fix.view_host().data();
+
   for (iswap = 0; iswap < nswap; iswap++) {
 
     // pack buffer
@@ -439,8 +452,7 @@ void CommKokkos::forward_comm_device(Fix *fix, int size)
         buf_send_fix = k_buf_send_fix.view<DeviceType>().data();
         buf_recv_fix = k_buf_recv_fix.view<DeviceType>().data();
       } else {
-        k_buf_send_fix.modify<DeviceType>();
-        k_buf_send_fix.sync_host();
+        copy_message(k_buf_send_fix.view_host(), k_buf_send_fix.view<DeviceType>(), n);
         buf_send_fix = k_buf_send_fix.view_host().data();
         buf_recv_fix = k_buf_recv_fix.view_host().data();
       }
@@ -459,14 +471,16 @@ void CommKokkos::forward_comm_device(Fix *fix, int size)
       }
 
       if (recvnum[iswap]) {
-        MPI_Wait(&request,MPI_STATUS_IGNORE);
+        MPI_Status status;
+        MPI_Wait(&request,stage ? &status : MPI_STATUS_IGNORE);
         DeviceType().fence();
+        if (stage) {
+          int received;
+          MPI_Get_count(&status,MPI_DOUBLE,&received);
+          copy_message(k_buf_recv_fix.view<DeviceType>(), k_buf_recv_fix.view_host(), received);
+        }
       }
 
-      if (!lmp->kokkos->gpu_aware_flag) {
-        k_buf_recv_fix.modify_host();
-        k_buf_recv_fix.sync<DeviceType>();
-      }
       k_buf_tmp = k_buf_recv_fix;
     } else k_buf_tmp = k_buf_send_fix;
 
@@ -527,6 +541,9 @@ void CommKokkos::reverse_comm_device(Fix *fix, int size)
   // exchange data with another proc
   // if other proc is self, just copy
 
+  const bool stage = !lmp->kokkos->gpu_aware_flag &&
+      k_buf_recv_fix.view<DeviceType>().data() != k_buf_recv_fix.view_host().data();
+
   for (iswap = nswap-1; iswap >= 0; iswap--) {
 
     n = fixKKBase->pack_reverse_comm_kokkos(recvnum[iswap],firstrecv[iswap],k_buf_send_fix);
@@ -541,8 +558,7 @@ void CommKokkos::reverse_comm_device(Fix *fix, int size)
         buf_send_fix = k_buf_send_fix.view<DeviceType>().data();
         buf_recv_fix = k_buf_recv_fix.view<DeviceType>().data();
       } else {
-        k_buf_send_fix.modify<DeviceType>();
-        k_buf_send_fix.sync<LMPHostType>();
+        copy_message(k_buf_send_fix.view_host(), k_buf_send_fix.view<DeviceType>(), n);
         buf_send_fix = k_buf_send_fix.view_host().data();
         buf_recv_fix = k_buf_recv_fix.view_host().data();
       }
@@ -560,14 +576,16 @@ void CommKokkos::reverse_comm_device(Fix *fix, int size)
         MPI_Send(buf_send_fix,n,MPI_DOUBLE,recvproc[iswap],0,world);
       }
       if (sendnum[iswap]) {
-        MPI_Wait(&request,MPI_STATUS_IGNORE);
+        MPI_Status status;
+        MPI_Wait(&request,stage ? &status : MPI_STATUS_IGNORE);
         DeviceType().fence();
+        if (stage) {
+          int received;
+          MPI_Get_count(&status,MPI_DOUBLE,&received);
+          copy_message(k_buf_recv_fix.view<DeviceType>(), k_buf_recv_fix.view_host(), received);
+        }
       }
 
-      if (!lmp->kokkos->gpu_aware_flag) {
-        k_buf_recv_fix.modify<LMPHostType>();
-        k_buf_recv_fix.sync<DeviceType>();
-      }
       k_buf_tmp = k_buf_recv_fix;
     } else k_buf_tmp = k_buf_send_fix;
 
