@@ -339,7 +339,14 @@ void FixRigidLSDEM::init()
       for (i = 0; i < nlocal; i++) {
         if (!(mask[i] & groupbit)) continue;
         if (body[i] != ibody) continue;
-        node_index[i] = tag[i] - min_id;
+        // the difference of two tags is a tagint, check it fits the int node index
+        const tagint inode = tag[i] - min_id;
+        if ((inode < 0) || (inode > MAXSMALLINT))
+          error->one(FLERR,
+                     "Node index {} of atom {} on body {} with smallest atom ID {} is out of "
+                     "range, the atom IDs of each body should be consecutive",
+                     inode, tag[i], ibody, min_id);
+        node_index[i] = (int) inode;
         max_node_index = MAX(max_node_index, node_index[i]);
       }
     }

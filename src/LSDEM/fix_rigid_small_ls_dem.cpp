@@ -712,10 +712,15 @@ void FixRigidSmallLSDEM::process_levelsets()
       if (!(mask[i] & groupbit)) continue;
       ibody = atom2body[i];
       if ((ibody < 0) || (ibody >= nlocal_bodyLS + nghost_bodyLS)) continue;
-      node_index[i] = tag[i] - bodyLS[ibody].tagmin;
-      if (node_index[i] < 0)
-        error->one(FLERR, "Negative node index for atom {} i {} tagmin {} negative! on body {}", tag[i], i, bodyLS[ibody].tagmin, ibody);
-      max_node_index = MAX(max_node_index, node_index[i]);
+      // the difference of two tags is a tagint, check it fits the int node index
+      const tagint inode = tag[i] - bodyLS[ibody].tagmin;
+      if ((inode < 0) || (inode > MAXSMALLINT))
+        error->one(FLERR,
+                   "Node index {} of atom {} on body {} with smallest atom ID {} is out of range, "
+                   "the atom IDs of each body should be consecutive",
+                   inode, tag[i], ibody, bodyLS[ibody].tagmin);
+      node_index[i] = (int) inode;
+      max_node_index = MAX(max_node_index, inode);
     }
 
     MPI_Allreduce(MPI_IN_PLACE, &max_node_index, 1, MPI_LMP_TAGINT, MPI_MAX, world);
@@ -1566,11 +1571,11 @@ void FixRigidSmallLSDEM::write_restart_file(const char *file)
       } else recvrow = sendrow;
 
       for (int i = 0; i < recvrow; i++)
-        fprintf(fp,"%d %-1.16e %-1.16e %-1.16e %-1.16e "
+        fprintf(fp,TAGINT_FORMAT " %-1.16e %-1.16e %-1.16e %-1.16e "
                 "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e "
                 "%-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %-1.16e %d %d %d "
                 "%d %-1.16e %s %-1.16e %-1.16e %-1.16e %-1.16e\n",
-                static_cast<int> (buf[i][0]),buf[i][1],
+                static_cast<tagint> (buf[i][0]),buf[i][1],
                 buf[i][2],buf[i][3],buf[i][4],
                 buf[i][5],buf[i][6],buf[i][7],
                 buf[i][8],buf[i][9],buf[i][10],
@@ -2136,7 +2141,7 @@ int FixRigidSmallLSDEM::pack_reverse_comm(int n, int first, double *buf)
 
     for (i = first; i < last; i++) {
       if (bodyown[i] < 0) continue;
-      buf[m++] = static_cast<double>(bodyLS[bodyown[i]].tagmin);
+      buf[m++] = ubuf(bodyLS[bodyown[i]].tagmin).d;
     }
     return m;
   }
@@ -2153,12 +2158,13 @@ void FixRigidSmallLSDEM::unpack_reverse_comm(int n, int *list, double *buf)
     FixRigidSmall::unpack_reverse_comm(n, list, buf);
 
   if (commflag_rev_ls == RTAGMIN) {
-    int i, j, m, tagcomm;
+    int i, j, m;
+    tagint tagcomm;
     m = 0;
     for (i = 0; i < n; i++) {
       j = list[i];
       if (bodyown[j] < 0) continue;
-      tagcomm = static_cast<tagint>(buf[m++]);
+      tagcomm = (tagint) ubuf(buf[m++]).i;
       bodyLS[bodyown[j]].tagmin = MIN(bodyLS[bodyown[j]].tagmin, tagcomm);
     }
   }

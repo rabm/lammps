@@ -1431,6 +1431,18 @@ void PairLSDEM::init_style()
     groupbit_small = fix_rigid_small->groupbit;
     igroup_small = fix_rigid_small->igroup;
     ws_small = fix_rigid_small->get_storage_model();
+
+    // the contact history stores the molecule ID of the touched grain as an int
+    //   (i_ls_dem_touch_id) and the candidate lists pack it in 31 bits
+    tagint maxmol = 0;
+    tagint *molecule = atom->molecule;
+    int *mask = atom->mask;
+    for (int i = 0; i < atom->nlocal; i++)
+      if (mask[i] & groupbit_small) maxmol = MAX(maxmol, molecule[i]);
+    MPI_Allreduce(MPI_IN_PLACE, &maxmol, 1, MPI_LMP_TAGINT, MPI_MAX, world);
+    if (maxmol > MAXSMALLINT)
+      error->all(FLERR, "Pair ls/dem requires molecule IDs of fix rigid/small/ls/dem grains "
+                 "up to {}, found {}", MAXSMALLINT, maxmol);
   }
 
   if (ws_large != -1 && ws_small != -1)
