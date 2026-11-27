@@ -85,10 +85,11 @@ FixRigidSmallKokkos<DeviceType>::FixRigidSmallKokkos(LAMMPS *lmp, int narg, char
   // per-sent-atom header (1 double, the offset of that atom's data) followed by
   // the atom's variable-length payload.  The largest payload is a body owner:
   // bodytag + xcmimage + displace[3] + vatom[6] + own-flag (12) + Body
-  // (bodysize).  maxexchange must bound header + payload so CommKokkos sizes the
+  // (bodysize), plus nine centroid virial values when requested. maxexchange
+  // must bound header + payload so CommKokkos sizes the
   // send buffer (nsend*maxexchange) large enough.  (The host path uses the base
   // class's own smaller variable packing; over-sizing the buffer is harmless.)
-  maxexchange = 1 + 12 + bodysize;
+  maxexchange = 1 + 12 + 9 + bodysize;
 
   grow_arrays(atom->nmax);
 
@@ -137,6 +138,7 @@ FixRigidSmallKokkos<DeviceType>::~FixRigidSmallKokkos()
   memoryKK->destroy_kokkos(k_xcmimage, xcmimage);
   memoryKK->destroy_kokkos(k_displace, displace);
   memoryKK->destroy_kokkos(k_vatom, vatom);
+  memoryKK->destroy_kokkos(k_cvatom, cvatom);
   // guard on the pointers, not on extended/orientflag/dorientflag: those are
   // re-derived by setup_bodies_static() on every run, so a flag that has
   // flipped back to 0 would leave a Kokkos-owned buffer for the base class
@@ -268,6 +270,10 @@ void FixRigidSmallKokkos<DeviceType>::pre_exchange()
   k_xcmimage.sync_host();
   k_displace.sync_host();
   k_vatom.sync_host();
+  if (cvflag_atom) {
+    k_cvatom.sync_host();
+    k_cvatom.modify_host();
+  }
   // the extended-particle arrays migrate with the atoms too, and pre_neighbor()
   // marks them host-modified after the host exchange, so they have to be flushed
   // here as well or that modify_host() collides with an outstanding device claim
@@ -351,6 +357,7 @@ void FixRigidSmallKokkos<DeviceType>::claim_host_bookkeeping(bool copied)
   k_xcmimage.modify_host();
   k_displace.modify_host();
   if (vflag_atom) k_vatom.modify_host();
+  if (cvflag_atom) k_cvatom.modify_host();
 
   if (copied) {
     if (extended) {
@@ -551,6 +558,7 @@ void FixRigidSmallKokkos<DeviceType>::setup(int vflag)
   forward_comm_device = 0;
   reverse_comm_device = 0;
 
+  if ((vflag & VIRIAL_CENTROID) && thermo_virial) grow_cvatom(atom->nmax);
   FixRigidSmall::setup(vflag);
 
   forward_comm_device = saved_forward_comm_device;
@@ -583,6 +591,12 @@ template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::setup_device_push()
 {
   check_second_setup();
+
+  // The host setup initialized the complete centroid tally for this step.
+  if (cvflag_atom) {
+    k_cvatom.clear_sync_state();
+    k_cvatom.modify_host();
+  }
 
   // FixRigidSmall::setup() populated the host per-atom arrays, which are the
   // host mirrors of the tied DualViews -> mark host-modified and push to device.
@@ -651,8 +665,7 @@ void FixRigidSmallKokkos<DeviceType>::setup_device_push()
       d_dorient = k_dorient.template view<DeviceType>();
       extended_per_atom += 3;                    // dorient cols
     }
-    // each migrating body atom now also carries extended_per_atom doubles
-    maxexchange = 1 + 12 + extended_per_atom + bodysize;
+    maxexchange = MAX(maxexchange, 1 + 12 + 9 + extended_per_atom + bodysize);
 
     // per-step set_xv/set_v writes these atom-style views for extended particles
     extended_datamask = 0;
@@ -1408,15 +1421,6 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
 {
   Kokkos::Profiling::pushRegion("rigid/small set_xv");
 
-  // The per-atom centroid virial (cvatom) is filled on the host by the base
-  // Fix::v_tally and has no tied device buffer, so the device set_xv kernel
-  // cannot accumulate it without dereferencing a host pointer on the device.
-  // Refuse rather than crash on GPU / silently corrupt.  The global and the
-  // ordinary per-atom virial (d_vatom) are fully supported.
-  if (cvflag_atom)
-    error->all(FLERR,"fix rigid/small/kk does not support the per-atom centroid "
-               "stress (e.g. compute centroid/stress/atom); use the non-Kokkos style");
-
   this->xprd = domain->xprd;
   this->yprd = domain->yprd;
   this->zprd = domain->zprd;
@@ -1478,6 +1482,11 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
     Kokkos::deep_copy(d_vatom, 0.0);
     k_vatom.modify_device();
   }
+  if (cvflag_atom) {
+    grow_cvatom(atom->nmax);
+    k_cvatom.template sync<DeviceType>();
+    if (setxflag) Kokkos::deep_copy(d_cvatom, 0.0);
+  }
   copymode = 1;
   if (setxflag) {
     Kokkos::parallel_reduce("fix rigid/small setxv", Kokkos::RangePolicy<DeviceType, TagSetXV<1>>(0, nlocal), *this, ev);
@@ -1496,6 +1505,11 @@ void FixRigidSmallKokkos<DeviceType>::set_xv_kokkos(int setxflag)
       // d_vatom aliases the host vatom[] buffer (tied DualView); flush to host
       k_vatom.modify_device();
       k_vatom.sync_host();
+    }
+    if (cvflag_atom) {
+      // Host computes read only owned atoms. Both halves publish this same prefix.
+      k_cvatom.template modify<DeviceType>();
+      Kokkos::subview(k_cvatom, std::make_pair(0,nlocal), Kokkos::ALL()).sync_host();
     }
   }
   atomKK->modified(execution_space, datamask_modify);
@@ -1737,6 +1751,18 @@ void FixRigidSmallKokkos<DeviceType>::refresh_atom_views()
 }
 
 template<class DeviceType>
+void FixRigidSmallKokkos<DeviceType>::grow_cvatom(int nmax)
+{
+  if (nmax <= k_cvatom.extent_int(0)) return;
+  memoryKK->grow_kokkos(k_cvatom, cvatom, nmax, 9, "fix:cvatom");
+  k_cvatom.sync_host();
+  d_cvatom = k_cvatom.template view<DeviceType>();
+  maxcvatom = nmax;
+}
+
+/* ---------------------------------------------------------------------- */
+
+template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
 {
   Kokkos::Profiling::pushRegion("rigid/small grow arrays");
@@ -1827,6 +1853,7 @@ void FixRigidSmallKokkos<DeviceType>::grow_arrays(int nmax)
   memoryKK->grow_kokkos(k_atom2body, atom2body, nmax, "rigid/small:atom2body");
   memoryKK->grow_kokkos(k_xcmimage, xcmimage, nmax, "rigid/small:xcmimage");
   memoryKK->grow_kokkos(k_displace, displace, nmax, 3, "rigid/small:displace");
+  if (cvflag_atom) grow_cvatom(nmax);
   if (nmax > maxvatom) {
     maxvatom = atom->nmax;
     memoryKK->grow_kokkos(k_vatom, vatom, maxvatom, 6, "fix:vatom");
@@ -1988,6 +2015,9 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
   const int bodysize = this->bodysize;
   const int nsend_local = nsend;
 
+  const int ncentroid = cvflag_atom ? 9 : 0;
+  auto d_cvatom = this->d_cvatom;
+  if (cvflag_atom) k_cvatom.template sync<DeviceType>();
   // extended-particle per-atom data carried alongside each migrating body atom
   const int ext = extended_per_atom;            // 0 if not extended
   const int oflag = orientflag;
@@ -2036,8 +2066,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
 
       int size;
       if (btag == 0) size = 1;
-      else if (bown < 0) size = 12 + ext;
-      else size = 12 + ext + bodysize;
+      else size = 12 + ext + ncentroid + (bown < 0 ? 0 : bodysize);
 
       if (is_final) {
         int m = nsend_local + offset;
@@ -2049,6 +2078,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
           d_buf(m++) = d_displace(i,1);
           d_buf(m++) = d_displace(i,2);
           for (int k = 0; k < 6; k++) d_buf(m++) = d_vatom(i,k);
+          for (int k = 0; k < ncentroid; k++) d_buf(m++) = d_cvatom(i,k);
           if (ext) {                            // extended-particle data
             d_buf(m++) = d_ubuf(d_eflags(i)).d;
             for (int k = 0; k < oflag; k++) d_buf(m++) = d_orient(i,k);
@@ -2073,6 +2103,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
           d_bodyown(i) = d_bodyown(j);
           for (int k = 0; k < 3; k++) d_displace(i,k) = d_displace(j,k);
           for (int k = 0; k < 6; k++) d_vatom(i,k) = d_vatom(j,k);
+          for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = d_cvatom(j,k);
           if (ext) {
             d_eflags(i) = d_eflags(j);
             for (int k = 0; k < oflag; k++) d_orient(i,k) = d_orient(j,k);
@@ -2135,6 +2166,7 @@ int FixRigidSmallKokkos<DeviceType>::pack_exchange_kokkos (
   k_xcmimage.template modify<DeviceType>();
   k_displace.template modify<DeviceType>();
   k_vatom.template modify<DeviceType>();
+  if (cvflag_atom) k_cvatom.template modify<DeviceType>();
   k_atom2body.template modify<DeviceType>();
   k_bodyown.template modify<DeviceType>();
   if (ext) {
@@ -2177,6 +2209,9 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
   k_bodyown.template sync<DeviceType>();
   refresh_atom_views();
 
+  const int ncentroid = cvflag_atom ? 9 : 0;
+  auto d_cvatom = this->d_cvatom;
+  if (cvflag_atom) k_cvatom.template sync<DeviceType>();
   const int ext = extended_per_atom;
   const int oflag = orientflag;
   const int dflag = dorientflag;
@@ -2236,12 +2271,15 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
         for(int k = 0; k < 6; k++){
           d_vatom(i,k) = d_buf(m++);
         }
+        for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = d_buf(m++);
         if (ext) {
           d_eflags(i) = (int) d_ubuf(d_buf(m++)).i;
           for (int k = 0; k < oflag; k++) d_orient(i,k) = d_buf(m++);
           if (dflag) { d_dorient(i,0)=d_buf(m++); d_dorient(i,1)=d_buf(m++); d_dorient(i,2)=d_buf(m++); }
         }
         if (d_buf(m++) > 0) count++;
+      } else {
+        for (int k = 0; k < ncentroid; k++) d_cvatom(i,k) = 0.0;
       }
     },
     n_new_body
@@ -2265,8 +2303,8 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
       int m = (int) d_buf(irecv);
       if (irecv >= nrecv1_local)
         m = nrecv1extra_local + (int) d_buf(nrecv1extra_local + irecv - nrecv1_local);
-      // payload: bodytag(1) xcmimage(1) displace(3) vatom(6) extended(ext) -> flag
-      m += 11 + ext;
+      // Skip the per-atom fields to reach the body owner flag.
+      m += 11 + ncentroid + ext;
 
       // if owning body
       if (d_buf(m) > 0) {
@@ -2288,6 +2326,7 @@ void FixRigidSmallKokkos<DeviceType>::unpack_exchange_kokkos(DAT::tdual_double_2
   k_xcmimage.template modify<DeviceType>();
   k_displace.template modify<DeviceType>();
   k_vatom.template modify<DeviceType>();
+  if (cvflag_atom) k_cvatom.template modify<DeviceType>();
   k_bodyown.template modify<DeviceType>();
   if (ext) {
     k_eflags.template modify<DeviceType>();
@@ -2822,6 +2861,7 @@ void FixRigidSmallKokkos<DeviceType>::sync_host_for_sort()
   k_xcmimage.sync_host();
   k_displace.sync_host();
   k_vatom.sync_host();
+  if (cvflag_atom) k_cvatom.sync_host();
   if (extended) {
     k_eflags.sync_host();
     if (orientflag) k_orient.sync_host();
@@ -2840,6 +2880,7 @@ void FixRigidSmallKokkos<DeviceType>::modified_host_for_sort()
   k_xcmimage.modify_host();
   k_displace.modify_host();
   k_vatom.modify_host();
+  if (cvflag_atom) k_cvatom.modify_host();
   if (extended) {
     k_eflags.modify_host();
     if (orientflag) k_orient.modify_host();
@@ -2899,6 +2940,11 @@ void FixRigidSmallKokkos<DeviceType>::sort_kokkos(Kokkos::BinSort<KeyViewType, B
   Sorter.sort(space, k_displace.template view<LMPDeviceType>());
   Sorter.sort(space, k_vatom.template view<LMPDeviceType>());
   Sorter.sort(space, k_atom2body.template view<LMPDeviceType>());
+  if (cvflag_atom) {
+    k_cvatom.template sync<LMPDeviceType>();
+    Sorter.sort(space, k_cvatom.template view<LMPDeviceType>());
+    k_cvatom.modify_device();
+  }
 
   k_bodytag.modify_device();
   k_bodyown.modify_device();
@@ -3266,11 +3312,21 @@ void FixRigidSmallKokkos<DeviceType>::copy_body_device(){
 template<class DeviceType>
 KOKKOS_INLINE_FUNCTION
 void FixRigidSmallKokkos<DeviceType>::v_tally(EV_FLOAT &ev, int i, double vtot[6], double r[3], double f[3], double center[3]) const{
-  // the centroid (r, f, center) arguments are only needed for the per-atom
-  // centroid virial, which is unsupported on the device and rejected up front
-  // in set_xv_kokkos(); here we only tally the global / ordinary per-atom virial
-  (void) r; (void) f; (void) center;
   v_tally(ev, i, vtot);
+
+  // per-atom centroid virial, same order of terms as Fix::v_tally()
+  if (cvflag_atom) {
+    const double ri0[3] = {r[0]-center[0], r[1]-center[1], r[2]-center[2]};
+    d_cvatom(i,0) += ri0[0]*f[0];
+    d_cvatom(i,1) += ri0[1]*f[1];
+    d_cvatom(i,2) += ri0[2]*f[2];
+    d_cvatom(i,3) += ri0[0]*f[1];
+    d_cvatom(i,4) += ri0[0]*f[2];
+    d_cvatom(i,5) += ri0[1]*f[2];
+    d_cvatom(i,6) += ri0[1]*f[0];
+    d_cvatom(i,7) += ri0[2]*f[0];
+    d_cvatom(i,8) += ri0[2]*f[1];
+  }
 }
 
 template<class DeviceType>

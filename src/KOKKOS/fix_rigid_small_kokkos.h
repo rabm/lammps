@@ -147,6 +147,7 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
 
  protected:
   void set_xv_kokkos(int);
+  void grow_cvatom(int);
 
   using ImageIntView1D = typename AT::t_imageint_1d;
   using TagIntView1D = typename AT::t_tagint_1d;
@@ -181,13 +182,13 @@ template <class DeviceType> class FixRigidSmallKokkos : public FixRigidSmall, pu
   DAT::tdual_tagint_1d k_bodytag;
   DAT::tdual_int_1d k_atom2body;
   DAT::tdual_imageint_1d k_xcmimage;
-  DAT::tdual_double_2d_lr k_displace, k_vatom, k_langextra;
+  DAT::tdual_double_2d_lr k_displace, k_vatom, k_cvatom, k_langextra;
 
   IntView1D d_bodyown;
   TagIntView1D d_bodytag;
   IntView1D d_atom2body;
   ImageIntView1D d_xcmimage;
-  View2D d_displace, d_vatom, d_langextra;
+  View2D d_displace, d_vatom, d_cvatom, d_langextra;
 
   // extended-particle per-atom data (tied DualViews), only allocated when the
   // body contains finite-size particles (sphere/ellipsoid/line/tri/dipole).

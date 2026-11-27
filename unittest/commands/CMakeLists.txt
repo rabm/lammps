@@ -198,6 +198,22 @@ if(PKG_REAXFF)
                   ENVIRONMENT "LAMMPS_POTENTIALS=${LAMMPS_POTENTIALS_DIR}")
 endif()
 
+if(PKG_RIGID AND PKG_MOLECULE AND Python_Interpreter_FOUND)
+  set(centroid_test ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_rigid_small_centroid.py
+                    $<TARGET_FILE:lmp>)
+  add_test(NAME RigidSmallCentroidSort COMMAND ${centroid_test})
+  add_kokkos_test(NAME RigidSmallCentroidSort COMMAND ${centroid_test})
+  if(BUILD_MPI AND MPIEXEC_EXECUTABLE AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 2)
+    list(APPEND centroid_test ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2)
+    add_test(NAME RigidSmallCentroidMigration COMMAND ${centroid_test})
+    add_kokkos_test(NAME RigidSmallCentroidMigration COMMAND ${centroid_test})
+    set_tests_properties(RigidSmallCentroidMigration PROPERTIES PROCESSORS 2)
+    if(PKG_KOKKOS)
+      set_tests_properties(RigidSmallCentroidMigrationKokkos PROPERTIES PROCESSORS 2)
+    endif()
+  endif()
+endif()
+
 if(PKG_LSDEM AND PKG_RIGID AND Python_Interpreter_FOUND)
   add_test(NAME LSDEMNeighborPolicy
     COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_lsdem_neighbor_policy.py
