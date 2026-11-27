@@ -33,6 +33,7 @@ class FixPropertyAtomKokkos : public FixPropertyAtom {
   ~FixPropertyAtomKokkos() override;
   void grow_arrays(int) override;
 
+  static uint64_t scalar_comm_mask(const AtomKokkos *, bool borders);
   void sync(ExecutionSpace space, uint64_t mask);
   void modified(ExecutionSpace space, uint64_t mask);
   void sync_pinned(ExecutionSpace space, uint64_t mask, int async_flag = 0);
