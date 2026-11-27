@@ -789,13 +789,9 @@ void FixRigidSmallLSDEM::process_levelsets()
                                gridfile_data[gridfile].stride, temp_grid_values);
     }
 
-    int index_global_grid;
-    if (gridfile_data[gridfile].style == GLOBAL)
-      index_global_grid = gridfile_data[gridfile].grid_index;
-
+    const int index_global_grid = gridfile_data[gridfile].grid_index;
     if (storage_mode == ARRAY) {
-      if (gridfile_data[gridfile].style == GLOBAL) {
-        index_global_grid = gridfile_data[gridfile].grid_index;
+      if (index_global_grid >= 0) {
         for (int n = 0; n < grid_size_flat[index_global_grid]; n++)
           // Unscaled values (and min) stored globally to avoid duplicating memory
           global_grids[index_global_grid][n] = temp_grid_values[n];
@@ -1006,7 +1002,7 @@ void FixRigidSmallLSDEM::process_levelsets()
       }
 
       // Relocate bins to global per-grain/node-type storage
-      if (global_flag) {
+      if (index_global_grid >= 0) {
         global_ws_tables[index_global_grid].resize(max_node_index);
         global_ws_buffers[index_global_grid].resize(max_node_index);
 
