@@ -152,15 +152,6 @@ void CommKokkos::init()
       !lmp->pair_only_flag && nprocs > 1 && ghost_velocity && atom->avec->comm_x_only &&
       update->whichflag == 1 && dynamic_cast<VerletKokkos *>(update->integrate))
     forward_comm_legacy = 0;
-
-  multi_bodytags.clear();
-  if (fix_multi)
-    for (int i = 0; i < atom->nextra_border; i++) {
-      Fix *fix = modify->fix[atom->extra_border[i]];
-      auto *kk = dynamic_cast<KokkosBase *>(fix);
-      if (fix->comm_multi_flag && fix->comm_border == 1 && kk && kk->ghost_multi_bodytag())
-        multi_bodytags.push_back(kk->ghost_multi_bodytag());
-    }
 }
 
 /* ----------------------------------------------------------------------
@@ -1529,9 +1520,19 @@ void CommKokkos::exchange_device()
 
 void CommKokkos::borders()
 {
+  multi_bodytags.clear();
+  if (fix_multi)
+    for (int i = 0; i < atom->nextra_border; i++) {
+      Fix *fix = modify->fix[atom->extra_border[i]];
+      auto *kk = dynamic_cast<KokkosBase *>(fix);
+      if (fix->comm_multi_flag && fix->comm_border == 1 && kk && kk->ghost_multi_bodytag())
+        multi_bodytags.push_back(kk->ghost_multi_bodytag());
+    }
+
   if (!exchange_comm_legacy) {
 
-    if (atom->nextra_border != static_cast<int>(multi_bodytags.size()) ||
+    if ((fix_multi && multi_bodytags.empty()) ||
+        atom->nextra_border != static_cast<int>(multi_bodytags.size()) ||
         mode != Comm::SINGLE || bordergroup) {
 
       if (comm->me == 0) {
