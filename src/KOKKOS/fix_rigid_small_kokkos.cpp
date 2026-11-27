@@ -192,7 +192,8 @@ void FixRigidSmallKokkos<DeviceType>::init()
   // The all-host combination is a supported path: the tied DualViews are
   // flushed in pre_exchange() and pushed back in pre_neighbor().
   if (std::is_same<DeviceType,LMPDeviceType>::value) {
-    bool sort_on_host = lmp->kokkos->sort_legacy || atomKK->hybrid_flag ||
+    bool sort_on_host = (comm_multi_flag && atom->firstgroupname) ||
+      lmp->kokkos->sort_legacy || atomKK->hybrid_flag ||
       atom->ellipsoid_flag || atom->line_flag || atom->tri_flag || atom->body_flag;
     for (int i = 0; i < atom->nextra_grow; i++)
       if (!modify->fix[atom->extra_grow[i]]->sort_device) sort_on_host = true;
