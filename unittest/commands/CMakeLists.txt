@@ -198,6 +198,13 @@ if(PKG_REAXFF)
                   ENVIRONMENT "LAMMPS_POTENTIALS=${LAMMPS_POTENTIALS_DIR}")
 endif()
 
+if(PKG_RIGID AND PKG_MOLECULE AND PKG_KOKKOS)
+  string(REPLACE "LAMMPS_ACCELERATOR_ARGS=" "" rigid_kk_args "${KOKKOS_TEST_ENVIRONMENT}")
+  separate_arguments(rigid_kk_args NATIVE_COMMAND "${rigid_kk_args}")
+  add_mpi_test(NAME RigidSmallGhostSetupKokkos NUM_PROCS 2 COMMAND $<TARGET_FILE:lmp>
+               ${rigid_kk_args} -log none -in ${CMAKE_CURRENT_SOURCE_DIR}/in.rigid_small_ghost_setup)
+endif()
+
 if(PKG_RIGID AND PKG_MOLECULE AND Python_Interpreter_FOUND)
   set(centroid_test ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_rigid_small_centroid.py
                     $<TARGET_FILE:lmp>)

@@ -480,7 +480,6 @@ void FixRigidSmallKokkos<DeviceType>::setup_pre_neighbor()
   reverse_comm_device = 0;
   setup_host_rebuild = true;
   FixRigidSmall::setup_pre_neighbor();
-  setup_host_rebuild = false;
   forward_comm_device = saved_forward_comm_device;
   reverse_comm_device = saved_reverse_comm_device;
 
@@ -685,6 +684,7 @@ void FixRigidSmallKokkos<DeviceType>::setup_device_push()
   k_body.sync_host();
   k_body.resize(nmax_body);
   copy_body_device();
+  setup_host_rebuild = false;
 
   // size the per-body Langevin buffer to match (grow_body does this during the
   // run, but it is not necessarily called before the first post_force)
@@ -1701,11 +1701,12 @@ void FixRigidSmallKokkos<DeviceType>::resample_momenta(int groupbit_in, int mom_
   const int saved_reverse_comm_device = reverse_comm_device;
   forward_comm_device = 0;
   reverse_comm_device = 0;
+  const bool saved_host_rebuild = setup_host_rebuild;
   setup_host_rebuild = true;
 
   FixRigidSmall::resample_momenta(groupbit_in, mom_flag, random_in, KT);
 
-  setup_host_rebuild = false;
+  setup_host_rebuild = saved_host_rebuild;
   forward_comm_device = saved_forward_comm_device;
   reverse_comm_device = saved_reverse_comm_device;
 
@@ -3267,13 +3268,10 @@ double FixRigidSmallKokkos<DeviceType>::compute_scalar()
 template<class DeviceType>
 void FixRigidSmallKokkos<DeviceType>::copy_body_host(){
   Kokkos::Profiling::pushRegion("rigid/small copy body host");
-  // k_body is not sized until setup_device_push().  Callers can run before that
-  // even with setupflag already set -- setup_pre_neighbor() sets it, and
-  // ModifyKokkos::setup() then runs compute temp -> dof() before the fix setup()
-  // loop is reached.  Until the device array exists the host body[] that
-  // create_bodies() filled is the authoritative copy, so there is nothing to
-  // bring down.
-  if (k_body.view_device().extent_int(0) < nlocal_body + nghost_body) {
+  // A host rebuild can allocate device capacity when receiving ghost bodies.
+  // The host body[] remains current for setup-time dof() and other callbacks
+  // until setup_device_push() copies the completed bodies to the device.
+  if (setup_host_rebuild || k_body.view_device().extent_int(0) < nlocal_body + nghost_body) {
     Kokkos::Profiling::popRegion();
     return;
   }
